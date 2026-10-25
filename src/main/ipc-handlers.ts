@@ -1,5 +1,7 @@
 import { randomInt, randomUUID } from 'node:crypto'
-import { app, globalShortcut, ipcMain } from 'electron'
+import { readFile } from 'node:fs/promises'
+import { extname } from 'node:path'
+import { app, dialog, globalShortcut, ipcMain, shell } from 'electron'
 import { CH } from '@shared/ipc'
 import type {
   AppInfo,
@@ -11,15 +13,11 @@ import type {
 import {
   MAX_VIEWERS,
   SIGNALING_PORT,
+  type BrowserSourceSpec,
   type CanvasOrientation,
   type HostToViewer,
   type HotkeyAction,
-  type MultistreamTarget,
-  type PlatformId,
-  type Scene,
-  type SceneItem,
   type SourceKind,
-  type UserProfile,
   type ViewerToHost
 } from '@shared/protocol'
 import { hostname } from 'node:os'
@@ -28,29 +26,18 @@ import { SignalingClient, SignalingServer } from './signaling'
 import { armSource, disarmSource, listSources } from './capture'
 import { findFreePort, listInterfaces, localAddress } from './net'
 import { authorize as firewallAuthorize, status as firewallStatus } from './firewall'
-import {
-  addItemToScene,
-  connectPlatform,
-  createScene,
-  deleteScene,
-  disconnectPlatform,
-  duplicateScene,
-  getScenesState,
-  getSettings,
-  getUserProfile,
-  removeItemFromScene,
-  reorderItemInScene,
-  selectScene,
-  setSettings,
-  setStudioMode,
-  transitionScenes,
-  updateItemInScene,
-  updateScene,
-  updateUserProfile
-} from './store'
+import { getSettings, setSettings } from './store'
 import { getMainWindow } from './window'
 import { MultistreamManager } from './multistream'
 import { RecorderManager } from './recorder'
+import { cancelTwitchLogin, setStreamKey, startTwitchLogin, unlinkDestination } from './accounts'
+import {
+  ackBrowserSource,
+  disposeBrowserSources,
+  reloadBrowserSource,
+  syncBrowserSources
+} from './browser-sources'
+import { loadKit } from './kit'
 
 const discovery = new Discovery()
 const server = new SignalingServer()
@@ -110,9 +97,16 @@ export function registerGlobalHotkeys(): void {
 async function stopHosting(): Promise<void> {
   await discovery.stopAnnouncing()
   await server.stop()
-  multistream.stop()
-  recorder.resetStream()
   disarmSource()
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.svg': 'image/svg+xml'
 }
 
 export function registerIpc(): void {
@@ -122,9 +116,7 @@ export function registerIpc(): void {
       name: 'PrismCast Studio',
       version: app.getVersion(),
       hostname: hostname(),
-      isPackaged: app.isPackaged,
-      rustEngineActive: true,
-      hardwareEncoder: multistream.detectedEncoder
+      isPackaged: app.isPackaged
     }
   })
 
@@ -141,11 +133,75 @@ export function registerIpc(): void {
     win.setAlwaysOnTop(value)
     return win.isAlwaysOnTop()
   })
+  ipcMain.on(CH.appOpenExternal, (_e, url: string) => {
+    if (/^https:\/\//i.test(url)) void shell.openExternal(url)
+  })
+  ipcMain.on(CH.appShowInFolder, (_e, path: string) => {
+    if (typeof path === 'string' && path) shell.showItemInFolder(path)
+  })
 
   // --------------------------------------------------------------- fontes
   ipcMain.handle(CH.sourcesList, () => listSources())
   ipcMain.handle(CH.sourcesSelect, (_e, sourceId: string, withAudio: boolean) => {
     armSource(sourceId, withAudio)
+  })
+
+  // ------------------------------------------------------------ destinos
+  ipcMain.handle(CH.destSetKey, (_e, id: string, key: string) => setStreamKey(id, key))
+  ipcMain.handle(CH.destTwitchLogin, (_e, id: string) => {
+    void startTwitchLogin(id)
+  })
+  ipcMain.on(CH.destTwitchCancel, () => cancelTwitchLogin())
+  ipcMain.handle(CH.destUnlink, (_e, id: string) => unlinkDestination(id))
+
+  // ------------------------------------------------------ browser sources
+  ipcMain.on(CH.bsSync, (_e, specs: BrowserSourceSpec[]) => syncBrowserSources(specs))
+  ipcMain.on(CH.bsReload, (_e, id: string) => reloadBrowserSource(id))
+  ipcMain.on(CH.bsAck, (_e, id: string) => ackBrowserSource(id))
+
+  // ------------------------------------------------------------------ kit
+  ipcMain.handle(CH.kitLoad, (_e, path: string | null) => loadKit(path))
+  ipcMain.handle(CH.kitPickFolder, async () => {
+    const win = getMainWindow()
+    const res = win
+      ? await dialog.showOpenDialog(win, {
+          title: 'Escolha a pasta do kit de widgets (a que tem a pasta obs/)',
+          properties: ['openDirectory']
+        })
+      : null
+    return res && !res.canceled ? (res.filePaths[0] ?? null) : null
+  })
+
+  // -------------------------------------------------------------- arquivos
+  ipcMain.handle(CH.filesPickImage, async () => {
+    const win = getMainWindow()
+    if (!win) return null
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Escolha uma imagem',
+      properties: ['openFile'],
+      filters: [{ name: 'Imagens', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'] }]
+    })
+    return res.canceled ? null : (res.filePaths[0] ?? null)
+  })
+  ipcMain.handle(CH.filesPickHtml, async () => {
+    const win = getMainWindow()
+    if (!win) return null
+    const res = await dialog.showOpenDialog(win, {
+      title: 'Escolha a página do widget',
+      properties: ['openFile'],
+      filters: [{ name: 'Página HTML', extensions: ['html', 'htm'] }]
+    })
+    return res.canceled ? null : (res.filePaths[0] ?? null)
+  })
+  ipcMain.handle(CH.filesReadImage, async (_e, path: string) => {
+    const type = IMAGE_TYPES[extname(path).toLowerCase()]
+    if (!type) return null
+    try {
+      const data = await readFile(path)
+      return `data:${type};base64,${data.toString('base64')}`
+    } catch {
+      return null
+    }
   })
 
   // ------------------------------------------------------------------ host
@@ -167,8 +223,6 @@ export function registerIpc(): void {
         pin,
         maxViewers
       })
-
-      recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
 
       discovery.preferredInterface = settings.preferredInterface
       await discovery.startAnnouncing({
@@ -231,10 +285,7 @@ export function registerIpc(): void {
 
   // ----------------------------------------------------------- multistream
   ipcMain.handle(CH.multistreamStatus, () => multistream.status())
-  ipcMain.handle(
-    CH.multistreamStart,
-    (_e, targets: MultistreamTarget[], fps: number) => multistream.start(targets, fps)
-  )
+  ipcMain.handle(CH.multistreamStart, (_e, fps: number) => multistream.start(fps))
   ipcMain.on(
     CH.multistreamPushChunk,
     (_e, orientation: CanvasOrientation, chunk: Uint8Array) => {
@@ -253,6 +304,7 @@ export function registerIpc(): void {
   ipcMain.on(CH.recorderPushChunk, (_e, chunk: Uint8Array) => {
     recorder.pushChunk(chunk)
   })
+  ipcMain.on(CH.recorderReset, () => recorder.resetStream())
   ipcMain.handle(CH.recorderSaveReplay, () => recorder.saveReplay())
 
   // ------------------------------------------------------------------ rede
@@ -262,83 +314,13 @@ export function registerIpc(): void {
   ipcMain.handle(CH.firewallStatus, () => firewallStatus())
   ipcMain.handle(CH.firewallAuthorize, () => firewallAuthorize())
 
-  // ------------------------------------------------------------------ cenas
-  ipcMain.handle(CH.scenesGetState, () => getScenesState())
-  ipcMain.handle(CH.scenesCreate, (_e, name: string) => createScene(name))
-  ipcMain.handle(CH.scenesUpdate, (_e, sceneId: string, patch: Partial<Scene>) =>
-    updateScene(sceneId, patch)
-  )
-  ipcMain.handle(CH.scenesDelete, (_e, sceneId: string) => deleteScene(sceneId))
-  ipcMain.handle(CH.scenesSelect, (_e, sceneId: string) => selectScene(sceneId))
-  ipcMain.handle(CH.scenesDuplicate, (_e, sceneId: string) => duplicateScene(sceneId))
-  ipcMain.handle(CH.scenesSetStudioMode, (_e, enabled: boolean) => setStudioMode(enabled))
-  ipcMain.handle(CH.scenesTransition, (_e, type: 'cut' | 'fade', durationMs?: number) =>
-    transitionScenes(type, durationMs)
-  )
-  ipcMain.handle(CH.scenesAddItem, (_e, sceneId: string, item: Omit<SceneItem, 'id'>) =>
-    addItemToScene(sceneId, item)
-  )
-  ipcMain.handle(
-    CH.scenesUpdateItem,
-    (_e, sceneId: string, itemId: string, patch: Partial<SceneItem>) =>
-      updateItemInScene(sceneId, itemId, patch)
-  )
-  ipcMain.handle(CH.scenesRemoveItem, (_e, sceneId: string, itemId: string) =>
-    removeItemFromScene(sceneId, itemId)
-  )
-  ipcMain.handle(
-    CH.scenesReorderItem,
-    (_e, sceneId: string, itemId: string, newIndex: number) =>
-      reorderItemInScene(sceneId, itemId, newIndex)
-  )
-
-  // ------------------------------------------------------------ autenticação
-  ipcMain.handle(CH.authGetProfile, () => getUserProfile())
-  ipcMain.handle(CH.authUpdateProfile, (_e, patch: Partial<UserProfile>) =>
-    updateUserProfile(patch)
-  )
-  ipcMain.handle(
-    CH.authConnectPlatform,
-    (
-      _e,
-      platform: PlatformId,
-      credentials?: { username?: string; streamKey?: string; rtmpUrl?: string }
-    ) => connectPlatform(platform, credentials)
-  )
-  ipcMain.handle(CH.authDisconnectPlatform, (_e, platform: PlatformId) =>
-    disconnectPlatform(platform)
-  )
-
-  // ------------------------------------------------------------- dispositivos
-  ipcMain.handle(CH.mediaListDevices, async () => {
-    return [
-      {
-        deviceId: 'default',
-        label: 'Microfone Padrão do Sistema',
-        kind: 'audioinput',
-        groupId: 'default-audio'
-      },
-      {
-        deviceId: 'default',
-        label: 'Alto-falantes / Fones Padrão',
-        kind: 'audiooutput',
-        groupId: 'default-output'
-      },
-      {
-        deviceId: 'default',
-        label: 'Webcam Padrão / Câmera Integrada',
-        kind: 'videoinput',
-        groupId: 'default-video'
-      }
-    ]
-  })
-
   // --------------------------------------------------------- preferencias
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<AppSettings>) => {
+    const prevHotkeys = JSON.stringify(getSettings().hotkeys)
     const next = setSettings(patch)
     discovery.preferredInterface = next.preferredInterface
-    registerGlobalHotkeys()
+    if (JSON.stringify(next.hotkeys) !== prevHotkeys) registerGlobalHotkeys()
     return next
   })
 }
@@ -350,6 +332,9 @@ export async function shutdown(): Promise<void> {
     /* ignorar */
   }
   client.disconnect()
+  multistream.stop()
+  recorder.stopRecording()
+  disposeBrowserSources()
   await stopHosting()
   await discovery.dispose()
 }

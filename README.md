@@ -1,108 +1,86 @@
-# PrismCast Studio (`v2.1.0`)
+# PrismCast Studio (`v2.2.0`)
 
-**PrismCast Studio** é um estúdio comercial de transmissão e compartilhamento de tela de ultra-baixa latência na rede local (LAN P2P) e Multistreaming RTMP simultâneo, alimentado por um **Core Nativo em Rust (`prismcast`)**, interface moderna em **layout modular estilo OBS Studio / Streamlabs Desktop** e aceleração de vídeo por hardware com GPU zero-copy.
-
----
-
-## Principais Funcionalidades
-
-1. **Layout e Experiência Estilo OBS Studio**:
-   - **Preparação e Edição Antes de Transmitir**: edite cenas, adicione fontes, organize camadas e configure seu áudio e overlays antes de iniciar a transmissão de fato.
-   - **Modo Estúdio (Prévia | Programa)**: visualize e edite a cena no palco de prévia e envie para o ar ao vivo com transições de **Corte (Cut)** ou **Esmaecer (Fade)**.
-   - **Docks Modulares Inferiores**: Cenas, Fontes da Cena Ativa, Mixer de Áudio com VU meters ao vivo, Transições e Controles da Live.
-
-2. **Gerenciador de Cenas e Fontes**:
-   - Cenas prontas para uso: `🎮 Gameplay & Cam`, `💬 Just Chatting`, `⏳ Começando em Breve`, `🛑 Pausa / Volto Já` e `🏁 Encerramento`.
-   - Adicione e gerencie fontes com visibilidade (olho), bloqueio de posição (cadeado), reordenação de camadas (Z-Index) e propriedades:
-     - 🖥️ Captura de Tela (Monitores completos)
-     - 🪟 Captura de Janela (Jogos e aplicativos)
-     - 📷 Câmera / Webcam (Facecam integrada)
-     - 🎙️ Entrada de Áudio (Microfone USB / XLR específico)
-     - 🔊 Saída de Áudio (Sons do PC / Desktop)
-     - 🌐 Browser Source (StreamElements, Alertas, Chat)
-     - 🎨 Fonte de Cor (Fundos e tarjas)
-     - 📝 Texto GDI+ / Personalizado
-
-3. **Sistema de Login & Conexão de Plataformas (Multicasting Automático)**:
-   - Login com **PrismCast Cloud ID** (nome, email, avatar, plano Studio).
-   - Conexão em 1 clique com as principais plataformas:
-     - 🟣 **Twitch** (`rtmp://live.twitch.tv/app`)
-     - 🔴 **YouTube Live** (`rtmp://a.rtmp.youtube.com/live2`)
-     - 🟢 **Kick** (`rtmps://fa723fc1b171.global-contribute.live-video.net/app`)
-     - ⬛ **TikTok Live** (`rtmp://push.tiktokv.com/live`)
-   - Ao conectar sua conta ou chave de stream, os destinos de multistreaming são ativados e configurados automaticamente sem necessidade de copiar URLs ou chaves manualmente.
-
-4. **Dual Output Simultâneo (`16:9 Horizontal` + `9:16 Vertical` Lado a Lado)**:
-   - Preview visual duplo renderizado em tempo real: **16:9 (1920x1080)** e **9:16 (1080x1920)** lado a lado no estúdio.
-   - 4 presets inteligentes de enquadramento vertical: **Split Cam + Jogo**, **Fundo Desfocado**, **Corte Central** e **PiP Vertical**.
-
-5. **Aceleração por Hardware GPU & Decodificação Zero-Copy**:
-   - Flags Chromium habilitadas para rasterização por GPU (`--enable-gpu-rasterization`, `--enable-zero-copy`, `--enable-hardware-overlays`).
-   - Detecção automática de encoders de hardware FFmpeg (`h264_nvenc`, `h264_amf`, `h264_qsv`, `libx264`).
-
-6. **Core Nativo em Rust (`src-rust/`)**:
-   - Descoberta UDP na LAN com cálculo inteligente de broadcast e filtro anti-adaptadores virtuais (`net.rs`, `discovery.rs`).
-   - Servidor e Cliente de Sinalização WebSocket assíncronos em Tokio com proteção anti-força bruta de PIN, Chat ao vivo, Reações e Party Voice (`signaling.rs`).
-   - Gravador local contínuo + **Circular Replay Buffer** em memória (`VecDeque`) para salvar os últimos 30 segundos instantaneamente (`recorder.rs`).
-   - Gerenciador de Firewall do Windows (`netsh advfirewall`) e persistência atômica (`firewall.rs`, `store.rs`).
-
-2. **Cenas Ao Vivo, Troca de Fonte Sem Queda, PiP e Modo Privacidade ("Volto Já")**:
-   - Troque a tela ou janela compartilhada no meio da transmissão sem derrubar nenhum espectador WebRTC nem interromper o Multistream ou a gravação (`RTCRtpSender.replaceTrack` + compositor contínuo).
-   - **Picture-in-Picture (Webcam)**: sobreponha sua webcam com recorte arredondado e borda neon em qualquer canto do palco `16:9` e no layout vertical `9:16`.
-   - **Escudo de Privacidade ("Volto Já")**: pause visualmente a transmissão com 1 clique ou atalho global (`Ctrl+Shift+P`) para digitar senhas ou alternar janelas com segurança.
-
-3. **Dual Output Simultâneo (`16:9 Horizontal` + `9:16 Vertical`)**:
-   - Renderiza em tempo real um canvas horizontal (`1920x1080`) e um canvas vertical (`1080x1920`) ideal para **TikTok Live, YouTube Shorts e Instagram Reels**.
-   - 4 presets inteligentes de enquadramento vertical: **Split Cam + Jogo**, **Fundo Desfocado**, **Corte Central** e **PiP Vertical**.
-
-4. **Multistreaming Simultâneo (YouTube, Twitch, Kick, TikTok e Custom RTMP)**:
-   - Transmita simultaneamente a cena horizontal (`16:9`) para **YouTube Live, Twitch e Kick**, e a cena vertical (`9:16`) para **TikTok Live**, além de servidores RTMP personalizados.
-
-5. **Mixer de Áudio Duplo Ao Vivo (Sistema WASAPI + Microfone)**:
-   - Mixagem em tempo real de 48 kHz combinando o loopback de áudio do sistema e o microfone do host.
-   - Controle de ganho individual de `0%` a `200%`, mute independente sem queda de track, **Filtro Anti-Ruído (High-Pass 85Hz + WebRTC Noise Suppression)** e **Compressor Dinâmico Master**.
-
-6. **Compatibilidade com Widgets Nativos & StreamElements**:
-   - Suporte nativo para URLs de overlay do **StreamElements** e Browser Sources personalizados, além de widgets integrados de **Barra de Meta**, **Lower Third**, **Contador de Espectadores** e **AlertBox Ao Vivo**.
-
-7. **Gravação Local & Replay Buffer de 30 Segundos**:
-   - Grave toda a sessão localmente em `.webm` (`Videos/PrismCast`) ou salve instantaneamente os últimos 30 segundos com 1 clique ou `Ctrl+Shift+S`.
-
-8. **Chat Ao Vivo, Reações Flutuantes e Party Voice na LAN**:
-   - Chat em tempo real integrado para host e espectadores, reações com emojis flutuantes no palco e **Party Voice** (retorno de voz opcional dos espectadores na LAN).
+Estúdio de transmissão para Windows: monta cenas com tela, janela, câmera e widgets HTML, e transmite ao mesmo
+tempo para Twitch, YouTube, Kick, TikTok e RTMP próprio. Também compartilha o que está no ar com outros PCs da rede
+local, com latência de LAN.
 
 ---
 
-## Atalhos Globais do Windows
+## Como usar
+
+1. **Destinos** → conecte a Twitch (botão *Entrar com a Twitch* ou colando a chave) e as outras plataformas.
+2. **Widgets** → aponte para a pasta do seu kit (ex.: `E:\kayoinreality-kit`) e clique em *Criar cenas do kit*.
+3. **Estúdio** → escolha a cena, ajuste as fontes no palco e clique em **Entrar ao vivo**.
+
+## Estúdio
+
+- **Palco editável**: clique numa fonte para selecionar, arraste para mover, puxe os cantos para redimensionar
+  (Shift solta a proporção), setas para ajuste fino, Delete remove. Encaixa nas bordas e no centro.
+- **Fontes**: tela, janela (cada fonte tem a própria captura), câmera, widget/navegador, imagem, texto e cor.
+- **Saída 9:16**: um segundo canvas para TikTok/Shorts, com posição própria de cada fonte.
+- **Modo estúdio**: edite a prévia enquanto outra cena está no ar e mande com *Transição* (corte ou esmaecer).
+- **Mixer**: áudio do PC (loopback) e microfone, com redução de ruído, cancelamento de eco e compressor.
+- **Tela de pausa**: cobre tudo na hora (Ctrl+Shift+P).
+- **Gravação e replay**: grava em MP4 em `Vídeos\PrismCast`; *Replay* salva os últimos segundos (Ctrl+Shift+S).
+
+## Widgets (browser sources)
+
+Cada widget roda numa janela Chromium invisível e transparente; os quadros entram no canvas do compositor, então
+aparecem **na live e na gravação**, não só na pré-visualização. Funciona com:
+
+- **Kit de overlays** (pasta com `obs/*.html`): Começando, Volto já, Encerrando, Só conversando, Overlay de gameplay,
+  Moldura de câmera e Chat da Twitch. Os parâmetros de cada tela (minutos, jogo do dia, canto da câmera…) aparecem
+  como campos no painel de propriedades.
+- **StreamElements** e qualquer URL `https://`, ou um arquivo `.html` local.
+
+## Destinos e login
+
+- As chaves de transmissão ficam criptografadas com o DPAPI do Windows (`safeStorage`) num arquivo separado e nunca
+  voltam para a interface depois de salvas. O formato é validado (Twitch `live_…`, YouTube `xxxx-xxxx-…`, Kick `sk_…`).
+- **Entrar com a Twitch** usa OAuth (fluxo *device code*): o app mostra um código, você confirma em
+  `twitch.tv/activate` e ele busca nome, avatar e a chave pela API. Precisa de um Client ID:
+  1. Registre um app em <https://dev.twitch.tv/console/apps/create>.
+  2. URL de redirecionamento `https://localhost` (o fluxo device code não usa, mas a Twitch exige uma URL HTTPS),
+     categoria *Broadcaster Suite*, tipo de cliente **Público**.
+  3. Cole o Client ID em Destinos → Twitch → *Configurar login*.
+- Kick e TikTok mudam o servidor por conta: copie servidor e chave do painel de cada um.
+
+## Como a live sai
+
+O canvas (1920×1080, e 1080×1920 se houver destino vertical) é gravado com `MediaRecorder` e enviado ao FFmpeg,
+um processo por destino: H.264 por hardware (NVENC → AMF → QSV, testados de verdade; senão x264), GOP de 2 s, AAC
+48 kHz, FLV/RTMP. Um destino que cai não derruba os outros, e o erro aparece traduzido no próprio destino.
+
+**Requer FFmpeg no PATH** (`winget install ffmpeg`). Para RTMPS (Kick), use uma build "full".
+
+## Atalhos globais
 
 | Atalho | Ação |
 |---|---|
-| `Ctrl+Shift+M` | Mutar / Desmutar Microfone do Host |
-| `Ctrl+Shift+D` | Mutar / Desmutar Áudio do Sistema |
-| `Ctrl+Shift+P` | Ativar / Desativar Escudo de Privacidade ("Volto Já") |
-| `Ctrl+Shift+S` | Salvar Clipe de Replay Instantâneo (últimos 30s) |
-| `Ctrl+Shift+V` | Alternar Saída / Preview Vertical `9:16` |
+| `Ctrl+Shift+M` | Mutar / ligar microfone |
+| `Ctrl+Shift+D` | Mutar / ligar áudio do PC |
+| `Ctrl+Shift+P` | Tela de pausa |
+| `Ctrl+Shift+S` | Salvar replay |
+| `Ctrl+Shift+V` | Ligar / desligar saída 9:16 |
 
----
-
-## Desenvolvimento e Build
+## Desenvolvimento
 
 ```bash
-# Instalar dependências Node/Electron
 npm install
-
-# Rodar os testes unitários do motor nativo em Rust
-npm run rust:test
-
-# Compilar o motor nativo em Rust (modo release otimizado)
-npm run rust:build
-
-# Verificar tipos TypeScript e compilar todo o projeto (Rust + Electron-Vite)
-npm run build
-
-# Iniciar em modo desenvolvimento
-npm run dev
-
-# Gerar executável portátil para Windows (dist/PrismCast-Studio-2.0.0.exe)
-npm run dist
+npm run dev          # app em modo desenvolvimento
+npm run typecheck
+npm run build        # typecheck + cargo build --release + electron-vite build
+npm run dist         # executável portátil em dist/
 ```
+
+### Sobre o `src-rust/`
+
+O motor em Rust (`prismcast.exe`) é iniciado junto com o app quando existe em `target/`, mas **a interface ainda
+não conversa com ele**: descoberta na LAN, sinalização, multistream e gravação rodam no processo main do Electron
+(`src/main`). O RPC do Rust (porta 41236) fica disponível para uma migração futura.
+
+### Preferências
+
+`%APPDATA%\prismcast-studio\prismcast-settings.json` (cenas, destinos, ajustes) e `prismcast-secrets.json` (chaves,
+criptografadas). A versão 2.2 migra o arquivo da 2.1 sozinha: as cenas de demonstração e as chaves que a 2.1
+inventava ao clicar em "Conectar" são descartadas; chaves reais são mantidas.

@@ -64,7 +64,7 @@ function installContentSecurityPolicy(): void {
             "default-src 'self'",
             "script-src 'self'",
             "style-src 'self' 'unsafe-inline'",
-            "img-src 'self' data: https:",
+            "img-src 'self' data: blob: https:",
             "media-src 'self' blob: mediastream:",
             "connect-src 'self' https: wss:",
             "font-src 'self' data:",
@@ -86,6 +86,9 @@ app.whenReady().then(() => {
 
   const win = createWindow()
   setOwnWindowTitle(win.getTitle())
+  // As janelas offscreen dos widgets contam como janelas abertas: sem isto,
+  // fechar o estúdio deixaria o app rodando escondido.
+  win.on('closed', () => app.quit())
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

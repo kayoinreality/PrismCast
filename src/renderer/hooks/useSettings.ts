@@ -13,13 +13,13 @@ const FLUSH_DELAY_MS = 300
  * Preferências persistidas.
  *
  * A escrita é otimista e adiada: o estado local muda na hora e o disco recebe
- * o acumulado depois que o usuário para de mexer. Sem isso, arrastar o slider
- * de taxa dispara dezenas de gravações — um IPC e um write por passo do
- * mouse — e nada disso precisa ser síncrono, são preferências de conforto.
+ * o acumulado depois que o usuário para de mexer. Sem isso, arrastar uma fonte
+ * no palco dispara dezenas de gravações — um IPC e um write por movimento.
  *
- * A resposta do main é ignorada de propósito: ela poderia chegar depois de uma
- * mudança nova e fazer o controle voltar sozinho. O estado local é a verdade
- * enquanto o usuário está mexendo.
+ * A resposta do `set` é ignorada de propósito: ela poderia chegar depois de uma
+ * mudança nova e fazer o controle voltar sozinho. Mudanças que nascem no main
+ * (login da Twitch, chave salva) chegam por `onChanged` e são mescladas por
+ * baixo do que ainda está pendente aqui.
  */
 export function useSettings(): SettingsResult {
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -28,6 +28,9 @@ export function useSettings(): SettingsResult {
 
   useEffect(() => {
     void window.api.settings.get().then(setSettings)
+    return window.api.settings.onChanged((fromMain) => {
+      setSettings({ ...fromMain, ...pending.current })
+    })
   }, [])
 
   const flush = useCallback((): void => {

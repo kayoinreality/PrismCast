@@ -322,3 +322,79 @@ export const IconCut = (p: P): React.JSX.Element => (
     <path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12" />
   </Svg>
 )
+
+export const IconImage = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="9" cy="9" r="2" />
+    <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
+  </Svg>
+)
+
+export const IconText = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M4 7V4h16v3M9 20h6M12 4v16" />
+  </Svg>
+)
+
+export const IconPalette = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 15 15 3M9 21 21 9" />
+  </Svg>
+)
+
+export const IconWidget = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="3" y="3" width="7" height="7" rx="1.5" />
+    <rect x="14" y="3" width="7" height="7" rx="1.5" />
+    <rect x="3" y="14" width="7" height="7" rx="1.5" />
+    <path d="M17.5 14v7M14 17.5h7" />
+  </Svg>
+)
+
+export const IconKey = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m10.7 12.3 9.8-9.8M17 6l3 3M14.5 8.5l2 2" />
+  </Svg>
+)
+
+export const IconExternal = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+  </Svg>
+)
+
+export const IconRecord = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="4" fill="currentColor" stroke="none" />
+  </Svg>
+)
+
+export const IconReplay = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+    <path d="M3 3v5h5M12 8v4l3 2" />
+  </Svg>
+)
+
+export const IconStudio = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="2" y="4" width="20" height="13" rx="2" />
+    <path d="M6 21h12M9 8.5v5l4-2.5z" />
+  </Svg>
+)
+
+export const IconSend = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M5 12h14M13 6l6 6-6 6" />
+  </Svg>
+)
+
+export const IconFolder = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+  </Svg>
+)

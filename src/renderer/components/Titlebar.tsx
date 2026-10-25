@@ -14,20 +14,7 @@ export function Titlebar({ center }: { center?: ReactNode }): React.JSX.Element 
     <div className="titlebar">
       <div className="titlebar-brand">
         <IconBroadcast size={16} />
-        <span>PrismCast Studio</span>
-        <span
-          style={{
-            fontSize: 10,
-            fontWeight: 700,
-            padding: '1px 6px',
-            borderRadius: 999,
-            background: 'rgba(23, 212, 178, 0.14)',
-            color: 'var(--live)',
-            letterSpacing: '0.04em'
-          }}
-        >
-          RUST CORE
-        </span>
+        <span>PrismCast</span>
       </div>
 
       <div className="titlebar-center">{center}</div>

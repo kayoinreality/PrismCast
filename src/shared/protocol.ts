@@ -55,48 +55,60 @@ export interface DiscoveredHost extends Omit<HostAnnounce, 't' | 'v'> {
   lastSeen: number
 }
 
-// -------------------------------------------- Multistream & Dual Output (9:16)
+// -------------------------------------------- Destinos de transmissão (RTMP)
 
 export type CanvasOrientation = 'horizontal' | 'vertical'
 
-export type VerticalLayoutPreset =
-  | 'split-cam-top'
-  | 'blurred-backdrop'
-  | 'center-crop'
-  | 'pip-vertical'
+export type PlatformId = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'custom'
 
-export type StreamProvider = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'custom'
-
-export interface MultistreamTarget {
-  id: string
-  provider: StreamProvider
-  name: string
-  enabled: boolean
-  rtmpUrl: string
-  streamKey: string
-  /** Qual canvas alimenta este destino: Horizontal (16:9) ou Vertical (9:16 p/ TikTok & Shorts) */
-  orientation: CanvasOrientation
-  bitrateKbps: number
+/** Conta vinculada por login de verdade (OAuth). Só existe quando a plataforma deu um token. */
+export interface PlatformAccount {
+  login: string
+  displayName: string
+  avatarUrl: string
 }
 
-export interface MultistreamTargetStatus {
+/**
+ * Um lugar para onde a live vai.
+ *
+ * A chave de transmissão NUNCA vem para o renderer: ela fica criptografada no
+ * main (safeStorage) e só é lida na hora de abrir o FFmpeg. O renderer só sabe
+ * se ela existe (`hasKey`).
+ */
+export interface Destination {
   id: string
-  provider: StreamProvider
+  platform: PlatformId
   name: string
+  enabled: boolean
+  /** URL do servidor RTMP/RTMPS, sem a chave. */
+  server: string
+  hasKey: boolean
+  /** Qual canvas alimenta este destino: 16:9 (Twitch, YouTube, Kick) ou 9:16 (TikTok). */
   orientation: CanvasOrientation
+  bitrateKbps: number
+  account: PlatformAccount | null
+}
+
+export interface DestinationStatus {
+  id: string
   state: 'idle' | 'connecting' | 'live' | 'error'
   uptimeSec: number
-  bytesSent: number
-  lastError: string | null
+  error: string | null
 }
 
 export interface MultistreamStatus {
   active: boolean
   encoder: string
-  horizontalLive: boolean
-  verticalLive: boolean
-  targets: MultistreamTargetStatus[]
+  ffmpegFound: boolean
+  destinations: DestinationStatus[]
 }
+
+/** Login da Twitch pelo fluxo "device code": o usuário digita o código em twitch.tv/activate. */
+export type TwitchLoginState =
+  | { step: 'idle' }
+  | { step: 'code'; userCode: string; verificationUri: string; expiresAt: number }
+  | { step: 'done'; account: PlatformAccount }
+  | { step: 'error'; message: string }
 
 // ------------------------------------------ Gerenciamento de Cenas & Fontes (OBS Style)
 
@@ -104,12 +116,35 @@ export type SourceType =
   | 'screen_capture'
   | 'window_capture'
   | 'camera_input'
-  | 'audio_input'
-  | 'audio_output'
   | 'browser_source'
   | 'image_source'
   | 'color_source'
   | 'text_source'
+
+/** Configurações de cada tipo de fonte. Só os campos do tipo da fonte são usados. */
+export interface SourceSettings {
+  /** screen/window: id do desktopCapturer e o nome, para reencontrar a janela depois de reiniciar. */
+  captureId?: string
+  captureName?: string
+  /** câmera */
+  deviceId?: string
+  deviceLabel?: string
+  /** browser source: URL http(s) ou file:// e o tamanho da página renderizada */
+  url?: string
+  width?: number
+  height?: number
+  fps?: number
+  /** widget do kit que originou esta fonte (para mostrar o nome amigável) */
+  kitWidget?: string
+  /** imagem */
+  path?: string
+  /** cor / texto */
+  color?: string
+  text?: string
+  fontSize?: number
+  /** borda arredondada para câmera e imagem */
+  rounded?: boolean
+}
 
 export interface SourceTransform {
   /** Posição X normalizada (0..1) em relação ao canvas */
@@ -141,8 +176,7 @@ export interface SceneItem {
   verticalTransform: SourceTransform
   showOnHorizontal: boolean
   showOnVertical: boolean
-  /** Configurações específicas da fonte (deviceId, windowId, url, text, color, volume, etc.) */
-  settings: Record<string, any>
+  settings: SourceSettings
 }
 
 export interface Scene {
@@ -161,72 +195,52 @@ export interface StudioScenesState {
   transitionDurationMs: number
 }
 
-// ------------------------------------------ Sistema de Login & Plataformas de Streaming
+// -------------------------------------- Browser sources (widgets) renderizados fora da tela
 
-export type PlatformId = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'prismcast'
-
-export interface ConnectedAccount {
-  platform: PlatformId
-  username: string
-  displayName: string
-  avatarUrl: string
-  connected: boolean
-  rtmpUrl: string
-  streamKey: string
-  channelUrl?: string
-  connectedAt?: number
-}
-
-export interface UserProfile {
-  isLoggedIn: boolean
+export interface BrowserSourceSpec {
   id: string
-  name: string
-  email: string
-  avatarUrl: string
-  plan: 'free' | 'pro' | 'studio'
-  accounts: Record<PlatformId, ConnectedAccount>
-}
-
-// -------------------------------------- Dispositivos de Áudio e Vídeo do Sistema
-
-export interface MediaDeviceEntry {
-  deviceId: string
-  label: string
-  kind: 'audioinput' | 'audiooutput' | 'videoinput'
-  groupId: string
-}
-
-// -------------------------------------- Widgets & StreamElements Overlays
-
-export type WidgetKind =
-  | 'streamelements'
-  | 'alert-box'
-  | 'chat-overlay'
-  | 'goal-bar'
-  | 'viewer-counter'
-  | 'lower-third'
-  | 'custom-url'
-
-export interface StreamWidget {
-  id: string
-  name: string
-  kind: WidgetKind
-  enabled: boolean
   url: string
-  primaryText: string
-  secondaryText: string
-  accentColor: string
-  /** Posição normalizada (0..1) no canvas 16:9 */
+  width: number
+  height: number
+  fps: number
+}
+
+/** Pedaço da página que mudou: pixels BGRA (pré-multiplicados) do retângulo sujo. */
+export interface BrowserSourceFrame {
+  id: string
+  fullWidth: number
+  fullHeight: number
   x: number
   y: number
   width: number
   height: number
-  /** Posição normalizada (0..1) no canvas vertical 9:16 */
-  verticalX: number
-  verticalY: number
-  showOnHorizontal: boolean
-  showOnVertical: boolean
-  opacity: number
+  data: Uint8Array
+}
+
+// -------------------------------------- Kit de widgets (pasta com overlays HTML)
+
+export interface KitWidget {
+  /** nome do arquivo, ex. "comecando.html" */
+  file: string
+  name: string
+  description: string
+  /** file:// da página */
+  url: string
+  /** tamanho sugerido da fonte no canvas 1920x1080 */
+  width: number
+  height: number
+  /** tela cheia que cobre tudo (cena de pausa/abertura) ou overlay transparente */
+  role: 'scene' | 'overlay' | 'frame' | 'chat'
+  /** parâmetros de URL que a página entende, para o painel de propriedades */
+  params: Array<{ key: string; label: string; placeholder: string }>
+}
+
+export interface WidgetKit {
+  path: string
+  name: string
+  widgets: KitWidget[]
+  /** O kit traz o widget de alertas do StreamElements (que se instala no site deles). */
+  hasStreamElements: boolean
 }
 
 // ------------------------------------------------ Mixer de Áudio & Estúdio
@@ -247,12 +261,8 @@ export interface AudioMixerSettings {
 
 export interface StudioCompositorSettings {
   dualOutputEnabled: boolean
-  verticalLayout: VerticalLayoutPreset
-  webcamEnabled: boolean
-  webcamDeviceId: string | null
-  webcamPosition: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
-  webcamScale: number
-  webcamRound: boolean
+  /** Quadros por segundo do canvas e da saída RTMP. */
+  fps: 30 | 60
   privacyShieldActive: boolean
   privacyShieldTitle: string
   privacyShieldSubtitle: string

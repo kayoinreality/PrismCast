@@ -39,6 +39,10 @@
   --live-soft: rgba(23, 212, 178, 0.13);
   --live-line: rgba(23, 212, 178, 0.32);
 
+  /* vermelho de "no ar": convenção de estúdio, só para live/gravação */
+  --onair: #ff3b4f;
+  --onair-soft: rgba(255, 59, 79, 0.14);
+
   --danger: #ff5c72;
   --danger-soft: rgba(255, 92, 114, 0.13);
   --warning: #ffb454;

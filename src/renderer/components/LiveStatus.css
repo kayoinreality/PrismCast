@@ -1,0 +1,50 @@
+.live-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--r-full);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 12px;
+  font-weight: 580;
+  white-space: nowrap;
+  overflow: hidden;
+  max-width: 100%;
+}
+
+.live-status.is-live {
+  background: var(--onair-soft);
+  box-shadow: inset 0 0 0 1px rgba(255, 59, 79, 0.35);
+}
+
+.live-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--onair);
+  animation: pulse 1.6s ease-in-out infinite;
+  flex: none;
+}
+
+.live-status-label {
+  color: var(--onair);
+  letter-spacing: 0.06em;
+}
+
+.live-status-dim {
+  color: var(--text-muted);
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.live-status-rec {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--onair);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}

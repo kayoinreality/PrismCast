@@ -1,6 +1,7 @@
 import { join } from 'node:path'
 import { BrowserWindow, shell } from 'electron'
 import { CH } from '@shared/ipc'
+import { invalidateAllBrowserSources } from './browser-sources'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -25,12 +26,17 @@ export function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       // Autoplay do video do espectador sem exigir clique.
-      autoplayPolicy: 'no-user-gesture-required'
+      autoplayPolicy: 'no-user-gesture-required',
+      // O compositor desenha com timers: minimizado, o Chromium os reduziria a
+      // 1 por segundo e a live congelaria.
+      backgroundThrottling: false
     }
   })
   mainWindow = win
 
   win.once('ready-to-show', () => win.show())
+  // Recarregar a interface perde os quadros dos widgets: pede tudo de novo.
+  win.webContents.on('did-finish-load', () => invalidateAllBrowserSources())
 
   const emitMaximize = (): void => {
     if (!win.isDestroyed()) win.webContents.send(CH.appMaximizeChanged, win.isMaximized())

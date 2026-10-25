@@ -1,0 +1,63 @@
+.rail {
+  width: 76px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: var(--sp-2) var(--sp-2) var(--sp-3);
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.rail-spacer {
+  flex: 1;
+}
+
+.rail-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 9px 0 8px;
+  border-radius: var(--r-md);
+  color: var(--text-dim);
+  transition:
+    background var(--fast) var(--ease),
+    color var(--fast) var(--ease);
+}
+
+.rail-btn:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.rail-btn.is-active {
+  color: var(--text);
+  background: var(--surface-active);
+}
+
+.rail-btn.is-active .rail-icon {
+  color: var(--accent-hover);
+}
+
+.rail-icon {
+  position: relative;
+  display: flex;
+}
+
+.rail-dot {
+  position: absolute;
+  top: -2px;
+  right: -4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--onair);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
+.rail-label {
+  font-size: 11px;
+  font-weight: 560;
+}

@@ -9,12 +9,14 @@ import type {
   HostStartResult,
   NetInterface,
   DesktopSource,
+  OkResult,
   Unsubscribe,
   ViewerClosedInfo,
   ViewerConnectOptions,
   ViewerConnectResult
 } from '@shared/ipc'
 import type {
+  BrowserSourceFrame,
   CanvasOrientation,
   ChatMessage,
   ConnectedViewer,
@@ -22,11 +24,12 @@ import type {
   HostToViewer,
   HotkeyAction,
   MultistreamStatus,
-  MultistreamTarget,
   ReactionEvent,
   RecorderStatus,
   SourceKind,
-  ViewerToHost
+  TwitchLoginState,
+  ViewerToHost,
+  WidgetKit
 } from '@shared/protocol'
 
 function subscribe<A extends unknown[]>(
@@ -48,38 +51,36 @@ const api: Api = {
     close: () => ipcRenderer.send(CH.appClose),
     setAlwaysOnTop: (value) => ipcRenderer.invoke(CH.appAlwaysOnTop, value) as Promise<boolean>,
     onMaximizeChange: (cb) => subscribe<[boolean]>(CH.appMaximizeChanged, cb),
-    onHotkey: (cb) => subscribe<[HotkeyAction]>(CH.appHotkey, cb)
+    onHotkey: (cb) => subscribe<[HotkeyAction]>(CH.appHotkey, cb),
+    openExternal: (url) => ipcRenderer.send(CH.appOpenExternal, url),
+    showInFolder: (path) => ipcRenderer.send(CH.appShowInFolder, path)
   },
   sources: {
     list: () => ipcRenderer.invoke(CH.sourcesList) as Promise<DesktopSource[]>,
     select: (sourceId, withAudio) =>
       ipcRenderer.invoke(CH.sourcesSelect, sourceId, withAudio) as Promise<void>
   },
-  scenes: {
-    getState: () => ipcRenderer.invoke(CH.scenesGetState),
-    createScene: (name) => ipcRenderer.invoke(CH.scenesCreate, name),
-    updateScene: (sceneId, patch) => ipcRenderer.invoke(CH.scenesUpdate, sceneId, patch),
-    deleteScene: (sceneId) => ipcRenderer.invoke(CH.scenesDelete, sceneId),
-    selectScene: (sceneId) => ipcRenderer.invoke(CH.scenesSelect, sceneId),
-    duplicateScene: (sceneId) => ipcRenderer.invoke(CH.scenesDuplicate, sceneId),
-    setStudioMode: (enabled) => ipcRenderer.invoke(CH.scenesSetStudioMode, enabled),
-    transition: (type, durationMs) => ipcRenderer.invoke(CH.scenesTransition, type, durationMs),
-    addItem: (sceneId, item) => ipcRenderer.invoke(CH.scenesAddItem, sceneId, item),
-    updateItem: (sceneId, itemId, patch) =>
-      ipcRenderer.invoke(CH.scenesUpdateItem, sceneId, itemId, patch),
-    removeItem: (sceneId, itemId) => ipcRenderer.invoke(CH.scenesRemoveItem, sceneId, itemId),
-    reorderItem: (sceneId, itemId, newIndex) =>
-      ipcRenderer.invoke(CH.scenesReorderItem, sceneId, itemId, newIndex)
+  destinations: {
+    setKey: (id, key) => ipcRenderer.invoke(CH.destSetKey, id, key) as Promise<OkResult>,
+    twitchLogin: (id) => ipcRenderer.invoke(CH.destTwitchLogin, id) as Promise<void>,
+    twitchCancel: () => ipcRenderer.send(CH.destTwitchCancel),
+    onTwitchLogin: (cb) => subscribe<[TwitchLoginState]>(CH.destTwitchState, cb),
+    unlink: (id) => ipcRenderer.invoke(CH.destUnlink, id) as Promise<void>
   },
-  auth: {
-    getProfile: () => ipcRenderer.invoke(CH.authGetProfile),
-    updateProfile: (patch) => ipcRenderer.invoke(CH.authUpdateProfile, patch),
-    connectPlatform: (platform, credentials) =>
-      ipcRenderer.invoke(CH.authConnectPlatform, platform, credentials),
-    disconnectPlatform: (platform) => ipcRenderer.invoke(CH.authDisconnectPlatform, platform)
+  browserSources: {
+    sync: (specs) => ipcRenderer.send(CH.bsSync, specs),
+    reload: (id) => ipcRenderer.send(CH.bsReload, id),
+    onFrame: (cb) => subscribe<[BrowserSourceFrame]>(CH.bsFrame, cb),
+    ack: (id) => ipcRenderer.send(CH.bsAck, id)
   },
-  media: {
-    listDevices: () => ipcRenderer.invoke(CH.mediaListDevices)
+  kit: {
+    load: (path) => ipcRenderer.invoke(CH.kitLoad, path) as Promise<WidgetKit | null>,
+    pickFolder: () => ipcRenderer.invoke(CH.kitPickFolder) as Promise<string | null>
+  },
+  files: {
+    pickImage: () => ipcRenderer.invoke(CH.filesPickImage) as Promise<string | null>,
+    pickHtml: () => ipcRenderer.invoke(CH.filesPickHtml) as Promise<string | null>,
+    readImage: (path) => ipcRenderer.invoke(CH.filesReadImage, path) as Promise<string | null>
   },
   host: {
     start: (opts: HostStartOptions) =>
@@ -112,10 +113,10 @@ const api: Api = {
   },
   multistream: {
     status: () => ipcRenderer.invoke(CH.multistreamStatus) as Promise<MultistreamStatus>,
-    start: (targets: MultistreamTarget[], fps: number) =>
-      ipcRenderer.invoke(CH.multistreamStart, targets, fps) as Promise<{
+    start: (fps: number) =>
+      ipcRenderer.invoke(CH.multistreamStart, fps) as Promise<{
         ok: boolean
-        status?: MultistreamStatus
+        status: MultistreamStatus
         error?: string
       }>,
     pushChunk: (orientation: CanvasOrientation, chunk: Uint8Array) =>
@@ -134,6 +135,7 @@ const api: Api = {
     setReplayBuffer: (enabled: boolean, seconds: number) =>
       ipcRenderer.invoke(CH.recorderSetReplay, enabled, seconds) as Promise<RecorderStatus>,
     pushChunk: (chunk: Uint8Array) => ipcRenderer.send(CH.recorderPushChunk, chunk),
+    resetStream: () => ipcRenderer.send(CH.recorderReset),
     saveReplay: () =>
       ipcRenderer.invoke(CH.recorderSaveReplay) as Promise<{
         ok: boolean
@@ -152,7 +154,8 @@ const api: Api = {
   },
   settings: {
     get: () => ipcRenderer.invoke(CH.settingsGet) as Promise<AppSettings>,
-    set: (patch) => ipcRenderer.invoke(CH.settingsSet, patch) as Promise<AppSettings>
+    set: (patch) => ipcRenderer.invoke(CH.settingsSet, patch) as Promise<AppSettings>,
+    onChanged: (cb) => subscribe<[AppSettings]>(CH.settingsChanged, cb)
   }
 }
 

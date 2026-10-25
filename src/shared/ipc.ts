@@ -1,33 +1,31 @@
 /**
- * Superfície de IPC entre a interface do PrismCast Studio e o motor nativo Rust / Main.
+ * Superfície de IPC entre a interface do PrismCast Studio e o processo main.
  */
 
 import type { QualitySettings, PresetId } from './quality'
 import type {
   AudioMixerSettings,
+  BrowserSourceFrame,
+  BrowserSourceSpec,
   CanvasOrientation,
   ChatMessage,
-  ConnectedAccount,
   ConnectedViewer,
+  Destination,
   DiscoveredHost,
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
-  MediaDeviceEntry,
   MultistreamStatus,
-  MultistreamTarget,
   PlatformId,
   ReactionEvent,
   RecorderStatus,
   RejectReason,
-  Scene,
-  SceneItem,
   SourceKind,
-  StreamWidget,
   StudioCompositorSettings,
   StudioScenesState,
-  UserProfile,
-  ViewerToHost
+  TwitchLoginState,
+  ViewerToHost,
+  WidgetKit
 } from './protocol'
 
 export interface DesktopSource {
@@ -44,8 +42,6 @@ export interface AppInfo {
   version: string
   hostname: string
   isPackaged: boolean
-  rustEngineActive?: boolean
-  hardwareEncoder?: string
 }
 
 export interface HostStartOptions {
@@ -97,6 +93,7 @@ export interface FirewallStatus {
 }
 
 export interface AppSettings {
+  schemaVersion: number
   hostName: string
   viewerName: string
   quality: QualitySettings
@@ -107,10 +104,12 @@ export interface AppSettings {
   audioMixer: AudioMixerSettings
   studio: StudioCompositorSettings
   hotkeys: HotkeyBindings
-  multistreamTargets: MultistreamTarget[]
-  widgets: StreamWidget[]
+  destinations: Destination[]
   scenes: StudioScenesState
-  profile: UserProfile
+  /** Client ID de um app da Twitch (dev.twitch.tv) para o login "Entrar com a Twitch". */
+  twitchClientId: string
+  /** Pasta do kit de widgets (overlays HTML), ex. E:\kayoinreality-kit */
+  kitPath: string | null
 }
 
 export interface ViewerClosedInfo {
@@ -119,6 +118,8 @@ export interface ViewerClosedInfo {
 }
 
 export type Unsubscribe = () => void
+
+export type OkResult = { ok: true } | { ok: false; error: string }
 
 export interface Api {
   app: {
@@ -129,36 +130,37 @@ export interface Api {
     setAlwaysOnTop(value: boolean): Promise<boolean>
     onMaximizeChange(cb: (maximized: boolean) => void): Unsubscribe
     onHotkey(cb: (action: HotkeyAction) => void): Unsubscribe
+    openExternal(url: string): void
+    showInFolder(path: string): void
   }
   sources: {
     list(): Promise<DesktopSource[]>
     select(sourceId: string, withAudio: boolean): Promise<void>
   }
-  scenes: {
-    getState(): Promise<StudioScenesState>
-    createScene(name: string): Promise<Scene>
-    updateScene(sceneId: string, patch: Partial<Scene>): Promise<Scene>
-    deleteScene(sceneId: string): Promise<void>
-    selectScene(sceneId: string): Promise<void>
-    duplicateScene(sceneId: string): Promise<Scene>
-    setStudioMode(enabled: boolean): Promise<boolean>
-    transition(type: 'cut' | 'fade', durationMs?: number): Promise<void>
-    addItem(sceneId: string, item: Omit<SceneItem, 'id'>): Promise<SceneItem>
-    updateItem(sceneId: string, itemId: string, patch: Partial<SceneItem>): Promise<SceneItem>
-    removeItem(sceneId: string, itemId: string): Promise<void>
-    reorderItem(sceneId: string, itemId: string, newIndex: number): Promise<void>
+  destinations: {
+    /** Salva (criptografada) a chave de transmissão. Chave vazia apaga. */
+    setKey(id: string, key: string): Promise<OkResult>
+    twitchLogin(destinationId: string): Promise<void>
+    twitchCancel(): void
+    onTwitchLogin(cb: (state: TwitchLoginState) => void): Unsubscribe
+    /** Desvincula a conta (apaga token e chave). */
+    unlink(id: string): Promise<void>
   }
-  auth: {
-    getProfile(): Promise<UserProfile>
-    updateProfile(patch: Partial<UserProfile>): Promise<UserProfile>
-    connectPlatform(
-      platform: PlatformId,
-      credentials?: { username?: string; streamKey?: string; rtmpUrl?: string }
-    ): Promise<ConnectedAccount>
-    disconnectPlatform(platform: PlatformId): Promise<void>
+  browserSources: {
+    sync(specs: BrowserSourceSpec[]): void
+    reload(id: string): void
+    onFrame(cb: (frame: BrowserSourceFrame) => void): Unsubscribe
+    /** Confirma que o quadro foi desenhado; libera o próximo daquela fonte. */
+    ack(id: string): void
   }
-  media: {
-    listDevices(): Promise<MediaDeviceEntry[]>
+  kit: {
+    load(path: string | null): Promise<WidgetKit | null>
+    pickFolder(): Promise<string | null>
+  }
+  files: {
+    pickImage(): Promise<string | null>
+    pickHtml(): Promise<string | null>
+    readImage(path: string): Promise<string | null>
   }
   host: {
     start(opts: HostStartOptions): Promise<HostStartResult>
@@ -188,10 +190,7 @@ export interface Api {
   }
   multistream: {
     status(): Promise<MultistreamStatus>
-    start(
-      targets: MultistreamTarget[],
-      fps: number
-    ): Promise<{ ok: boolean; status?: MultistreamStatus; error?: string }>
+    start(fps: number): Promise<{ ok: boolean; status: MultistreamStatus; error?: string }>
     pushChunk(orientation: CanvasOrientation, chunk: Uint8Array): void
     stop(): Promise<MultistreamStatus>
   }
@@ -201,6 +200,7 @@ export interface Api {
     stop(): Promise<RecorderStatus>
     setReplayBuffer(enabled: boolean, seconds: number): Promise<RecorderStatus>
     pushChunk(chunk: Uint8Array): void
+    resetStream(): void
     saveReplay(): Promise<{
       ok: boolean
       path?: string
@@ -218,6 +218,69 @@ export interface Api {
   settings: {
     get(): Promise<AppSettings>
     set(patch: Partial<AppSettings>): Promise<AppSettings>
+    onChanged(cb: (settings: AppSettings) => void): Unsubscribe
+  }
+}
+
+/** Endereços de servidor conhecidos. Kick e TikTok mudam por conta: o usuário cola o dele. */
+export const PLATFORM_INFO: Record<
+  PlatformId,
+  {
+    label: string
+    defaultServer: string
+    orientation: CanvasOrientation
+    bitrateKbps: number
+    /** onde o usuário encontra a chave */
+    keyUrl: string
+    keyHint: string
+    /** o servidor também precisa ser copiado do painel da plataforma */
+    serverFromDashboard: boolean
+  }
+> = {
+  twitch: {
+    label: 'Twitch',
+    defaultServer: 'rtmp://live.twitch.tv/app',
+    orientation: 'horizontal',
+    bitrateKbps: 6000,
+    keyUrl: 'https://dashboard.twitch.tv/settings/stream',
+    keyHint: 'formato live_123456789_…',
+    serverFromDashboard: false
+  },
+  youtube: {
+    label: 'YouTube',
+    defaultServer: 'rtmp://a.rtmp.youtube.com/live2',
+    orientation: 'horizontal',
+    bitrateKbps: 9000,
+    keyUrl: 'https://studio.youtube.com/channel/UC/livestreaming',
+    keyHint: 'formato xxxx-xxxx-xxxx-xxxx-xxxx',
+    serverFromDashboard: false
+  },
+  kick: {
+    label: 'Kick',
+    defaultServer: 'rtmps://fa723fc1b171.global-contribute.live-video.net/app',
+    orientation: 'horizontal',
+    bitrateKbps: 8000,
+    keyUrl: 'https://kick.com/dashboard/settings/stream',
+    keyHint: 'começa com sk_',
+    serverFromDashboard: true
+  },
+  tiktok: {
+    label: 'TikTok',
+    defaultServer: '',
+    orientation: 'vertical',
+    bitrateKbps: 4500,
+    keyUrl: 'https://livecenter.tiktok.com/producer',
+    keyHint: 'servidor e chave mudam a cada live',
+    serverFromDashboard: true
+  },
+  custom: {
+    label: 'RTMP personalizado',
+    defaultServer: '',
+    orientation: 'horizontal',
+    bitrateKbps: 6000,
+    keyUrl: '',
+    keyHint: 'chave do seu servidor',
+    serverFromDashboard: true
   }
 }
 
@@ -229,9 +292,29 @@ export const CH = {
   appAlwaysOnTop: 'app:always-on-top',
   appMaximizeChanged: 'app:maximize-changed',
   appHotkey: 'app:hotkey',
+  appOpenExternal: 'app:open-external',
+  appShowInFolder: 'app:show-in-folder',
 
   sourcesList: 'sources:list',
   sourcesSelect: 'sources:select',
+
+  destSetKey: 'dest:set-key',
+  destTwitchLogin: 'dest:twitch-login',
+  destTwitchCancel: 'dest:twitch-cancel',
+  destTwitchState: 'dest:twitch-state',
+  destUnlink: 'dest:unlink',
+
+  bsSync: 'bs:sync',
+  bsReload: 'bs:reload',
+  bsFrame: 'bs:frame',
+  bsAck: 'bs:ack',
+
+  kitLoad: 'kit:load',
+  kitPickFolder: 'kit:pick-folder',
+
+  filesPickImage: 'files:pick-image',
+  filesPickHtml: 'files:pick-html',
+  filesReadImage: 'files:read-image',
 
   hostStart: 'host:start',
   hostStop: 'host:stop',
@@ -266,6 +349,7 @@ export const CH = {
   recorderStop: 'recorder:stop',
   recorderSetReplay: 'recorder:set-replay',
   recorderPushChunk: 'recorder:push-chunk',
+  recorderReset: 'recorder:reset',
   recorderSaveReplay: 'recorder:save-replay',
 
   netInterfaces: 'net:interfaces',
@@ -273,26 +357,7 @@ export const CH = {
   firewallStatus: 'firewall:status',
   firewallAuthorize: 'firewall:authorize',
 
-  scenesGetState: 'scenes:get-state',
-  scenesCreate: 'scenes:create',
-  scenesUpdate: 'scenes:update',
-  scenesDelete: 'scenes:delete',
-  scenesSelect: 'scenes:select',
-  scenesDuplicate: 'scenes:duplicate',
-  scenesSetStudioMode: 'scenes:set-studio-mode',
-  scenesTransition: 'scenes:transition',
-  scenesAddItem: 'scenes:add-item',
-  scenesUpdateItem: 'scenes:update-item',
-  scenesRemoveItem: 'scenes:remove-item',
-  scenesReorderItem: 'scenes:reorder-item',
-
-  authGetProfile: 'auth:get-profile',
-  authUpdateProfile: 'auth:update-profile',
-  authConnectPlatform: 'auth:connect-platform',
-  authDisconnectPlatform: 'auth:disconnect-platform',
-
-  mediaListDevices: 'media:list-devices',
-
   settingsGet: 'settings:get',
-  settingsSet: 'settings:set'
+  settingsSet: 'settings:set',
+  settingsChanged: 'settings:changed'
 } as const

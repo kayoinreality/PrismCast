@@ -1,4 +1,5 @@
-import { createWriteStream, mkdirSync, writeFileSync, type WriteStream } from 'node:fs'
+import { createWriteStream, mkdirSync, unlink, writeFileSync, type WriteStream } from 'node:fs'
+import { spawn } from 'node:child_process'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import type { RecorderStatus } from '@shared/protocol'
@@ -6,6 +7,25 @@ import type { RecorderStatus } from '@shared/protocol'
 interface ReplayChunk {
   timestampMs: number
   data: Buffer
+}
+
+/**
+ * O MediaRecorder entrega WebM; o Windows abre MP4 em qualquer lugar. Remuxa sem
+ * recodificar o video (rapido) e so apaga o WebM se o MP4 saiu inteiro.
+ */
+function remuxToMp4(webmPath: string): void {
+  const mp4 = webmPath.replace(/\.webm$/i, '.mp4')
+  const proc = spawn(
+    'ffmpeg',
+    ['-hide_banner', '-loglevel', 'error', '-y', '-i', webmPath, '-c:v', 'copy', '-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', mp4],
+    { windowsHide: true, stdio: 'ignore' }
+  )
+  proc.on('error', () => {
+    /* sem FFmpeg: fica o WebM */
+  })
+  proc.on('exit', (code) => {
+    if (code === 0) unlink(webmPath, () => {})
+  })
 }
 
 function formatTimestamp(): string {
@@ -62,8 +82,11 @@ export class RecorderManager {
 
   stopRecording(): RecorderStatus {
     if (this.recStream) {
+      const path = this.recPath
       try {
-        this.recStream.end()
+        this.recStream.end(() => {
+          if (path) remuxToMp4(path)
+        })
       } catch {
         /* fechado */
       }
@@ -126,8 +149,9 @@ export class RecorderManager {
       )
       const buffers = [this.initSegment, ...this.replayChunks.map((c) => c.data)]
       writeFileSync(path, Buffer.concat(buffers))
-      this.lastSavedReplay = path
-      return { ok: true, path, status: this.status() }
+      remuxToMp4(path)
+      this.lastSavedReplay = path.replace(/\.webm$/i, '.mp4')
+      return { ok: true, path: this.lastSavedReplay, status: this.status() }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
     }
