@@ -3,6 +3,7 @@ import {
   IconCamera,
   IconGlobe,
   IconImage,
+  IconMic,
   IconMonitor,
   IconPalette,
   IconText,
@@ -25,5 +26,7 @@ export function SourceIcon({ type, size = 15 }: { type: SourceType; size?: numbe
       return <IconPalette size={size} />
     case 'text_source':
       return <IconText size={size} />
+    case 'audio_input':
+      return <IconMic size={size} />
   }
 }

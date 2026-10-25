@@ -27,6 +27,8 @@ import type {
   HotkeyAction,
   KitConfig,
   LiveInfo,
+  MultiChatEvent,
+  MultiChatStatus,
   MultistreamStatus,
   ReactionEvent,
   RecorderStatus,
@@ -104,7 +106,10 @@ const api: Api = {
     openPopout: () => ipcRenderer.send(CH.chatOpenPopout),
     closePopout: () => ipcRenderer.send(CH.chatClosePopout),
     isPopoutOpen: () => ipcRenderer.invoke(CH.chatIsPopoutOpen) as Promise<boolean>,
-    onPopoutChange: (cb) => subscribe<[boolean]>(CH.chatPopoutChanged, cb)
+    onPopoutChange: (cb) => subscribe<[boolean]>(CH.chatPopoutChanged, cb),
+    onMultichat: (cb) => subscribe<[MultiChatEvent]>(CH.multichatEvent, cb),
+    multichatStatus: () => ipcRenderer.invoke(CH.multichatStatus) as Promise<MultiChatStatus[]>,
+    reconnectMultichat: () => ipcRenderer.send(CH.multichatReconnect)
   },
   files: {
     pickImage: () => ipcRenderer.invoke(CH.filesPickImage) as Promise<string | null>,

@@ -206,6 +206,43 @@ function ParamControl({
   }
 }
 
+/** Microfone na cena: escolhe qual canal do mixer esta cena liga. Volume e filtros ficam no mixer. */
+function MicSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
+  const { settings } = useStudio()
+  const mics = settings.audioMixer.channels.filter((c) => c.kind === 'mic')
+  const current = mics.find((c) => c.id === item.settings.audioChannelId)
+  return (
+    <div className="insp-section">
+      <Field label="Microfone do mixer">
+        <select
+          className="select"
+          value={current?.id ?? ''}
+          onChange={(e) => {
+            const ch = mics.find((c) => c.id === e.target.value)
+            if (ch) onPatch({ settings: { audioChannelId: ch.id }, name: ch.name })
+          }}
+        >
+          {!current && <option value="">Escolha um microfone</option>}
+          {mics.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Toggle
+        label="Ligado nesta cena"
+        hint={item.visible ? 'O som vai para a live enquanto esta cena estiver no ar' : 'Desligado: a cena fica sem este microfone'}
+        checked={item.visible}
+        onChange={(v) => onPatch({ visible: v })}
+      />
+      <span className="hint">
+        Microfone só toca nas cenas que têm esta fonte. Volume, mudo e filtros ficam no mixer (Áudio).
+      </span>
+    </div>
+  )
+}
+
 function WidgetSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
   const { kit, engine } = useStudio()
   const s = item.settings
@@ -409,6 +446,8 @@ export function Inspector({
           </div>
         )}
 
+        {item.type === 'audio_input' && <MicSection item={item} onPatch={patch} />}
+
         {item.type === 'text_source' && (
           <div className="insp-section">
             <Field label="Texto">
@@ -423,34 +462,38 @@ export function Inspector({
           </div>
         )}
 
-        <div className="insp-section">
-          <div className="insp-sub">Posição no {vertical ? '9:16' : '16:9'}</div>
-          <div className="insp-row">
-            <PxInput label="X" value={tf.x * canvas.width} onChange={(v) => setTf({ x: v / canvas.width })} />
-            <PxInput label="Y" value={tf.y * canvas.height} onChange={(v) => setTf({ y: v / canvas.height })} />
-          </div>
-          <div className="insp-row">
-            <PxInput label="Largura" value={tf.width * canvas.width} onChange={(v) => setTf({ width: Math.max(10, v) / canvas.width })} />
-            <PxInput label="Altura" value={tf.height * canvas.height} onChange={(v) => setTf({ height: Math.max(10, v) / canvas.height })} />
-          </div>
-          <div className="insp-chips">
-            <button onClick={fill}>Tela cheia</button>
-            <button onClick={center}>Centralizar</button>
-            {vertical && (
-              <>
-                <button onClick={() => band(0, 0.5)}>Metade de cima</button>
-                <button onClick={() => band(0.5, 0.5)}>Metade de baixo</button>
-                <button onClick={() => band(0.34, 0.316)}>Faixa 16:9</button>
-              </>
-            )}
-          </div>
-        </div>
+        {item.type !== 'audio_input' && (
+          <>
+            <div className="insp-section">
+              <div className="insp-sub">Posição no {vertical ? '9:16' : '16:9'}</div>
+              <div className="insp-row">
+                <PxInput label="X" value={tf.x * canvas.width} onChange={(v) => setTf({ x: v / canvas.width })} />
+                <PxInput label="Y" value={tf.y * canvas.height} onChange={(v) => setTf({ y: v / canvas.height })} />
+              </div>
+              <div className="insp-row">
+                <PxInput label="Largura" value={tf.width * canvas.width} onChange={(v) => setTf({ width: Math.max(10, v) / canvas.width })} />
+                <PxInput label="Altura" value={tf.height * canvas.height} onChange={(v) => setTf({ height: Math.max(10, v) / canvas.height })} />
+              </div>
+              <div className="insp-chips">
+                <button onClick={fill}>Tela cheia</button>
+                <button onClick={center}>Centralizar</button>
+                {vertical && (
+                  <>
+                    <button onClick={() => band(0, 0.5)}>Metade de cima</button>
+                    <button onClick={() => band(0.5, 0.5)}>Metade de baixo</button>
+                    <button onClick={() => band(0.34, 0.316)}>Faixa 16:9</button>
+                  </>
+                )}
+              </div>
+            </div>
 
-        <div className="insp-section">
-          <Toggle label="Aparece no 16:9" checked={item.showOnHorizontal} onChange={(v) => patch({ showOnHorizontal: v })} />
-          <Toggle label="Aparece no 9:16" checked={item.showOnVertical} onChange={(v) => patch({ showOnVertical: v })} />
-          <Toggle label="Travar posição" checked={item.locked} onChange={(v) => patch({ locked: v })} />
-        </div>
+            <div className="insp-section">
+              <Toggle label="Aparece no 16:9" checked={item.showOnHorizontal} onChange={(v) => patch({ showOnHorizontal: v })} />
+              <Toggle label="Aparece no 9:16" checked={item.showOnVertical} onChange={(v) => patch({ showOnVertical: v })} />
+              <Toggle label="Travar posição" checked={item.locked} onChange={(v) => patch({ locked: v })} />
+            </div>
+          </>
+        )}
       </div>
     </div>
   )

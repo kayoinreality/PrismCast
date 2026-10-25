@@ -20,6 +20,8 @@ import type {
   HotkeyBindings,
   KitConfig,
   LiveInfo,
+  MultiChatEvent,
+  MultiChatStatus,
   MultistreamStatus,
   PlatformId,
   ReactionEvent,
@@ -194,6 +196,10 @@ export interface Api {
     closePopout(): void
     isPopoutOpen(): Promise<boolean>
     onPopoutChange(cb: (open: boolean) => void): Unsubscribe
+    /** YouTube e Kick (a Twitch o renderer lê sozinho pelo IRC) */
+    onMultichat(cb: (event: MultiChatEvent) => void): Unsubscribe
+    multichatStatus(): Promise<MultiChatStatus[]>
+    reconnectMultichat(): void
   }
   files: {
     pickImage(): Promise<string | null>
@@ -375,6 +381,13 @@ export const CH = {
   chatClosePopout: 'chat:close-popout',
   chatIsPopoutOpen: 'chat:is-popout-open',
   chatPopoutChanged: 'chat:popout-changed',
+  multichatEvent: 'multichat:event',
+  multichatStatus: 'multichat:status',
+  multichatReconnect: 'multichat:reconnect',
+
+  /** só as páginas de widget (preload/widget.ts) */
+  widgetEvent: 'widget:event',
+  widgetState: 'widget:state',
 
   filesPickImage: 'files:pick-image',
   filesPickHtml: 'files:pick-html',

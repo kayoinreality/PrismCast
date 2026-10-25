@@ -1,12 +1,15 @@
+import type { ChatFragment, ChatPlatform } from '@shared/protocol'
+
 /**
  * Leitor do chat da Twitch pelo IRC em WebSocket, entrando anônimo (justinfan):
  * não precisa de login para ler. Escrever vai pela API (main), com o login.
  */
 
-export type Fragment = { t: 'text'; text: string } | { t: 'emote'; id: string; name: string }
+export type Fragment = ChatFragment
 
 export interface ChatLine {
   id: string
+  platform: ChatPlatform
   kind: 'msg' | 'event' | 'system'
   user: string
   name: string
@@ -23,10 +26,10 @@ export interface ChatLine {
 export type ChatState = 'connecting' | 'connected' | 'error'
 
 const MAX_LINES = 400
-const PALETTE = ['#ff7a90', '#ffb547', '#7fd1ff', '#b7a6ff', '#7ee0b5', '#ff9fc6', '#f3eee4', '#9ad0ff']
+export const PALETTE = ['#ff7a90', '#ffb547', '#7fd1ff', '#b7a6ff', '#7ee0b5', '#ff9fc6', '#f3eee4', '#9ad0ff']
 
 /** Cores escuras ficam ilegíveis no tema escuro: clareia. */
-function legible(hex: string | undefined, name: string): string {
+export function legible(hex: string | undefined, name: string): string {
   if (!hex || !/^#[0-9a-f]{6}$/i.test(hex)) {
     let h = 0
     for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0
@@ -87,7 +90,11 @@ function fragments(text: string, emotes: string | undefined): Fragment[] {
   let i = 0
   for (const s of spots) {
     if (s.a > i) out.push({ t: 'text', text: chars.slice(i, s.a).join('') })
-    out.push({ t: 'emote', id: s.id, name: chars.slice(s.a, s.b + 1).join('') })
+    out.push({
+      t: 'emote',
+      url: `https://static-cdn.jtvnw.net/emoticons/v2/${s.id}/default/dark/1.0`,
+      name: chars.slice(s.a, s.b + 1).join('')
+    })
     i = s.b + 1
   }
   if (i < chars.length) out.push({ t: 'text', text: chars.slice(i).join('') })
@@ -137,6 +144,7 @@ export class TwitchChat {
   private system(text: string): void {
     this.push({
       id: `sys-${Date.now()}-${Math.random()}`,
+      platform: 'twitch',
       kind: 'system',
       user: '',
       name: '',
@@ -202,6 +210,7 @@ export class TwitchChat {
         const name = m.tags['display-name'] || m.prefix
         this.push({
           id: m.tags.id || `${Date.now()}-${Math.random()}`,
+          platform: 'twitch',
           kind: m.tags['msg-id'] === 'highlighted-message' || m.tags.bits ? 'event' : 'msg',
           user: m.prefix.toLowerCase(),
           name,
@@ -220,6 +229,7 @@ export class TwitchChat {
         const name = m.tags['display-name'] || m.tags.login || ''
         this.push({
           id: m.tags.id || `${Date.now()}-${Math.random()}`,
+          platform: 'twitch',
           kind: 'event',
           user: (m.tags.login || '').toLowerCase(),
           name,

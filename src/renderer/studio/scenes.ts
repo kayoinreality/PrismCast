@@ -1,4 +1,5 @@
 import type {
+  AudioChannel,
   KitWidget,
   Scene,
   SceneItem,
@@ -26,7 +27,8 @@ export const SOURCE_LABEL: Record<SourceType, string> = {
   browser_source: 'Widget / Navegador',
   image_source: 'Imagem',
   color_source: 'Cor',
-  text_source: 'Texto'
+  text_source: 'Texto',
+  audio_input: 'Microfone'
 }
 
 /** A cena que o editor mexe: no modo estúdio é a prévia; fora dele, a que está no ar. */
@@ -153,6 +155,38 @@ function defaultVertical(type: SourceType, tf: SourceTransform): SourceTransform
   const aspect = (tf.height * 1080) / (tf.width * 1920)
   const height = Math.min(0.9, (0.9 * 1080 * aspect) / 1920)
   return { x: 0.05, y: 0.05, width: 0.9, height, zIndex: 0 }
+}
+
+/** Fonte de som (microfone): não tem imagem, só liga o canal do mixer nesta cena. */
+export function isAudioItem(item: SceneItem): boolean {
+  return item.type === 'audio_input'
+}
+
+export function audioItem(ch: AudioChannel): SceneItem {
+  return { ...makeItem('audio_input', ch.name, { audioChannelId: ch.id }), locked: true }
+}
+
+/** Microfones que a cena liga (fonte visível = vai para a live). */
+export function sceneMics(scene: Scene | null | undefined, onlyVisible = true): Set<string> {
+  const out = new Set<string>()
+  for (const it of scene?.items ?? []) {
+    if (it.type === 'audio_input' && it.settings.audioChannelId && (it.visible || !onlyVisible)) {
+      out.add(it.settings.audioChannelId)
+    }
+  }
+  return out
+}
+
+/** Tira de todas as cenas as fontes de um canal que saiu do mixer. */
+export function removeAudioChannelItems(st: StudioScenesState, channelId: string): StudioScenesState {
+  return {
+    ...st,
+    scenes: st.scenes.map((s) =>
+      s.items.some((it) => it.type === 'audio_input' && it.settings.audioChannelId === channelId)
+        ? normalizeZ({ ...s, items: s.items.filter((it) => !(it.type === 'audio_input' && it.settings.audioChannelId === channelId)) })
+        : s
+    )
+  }
 }
 
 export function addItem(st: StudioScenesState, sceneId: string, item: SceneItem): StudioScenesState {

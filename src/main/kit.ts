@@ -30,7 +30,13 @@ const KNOWN: Record<string, Known> = {
     restartOnShow: true,
     params: [
       { key: 'min', label: 'Contagem', type: 'number', placeholder: '5', min: 1, max: 120, unit: 'min' },
-      { key: 'jogo', label: 'Jogo de hoje', type: 'text', placeholder: 'o jogo dos textos do kit' }
+      {
+        key: 'jogo',
+        label: 'Jogo de hoje',
+        hint: 'Vazio = segue a categoria da live (muda sozinho ao trocar o jogo)',
+        type: 'text',
+        placeholder: 'a categoria da live'
+      }
     ]
   },
   'volto-ja.html': {
@@ -40,7 +46,15 @@ const KNOWN: Record<string, Known> = {
     height: 1080,
     role: 'scene',
     restartOnShow: true,
-    params: [{ key: 'jogo', label: 'Jogo/assunto', type: 'text', placeholder: 'o jogo dos textos do kit' }]
+    params: [
+      {
+        key: 'jogo',
+        label: 'Jogo/assunto',
+        hint: 'Vazio = segue a categoria da live',
+        type: 'text',
+        placeholder: 'a categoria da live'
+      }
+    ]
   },
   'encerrando.html': {
     name: 'Encerrando',
@@ -110,13 +124,19 @@ const KNOWN: Record<string, Known> = {
     params: [{ key: 'nome', label: 'Etiqueta com o nome', type: 'toggle', on: '', off: '0', defaultOn: true }]
   },
   'chat.html': {
-    name: 'Chat da Twitch',
-    description: 'Chat no estilo do canal. As mensagens antigas somem sozinhas.',
+    name: 'Chat (multichat)',
+    description: 'Twitch, YouTube e Kick juntos no estilo do canal. As mensagens antigas somem sozinhas.',
     width: 520,
     height: 900,
     role: 'chat',
     params: [
-      { key: 'canal', label: 'Canal', type: 'text', placeholder: 'o canal dos textos do kit' },
+      {
+        key: 'canal',
+        label: 'Canal da Twitch',
+        hint: 'YouTube e Kick: no chat do app, em Opções do chat',
+        type: 'text',
+        placeholder: 'o canal dos textos do kit'
+      },
       { key: 'sumir', label: 'Mensagem some depois de', type: 'select', options: SUMIR },
       { key: 'max', label: 'Máximo de mensagens na tela', type: 'number', placeholder: '8', min: 1, max: 40 },
       { key: 'fundo', label: 'Fundo escuro sólido', type: 'toggle', on: '1', off: '', defaultOn: false }

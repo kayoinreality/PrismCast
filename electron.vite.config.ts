@@ -11,7 +11,11 @@ export default defineConfig({
   preload: {
     plugins: [externalizeDepsPlugin()],
     resolve: { alias: { '@shared': resolve('src/shared') } },
-    build: { rollupOptions: { input: { index: resolve('src/preload/index.ts') } } }
+    build: {
+      rollupOptions: {
+        input: { index: resolve('src/preload/index.ts'), widget: resolve('src/preload/widget.ts') }
+      }
+    }
   },
   renderer: {
     root: resolve('src/renderer'),

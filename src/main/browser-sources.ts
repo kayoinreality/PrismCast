@@ -1,6 +1,7 @@
+import { join } from 'node:path'
 import { BrowserWindow } from 'electron'
 import { CH } from '@shared/ipc'
-import type { BrowserSourceFrame, BrowserSourceSpec } from '@shared/protocol'
+import type { BrowserSourceFrame, BrowserSourceSpec, WidgetEvent } from '@shared/protocol'
 import { getMainWindow } from './window'
 
 /**
@@ -72,6 +73,10 @@ function create(spec: BrowserSourceSpec): Entry {
       // Sessão própria: a CSP e o handler de captura de tela do app não valem
       // para os widgets (que têm scripts inline e de outros domínios).
       partition: 'persist:prismcast-widgets',
+      // window.prismcast: jogo da live e o multichat (YouTube/Kick) chegam na página.
+      // Também nos iframes (o "só conversando" põe o chat num iframe).
+      preload: join(__dirname, '../preload/widget.js'),
+      nodeIntegrationInSubFrames: true,
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -190,6 +195,22 @@ export function syncBrowserSources(specs: BrowserSourceSpec[]): void {
   }
 
   sweepTimer ??= setInterval(sweep, 10_000)
+}
+
+/** Manda um evento para todas as páginas de widget abertas (as que não usam, ignoram). */
+export function broadcastToWidgets(event: WidgetEvent): void {
+  for (const entry of entries.values()) {
+    const wc = entry.win.webContents
+    if (entry.win.isDestroyed() || wc.isLoading()) continue
+    // Os iframes também têm o preload: manda para cada frame.
+    for (const frame of wc.mainFrame.framesInSubtree) {
+      try {
+        frame.send(CH.widgetEvent, event)
+      } catch {
+        /* frame saindo */
+      }
+    }
+  }
 }
 
 export function reloadBrowserSource(id: string): void {

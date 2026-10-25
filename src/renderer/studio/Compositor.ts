@@ -145,7 +145,10 @@ export class Compositor {
   /** Desenha uma cena; usado também pelo editor para miniaturas. */
   drawScene(ctx: CanvasRenderingContext2D, scene: Scene, W: number, H: number, vertical: boolean): void {
     const items = scene.items
-      .filter((it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal) && !this.suppressed(it))
+      .filter(
+        (it) =>
+          it.visible && it.type !== 'audio_input' && (vertical ? it.showOnVertical : it.showOnHorizontal) && !this.suppressed(it)
+      )
       .sort((a, b) => (vertical ? a.verticalTransform.zIndex - b.verticalTransform.zIndex : a.transform.zIndex - b.transform.zIndex))
     const base = ctx.globalAlpha
     for (const item of items) {

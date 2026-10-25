@@ -276,3 +276,84 @@
 .chat-window-bar .win-btn {
   -webkit-app-region: no-drag;
 }
+
+/* ------------------------------------------------------------ multichat */
+
+.chat-sources {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  overflow: hidden;
+}
+
+.chat-src {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.chat-src-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.chat-src:not(.is-connected) .chat-src-dot {
+  opacity: 0.45;
+}
+
+.chat-src.is-error .chat-state,
+.chat-src.is-waiting .chat-state {
+  color: var(--warning);
+}
+
+.chat .plat-twitch {
+  background: #9146ff;
+}
+.chat .plat-youtube {
+  background: #ff0033;
+}
+.chat .plat-kick {
+  background: #53fc18;
+}
+
+/* Letra da plataforma antes do nome, só quando há mais de um chat junto. */
+.chat-plat {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-right: 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 800;
+  line-height: 1;
+  color: #fff;
+  vertical-align: 1px;
+}
+
+.chat-plat.plat-kick {
+  color: #0b0d12;
+}
+
+.chat-opt-status {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.chat-opt-status b {
+  color: var(--text);
+  font-weight: 620;
+}
+
+.chat-opt-status .link-btn {
+  align-self: flex-start;
+}

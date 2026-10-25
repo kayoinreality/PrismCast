@@ -149,6 +149,8 @@ export type SourceType =
   | 'image_source'
   | 'color_source'
   | 'text_source'
+  /** microfone/entrada do mixer: só vai para a live nas cenas que têm esta fonte */
+  | 'audio_input'
 
 /** Configurações de cada tipo de fonte. Só os campos do tipo da fonte são usados. */
 export interface SourceSettings {
@@ -178,7 +180,10 @@ export interface SourceSettings {
    * regressiva, cronômetro). Sem valor = o padrão do widget do kit.
    */
   restartOnShow?: boolean
-  /** janela: canal do mixer que captura o áudio deste programa */
+  /**
+   * janela: canal do mixer que captura o áudio deste programa
+   * audio_input: o microfone do mixer que esta cena liga
+   */
   audioChannelId?: string
 }
 
@@ -407,12 +412,61 @@ export type HotkeyAction =
 export interface ChatSettings {
   /** canal lido; vazio = o da conta da Twitch conectada */
   channel: string
+  /** multichat: canal do YouTube (@handle, link do canal ou da live); vazio = desligado */
+  youtube: string
+  /** multichat: canal da Kick (o nome que vai em kick.com/nome); vazio = desligado */
+  kick: string
   fontSize: number
   showTimestamps: boolean
   /** a janela separada fica por cima do jogo */
   popoutOnTop: boolean
   popoutBounds: { x: number; y: number; width: number; height: number } | null
 }
+
+// ------------------------------------------- Multichat (YouTube e Kick pelo main)
+
+export type ChatPlatform = 'twitch' | 'youtube' | 'kick'
+
+export type ChatFragment = { t: 'text'; text: string } | { t: 'emote'; url: string; name: string }
+
+/** Mensagem de qualquer plataforma, já no formato que o chat do app e os widgets mostram. */
+export interface MultiChatMessage {
+  id: string
+  platform: ChatPlatform
+  kind: 'msg' | 'event'
+  user: string
+  name: string
+  /** cor do nome (vazio = o chat escolhe uma pelo nome) */
+  color: string
+  badges: string[]
+  fragments: ChatFragment[]
+  ts: number
+}
+
+export interface MultiChatStatus {
+  platform: Exclude<ChatPlatform, 'twitch'>
+  /** off: sem canal configurado · waiting: canal sem live agora (tenta de novo sozinho) */
+  state: 'off' | 'connecting' | 'connected' | 'waiting' | 'error'
+  channel: string
+  message: string | null
+}
+
+export type MultiChatEvent =
+  | { t: 'messages'; messages: MultiChatMessage[] }
+  | { t: 'delete'; platform: ChatPlatform; id: string }
+  | { t: 'status'; status: MultiChatStatus[] }
+
+/**
+ * O que os widgets recebem do PrismCast (window.prismcast nas páginas abertas
+ * como fonte de navegador). Só informação pública da live.
+ */
+export interface WidgetLiveState {
+  title: string
+  /** categoria/jogo escolhido no seletor da live */
+  game: string
+}
+
+export type WidgetEvent = { t: 'live'; live: WidgetLiveState } | MultiChatEvent
 
 export interface RecorderStatus {
   recording: boolean

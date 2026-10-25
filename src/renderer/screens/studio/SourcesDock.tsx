@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Scene, SceneItem, SourceType } from '@shared/protocol'
+import type { AudioChannel, Scene, SceneItem, SourceType } from '@shared/protocol'
+import { makeChannel } from '@shared/audio'
 import { IconButton } from '@/components/ui'
 import { IconCameraOff, IconDown, IconEye, IconEyeOff, IconLock, IconPlus, IconTrash, IconUp } from '@/components/Icons'
 import { useStudio } from '@/studio/StudioContext'
-import { addItem, kitItem, makeItem, moveItem, removeItem, SOURCE_LABEL, updateItem } from '@/studio/scenes'
+import { addItem, audioItem, kitItem, makeItem, moveItem, removeItem, sceneMics, SOURCE_LABEL, updateItem } from '@/studio/scenes'
 import { SourceIcon } from './sourceIcons'
 import { SourcePickerModal, WidgetPickerModal, type WidgetChoice } from './Pickers'
 import { hiddenWithoutCamera } from '@/studio/widgets'
@@ -52,6 +53,19 @@ export function SourcesDock({
     if (atBottom) next = moveItem(next, scene.id, item.id, -scene.items.length)
     update({ scenes: next })
     onSelect(item.id)
+  }
+
+  const mics = settings.audioMixer.channels.filter((c) => c.kind === 'mic')
+  const inScene = sceneMics(scene, false)
+  const micsToAdd = mics.filter((c) => !inScene.has(c.id))
+
+  /** Liga um microfone do mixer nesta cena (sem canal ainda, cria um no mixer). */
+  const addMic = (ch: AudioChannel | null): void => {
+    setMenu(false)
+    const channel = ch ?? makeChannel('mic', { name: 'Microfone' })
+    const scenes = addItem(st, scene.id, audioItem(channel))
+    update(ch ? { scenes } : { scenes, audioMixer: { ...settings.audioMixer, channels: [...settings.audioMixer.channels, channel] } })
+    toast(`${channel.name} ligado na cena “${scene.name}”`, 'good')
   }
 
   const choose = async (type: SourceType): Promise<void> => {
@@ -166,24 +180,31 @@ export function SourcesDock({
             ) : (
               <span className="dock-name">{it.name}</span>
             )}
+            {it.type === 'audio_input' && !mics.some((c) => c.id === it.settings.audioChannelId) && (
+              <span className="dock-flag" title="Este microfone saiu do mixer">
+                sem canal
+              </span>
+            )}
             {!cameraOn && hiddenWithoutCamera(it, kit) && (
               <span className="dock-flag" title="Câmera desligada: não aparece na live">
                 <IconCameraOff size={13} />
               </span>
             )}
-            <button
-              className={`dock-toggle is-lock ${it.locked ? 'is-on' : ''}`}
-              title={it.locked ? 'Destravar' : 'Travar posição'}
-              onClick={(e) => {
-                e.stopPropagation()
-                patch(it, { locked: !it.locked })
-              }}
-            >
-              <IconLock size={13} />
-            </button>
+            {it.type !== 'audio_input' && (
+              <button
+                className={`dock-toggle is-lock ${it.locked ? 'is-on' : ''}`}
+                title={it.locked ? 'Destravar' : 'Travar posição'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  patch(it, { locked: !it.locked })
+                }}
+              >
+                <IconLock size={13} />
+              </button>
+            )}
             <button
               className="dock-toggle is-on"
-              title={it.visible ? 'Esconder' : 'Mostrar'}
+              title={it.type === 'audio_input' ? (it.visible ? 'Desligar nesta cena' : 'Ligar nesta cena') : it.visible ? 'Esconder' : 'Mostrar'}
               onClick={(e) => {
                 e.stopPropagation()
                 patch(it, { visible: !it.visible })
@@ -235,6 +256,15 @@ export function SourcesDock({
                 <span className="add-menu-text">
                   <span>{SOURCE_LABEL[m.type]}</span>
                   <small>{m.hint}</small>
+                </span>
+              </button>
+            ))}
+            {(mics.length === 0 ? [null] : micsToAdd).map((ch) => (
+              <button key={ch?.id ?? 'new-mic'} className="add-menu-item" role="menuitem" onClick={() => addMic(ch)}>
+                <SourceIcon type="audio_input" size={16} />
+                <span className="add-menu-text">
+                  <span>{ch && mics.length > 1 ? ch.name : 'Microfone'}</span>
+                  <small>Só vai para a live nesta cena</small>
                 </span>
               </button>
             ))}

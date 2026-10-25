@@ -1,9 +1,10 @@
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AppSettings } from '@shared/ipc'
-import type { TwitchCapabilities } from '@shared/protocol'
+import type { ChatPlatform, MultiChatStatus, TwitchCapabilities } from '@shared/protocol'
 import { Button, IconButton, TextInput, Toggle } from '@/components/ui'
 import { IconChat, IconDown, IconPin, IconPopout, IconSend, IconSettings } from '@/components/Icons'
 import { chatFor, type ChatLine, type TwitchChat } from './TwitchChat'
+import { multiChat } from './MultiChat'
 import './ChatPanel.css'
 
 const BADGE_LABEL: Record<string, string> = {
@@ -12,10 +13,14 @@ const BADGE_LABEL: Record<string, string> = {
   vip: 'vip',
   subscriber: 'sub',
   founder: 'fundador',
-  partner: 'parceiro'
+  partner: 'parceiro',
+  member: 'membro',
+  verified: 'verificado'
 }
 
-function Line({ line, showTime }: { line: ChatLine; showTime: boolean }): React.JSX.Element {
+const PLATFORM_LABEL: Record<ChatPlatform, string> = { twitch: 'Twitch', youtube: 'YouTube', kick: 'Kick' }
+
+function Line({ line, showTime, showPlatform }: { line: ChatLine; showTime: boolean; showPlatform: boolean }): React.JSX.Element {
   if (line.kind === 'system') {
     return <div className="chat-line is-system">{line.fragments.map((f) => (f.t === 'text' ? f.text : f.name)).join('')}</div>
   }
@@ -25,6 +30,11 @@ function Line({ line, showTime }: { line: ChatLine; showTime: boolean }): React.
       className={`chat-line ${line.kind === 'event' ? 'is-event' : ''} ${line.mention ? 'is-mention' : ''} ${line.deleted ? 'is-deleted' : ''}`}
     >
       {showTime && <span className="chat-time mono">{time}</span>}
+      {showPlatform && (
+        <span className={`chat-plat plat-${line.platform}`} title={PLATFORM_LABEL[line.platform]}>
+          {PLATFORM_LABEL[line.platform].slice(0, 1)}
+        </span>
+      )}
       {line.badges.map((b) => (
         <span key={b} className={`chat-badge b-${b}`}>
           {BADGE_LABEL[b] ?? b}
@@ -48,7 +58,7 @@ function Line({ line, showTime }: { line: ChatLine; showTime: boolean }): React.
                   className="chat-emote"
                   alt={f.name}
                   title={f.name}
-                  src={`https://static-cdn.jtvnw.net/emoticons/v2/${f.id}/default/dark/1.0`}
+                  src={f.url}
                 />
               )
             )}
@@ -63,6 +73,48 @@ const noVersion = (): number => 0
 function useChat(chat: TwitchChat | null): TwitchChat | null {
   useSyncExternalStore(chat?.subscribe ?? noSubscribe, chat?.getVersion ?? noVersion)
   return chat
+}
+
+function useMultiChat(): ReturnType<typeof multiChat> {
+  const store = multiChat()
+  useSyncExternalStore(store.subscribe, store.getVersion)
+  return store
+}
+
+const STATE_LABEL: Record<MultiChatStatus['state'], string> = {
+  off: 'desligado',
+  connecting: 'conectando…',
+  connected: 'ao vivo',
+  waiting: 'esperando a live',
+  error: 'reconectando…'
+}
+
+/** Campo que só grava ao sair dele (ou Enter), para não reconectar a cada letra. */
+function OptionInput({
+  label,
+  value,
+  placeholder,
+  onCommit
+}: {
+  label: string
+  value: string
+  placeholder: string
+  onCommit: (v: string) => void
+}): React.JSX.Element {
+  const [draft, setDraft] = useState(value)
+  useEffect(() => setDraft(value), [value])
+  return (
+    <label className="chat-opt-row">
+      <span>{label}</span>
+      <TextInput
+        value={draft}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => draft.trim() !== value && onCommit(draft.trim())}
+        onKeyDown={(e) => e.key === 'Enter' && onCommit(draft.trim())}
+      />
+    </label>
+  )
 }
 
 /**
@@ -84,6 +136,8 @@ export function ChatPanel({
   const twitch = settings.destinations.find((d) => d.platform === 'twitch' && d.account)
   const channel = (settings.chat.channel || twitch?.account?.login || '').trim().toLowerCase()
   const chat = useChat(channel ? chatFor(channel) : null)
+  const multi = useMultiChat()
+  multi.mentionOf = channel
   const [caps, setCaps] = useState<TwitchCapabilities | null>(null)
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
@@ -126,16 +180,40 @@ export function ChatPanel({
     }
   }
 
-  const lines = chat?.lines ?? []
-  const stateLabel = !chat ? 'sem canal' : chat.state === 'connected' ? 'ao vivo' : chat.state === 'connecting' ? 'conectando…' : 'reconectando…'
+  const twitchLines = chat?.lines
+  const otherLines = multi.lines
+  // Twitch + YouTube + Kick numa lista só, pela hora em que cada mensagem foi enviada.
+  const lines = useMemo(() => {
+    const all = [...(twitchLines ?? []), ...otherLines]
+    return otherLines.length === 0 ? all : all.sort((a, b) => a.ts - b.ts)
+  }, [twitchLines, otherLines])
+
+  const sources: Array<{ platform: ChatPlatform; label: string; state: MultiChatStatus['state']; message: string | null }> = []
+  if (chat) sources.push({ platform: 'twitch', label: channel, state: chat.state, message: null })
+  for (const st of multi.status) {
+    if (st.state !== 'off') sources.push({ platform: st.platform, label: st.channel, state: st.state, message: st.message })
+  }
+  const hasAny = sources.length > 0
+  const multiOn = sources.some((src) => src.platform !== 'twitch')
+  const problems = multi.status.filter((st) => st.message && st.state !== 'connected')
 
   return (
     <div className={`chat chat-${variant}`} style={{ ['--chat-size' as string]: `${chatSettings.fontSize}px` }}>
       <div className="chat-head">
-        <span className={`chat-dot is-${chat?.state ?? 'off'}`} />
-        <span className="chat-channel">{channel || 'Chat da Twitch'}</span>
-        <span className="chat-state">{stateLabel}</span>
-        <div className="spacer" />
+        <div className="chat-sources">
+          {!hasAny && <span className="chat-channel">Chat</span>}
+          {sources.map((src) => (
+            <span
+              key={src.platform}
+              className={`chat-src is-${src.state}`}
+              title={`${PLATFORM_LABEL[src.platform]} · ${src.label} · ${src.message ?? STATE_LABEL[src.state]}`}
+            >
+              <span className={`chat-src-dot plat-${src.platform}`} />
+              <span className="chat-channel">{sources.length > 1 ? PLATFORM_LABEL[src.platform] : src.label}</span>
+              {(sources.length === 1 || src.state !== 'connected') && <span className="chat-state">{STATE_LABEL[src.state]}</span>}
+            </span>
+          ))}
+        </div>
         <IconButton label="Opções do chat" active={options} onClick={() => setOptions((o) => !o)}>
           <IconSettings size={15} />
         </IconButton>
@@ -156,16 +234,31 @@ export function ChatPanel({
 
       {options && (
         <div className="chat-options">
-          <label className="chat-opt-row">
-            <span>Canal</span>
-            <TextInput
-              value={channelDraft}
-              placeholder={twitch?.account?.login ?? 'nome do canal'}
-              onChange={(e) => setChannelDraft(e.target.value)}
-              onBlur={() => setChat({ channel: channelDraft.trim() })}
-              onKeyDown={(e) => e.key === 'Enter' && setChat({ channel: channelDraft.trim() })}
-            />
-          </label>
+          <OptionInput
+            label="Twitch"
+            value={chatSettings.channel}
+            placeholder={twitch?.account?.login ?? 'nome do canal'}
+            onCommit={(v) => setChat({ channel: v })}
+          />
+          <OptionInput
+            label="YouTube"
+            value={chatSettings.youtube}
+            placeholder="@seucanal ou link da live"
+            onCommit={(v) => setChat({ youtube: v })}
+          />
+          <OptionInput label="Kick" value={chatSettings.kick} placeholder="nome do canal na Kick" onCommit={(v) => setChat({ kick: v })} />
+          {problems.length > 0 && (
+            <div className="chat-opt-status">
+              {problems.map((st) => (
+                <span key={st.platform}>
+                  <b>{PLATFORM_LABEL[st.platform]}:</b> {st.message}
+                </span>
+              ))}
+              <button className="link-btn" onClick={() => window.api.chat.reconnectMultichat()}>
+                Tentar agora
+              </button>
+            </div>
+          )}
           <label className="chat-opt-row">
             <span>Tamanho da letra</span>
             <input
@@ -181,10 +274,10 @@ export function ChatPanel({
         </div>
       )}
 
-      {!channel ? (
+      {!hasAny ? (
         <div className="chat-empty">
           <IconChat size={26} />
-          <span>Qual canal você quer acompanhar?</span>
+          <span>Qual canal da Twitch você quer acompanhar?</span>
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
             <TextInput
               value={channelDraft}
@@ -196,13 +289,19 @@ export function ChatPanel({
               Ler
             </Button>
           </div>
-          <span className="hint">Entrando com a Twitch em Destinos, ele usa o seu canal sozinho.</span>
+          <span className="hint">
+            Entrando com a Twitch em Destinos, ele usa o seu canal sozinho. YouTube e Kick entram nas{' '}
+            <button className="link-btn" onClick={() => setOptions(true)}>
+              opções do chat
+            </button>
+            .
+          </span>
         </div>
       ) : (
         <div className="chat-list" ref={listRef} onScroll={onScroll}>
           {lines.length === 0 && <div className="chat-line is-system">Esperando mensagens…</div>}
           {lines.map((l) => (
-            <Line key={l.id} line={l} showTime={chatSettings.showTimestamps} />
+            <Line key={`${l.platform}-${l.id}`} line={l} showTime={chatSettings.showTimestamps} showPlatform={multiOn} />
           ))}
         </div>
       )}
@@ -226,7 +325,7 @@ export function ChatPanel({
                 className="chat-input"
                 value={draft}
                 maxLength={500}
-                placeholder={`Mensagem como ${caps.login}`}
+                placeholder={multiOn ? `Mensagem na Twitch como ${caps.login}` : `Mensagem como ${caps.login}`}
                 onChange={(e) => {
                   setDraft(e.target.value)
                   setError(null)

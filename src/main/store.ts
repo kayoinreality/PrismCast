@@ -70,7 +70,7 @@ export function defaultLive(): LiveInfo {
 }
 
 export function defaultChat(): ChatSettings {
-  return { channel: '', fontSize: 14, showTimestamps: false, popoutOnTop: true, popoutBounds: null }
+  return { channel: '', youtube: '', kick: '', fontSize: 14, showTimestamps: false, popoutOnTop: true, popoutBounds: null }
 }
 
 export function makeDestination(platform: PlatformId, id = `${platform}-main`): Destination {

@@ -20,7 +20,8 @@ import {
   type KitConfig,
   type LiveInfo,
   type SourceKind,
-  type ViewerToHost
+  type ViewerToHost,
+  type WidgetLiveState
 } from '@shared/protocol'
 import { hostname } from 'node:os'
 import { Discovery } from './discovery'
@@ -35,6 +36,7 @@ import { RecorderManager } from './recorder'
 import { cancelTwitchLogin, setStreamKey, startTwitchLogin, unlinkDestination } from './accounts'
 import {
   ackBrowserSource,
+  broadcastToWidgets,
   disposeBrowserSources,
   reloadBrowserSource,
   syncBrowserSources
@@ -43,12 +45,29 @@ import { loadKit, readKitConfig, writeKitConfig } from './kit'
 import { appForWindow, disposeAudioApps, listAudioApps, syncAudioApps } from './audio-apps'
 import { getChannelInfo, searchCategories, sendChat, twitchCapabilities, updateChannelInfo } from './twitch-api'
 import { closeChatPopout, isChatPopoutOpen, openChatPopout, setChatPopoutOnTop } from './chat-window'
+import { MultiChatHub } from './multichat'
 
 const discovery = new Discovery()
 const server = new SignalingServer()
 const client = new SignalingClient()
 const multistream = new MultistreamManager()
 const recorder = new RecorderManager()
+
+/** Janelas da interface (estúdio e chat separado), sem as dos widgets. */
+function toAppWindows(channel: string, ...args: unknown[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed() && !win.webContents.isOffscreen()) win.webContents.send(channel, ...args)
+  }
+}
+
+const multichat = new MultiChatHub((event) => {
+  toAppWindows(CH.multichatEvent, event)
+  broadcastToWidgets(event)
+})
+
+function widgetLive(settings: AppSettings): WidgetLiveState {
+  return { title: settings.live.title, game: settings.live.categoryName }
+}
 
 function toRenderer(channel: string, ...args: unknown[]): void {
   const win = getMainWindow()
@@ -187,6 +206,14 @@ export function registerIpc(): void {
   ipcMain.on(CH.chatOpenPopout, () => openChatPopout())
   ipcMain.on(CH.chatClosePopout, () => closeChatPopout())
   ipcMain.handle(CH.chatIsPopoutOpen, () => isChatPopoutOpen())
+  ipcMain.handle(CH.multichatStatus, () => multichat.status())
+  ipcMain.on(CH.multichatReconnect, () => multichat.configure(getSettings().chat, true))
+  multichat.configure(getSettings().chat)
+
+  // Preload dos widgets pede o estado na hora que a página abre (síncrono).
+  ipcMain.on(CH.widgetState, (e) => {
+    e.returnValue = widgetLive(getSettings())
+  })
   ipcMain.handle(CH.kitPickFolder, async () => {
     const win = getMainWindow()
     const res = win
@@ -349,6 +376,11 @@ export function registerIpc(): void {
     discovery.preferredInterface = next.preferredInterface
     if (JSON.stringify(next.hotkeys) !== prevHotkeys) registerGlobalHotkeys()
     if (next.chat.popoutOnTop !== prev.chat.popoutOnTop) setChatPopoutOnTop(next.chat.popoutOnTop)
+    multichat.configure(next.chat)
+    // Trocou o jogo no seletor: os overlays mudam na hora, sem recarregar a página.
+    if (JSON.stringify(widgetLive(next)) !== JSON.stringify(widgetLive(prev))) {
+      broadcastToWidgets({ t: 'live', live: widgetLive(next) })
+    }
     // A outra janela (estúdio ou chat separado) fica sabendo da mudança.
     for (const win of BrowserWindow.getAllWindows()) {
       if (win.webContents !== e.sender && !win.isDestroyed() && !win.webContents.isOffscreen()) {
@@ -370,6 +402,7 @@ export async function shutdown(): Promise<void> {
   recorder.stopRecording()
   disposeBrowserSources()
   disposeAudioApps()
+  multichat.dispose()
   closeChatPopout()
   await stopHosting()
   await discovery.dispose()

@@ -60,7 +60,11 @@ function StageEditor({
 
   const tfOf = (it: SceneItem): SourceTransform => (vertical ? it.verticalTransform : it.transform)
   const shown = scene.items.filter(
-    (it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal) && (cameraOn || !hiddenWithoutCamera(it, kit))
+    (it) =>
+      it.visible &&
+      it.type !== 'audio_input' &&
+      (vertical ? it.showOnVertical : it.showOnHorizontal) &&
+      (cameraOn || !hiddenWithoutCamera(it, kit))
   )
   const key = vertical ? 'verticalTransform' : 'transform'
 

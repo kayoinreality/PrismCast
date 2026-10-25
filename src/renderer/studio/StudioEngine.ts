@@ -15,6 +15,7 @@ import { CaptureManager, type Capture } from './CaptureManager'
 import { Compositor } from './Compositor'
 import { OutputManager } from './OutputManager'
 import { effectiveUrl, hiddenWithoutCamera, restartsOnShow } from './widgets'
+import { sceneMics } from './scenes'
 
 export interface EngineState {
   live: boolean
@@ -186,6 +187,8 @@ export class StudioEngine {
       type: settings.scenes.transitionType,
       ms: settings.scenes.transitionDurationMs
     })
+    const used = new Set(settings.scenes.scenes.flatMap((s) => [...sceneMics(s, false)]))
+    this.mixer.setSceneMics(sceneMics(this.programScene()), used)
     void this.mixer.applyConfig(settings.audioMixer)
     const wantsDesktop = settings.audioMixer.channels.some((c) => c.kind === 'desktop')
     if (wantsDesktop && !this.systemAudioRequested) {

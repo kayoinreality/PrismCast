@@ -105,7 +105,8 @@ class ChannelStrip {
     node?.connect(this.delay)
   }
 
-  apply(ch: AudioChannel): void {
+  /** inScene: microfone que a cena no ar não liga fica mudo (na live e no fone). */
+  apply(ch: AudioChannel, inScene = true): void {
     const t = this.ctx.currentTime
     const f = ch.filters
     this.delay.delayTime.setTargetAtTime(Math.max(0, Math.min(2, ch.syncOffsetMs / 1000)), t, RAMP)
@@ -125,7 +126,7 @@ class ChannelStrip {
     this.limiter.threshold.setValueAtTime(f.limiter.enabled ? f.limiter.ceilingDb : 0, t)
     this.limiter.ratio.setValueAtTime(f.limiter.enabled ? 20 : 1, t)
     this.fader.gain.setTargetAtTime(dbToLinear(ch.volumeDb), t, RAMP)
-    this.mute.gain.setTargetAtTime(ch.muted ? 0 : 1, t, RAMP)
+    this.mute.gain.setTargetAtTime(ch.muted || !inScene ? 0 : 1, t, RAMP)
     this.toBus.gain.setTargetAtTime(ch.monitor === 'monitor-only' ? 0 : 1, t, RAMP)
     this.toMonitor.gain.setTargetAtTime(ch.monitor === 'off' ? 0 : 1, t, RAMP)
   }
@@ -185,6 +186,9 @@ export class AudioMixerEngine {
   private systemStream: MediaStream | null = null
   private appStatus = new Map<string, AudioChannelStatus>()
   private disposed = false
+  /** microfones ligados pela cena no ar / usados em alguma cena (os outros nem abrem) */
+  private liveMics = new Set<string>()
+  private usedMics = new Set<string>()
   onStatus: (() => void) | null = null
 
   constructor(initial: AudioMixerSettings) {
@@ -225,6 +229,24 @@ export class AudioMixerEngine {
     }
   }
 
+  /**
+   * Microfone é por cena (como uma fonte do OBS): só vai para a live quando a
+   * cena no ar tem a fonte dele. Vale na próxima applyConfig.
+   */
+  setSceneMics(live: Set<string>, used: Set<string>): void {
+    this.liveMics = live
+    this.usedMics = used
+  }
+
+  /** O microfone está ligado na cena que está no ar. */
+  micOnAir(id: string): boolean {
+    return this.liveMics.has(id)
+  }
+
+  private inScene(ch: AudioChannel): boolean {
+    return ch.kind !== 'mic' || this.liveMics.has(ch.id)
+  }
+
   status(id: string): AudioChannelStatus {
     const app = this.appStatus.get(id)
     if (app) return app
@@ -251,7 +273,7 @@ export class AudioMixerEngine {
         strip = new ChannelStrip(this.ctx, ch.id, this.bus, this.monitorBus, this.workletReady)
         this.strips.set(ch.id, strip)
       }
-      strip.apply(ch)
+      strip.apply(ch, this.inScene(ch))
       void this.openSource(ch, false)
     }
     window.api.audio.sync(
@@ -264,6 +286,8 @@ export class AudioMixerEngine {
       case 'desktop':
         return `desktop:${this.systemStream?.id ?? 'none'}`
       case 'mic':
+        // Fora de todas as cenas: nem abre (a luz do microfone do Windows fica apagada).
+        if (!this.usedMics.has(ch.id)) return 'mic:unused'
         // O processamento do Chromium (ruído, eco, ganho automático) é escolhido ao abrir o microfone.
         return `mic:${ch.deviceId ?? 'default'}:${ch.filters.noiseSuppression}:${ch.filters.echoCancellation}:${ch.filters.autoGain}`
       case 'app':
@@ -310,6 +334,11 @@ export class AudioMixerEngine {
       const player = new AudioWorkletNode(this.ctx, 'pcm-player', { numberOfInputs: 0, outputChannelCount: [2] })
       strip.player = player
       strip.attach(player)
+      return
+    }
+
+    if (key === 'mic:unused') {
+      this.setStatus(strip, 'off', null)
       return
     }
 

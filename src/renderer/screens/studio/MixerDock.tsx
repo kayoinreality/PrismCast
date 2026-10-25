@@ -15,6 +15,7 @@ import {
   IconVolumeOff
 } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
+import { addItem, audioItem, editingScene, removeAudioChannelItems, sceneMics } from '@/studio/scenes'
 import { AppPickerModal, AudioPropertiesModal } from './AudioProperties'
 
 /** Fader em posição 0..1 com curva de volume (como o OBS): o meio do curso é onde se mexe. */
@@ -107,6 +108,45 @@ export function KindIcon({ kind, size = 15 }: { kind: AudioChannelKind; size?: n
   if (kind === 'mic') return <IconMic size={size} />
   if (kind === 'app') return <IconApp size={size} />
   return <IconMonitor size={size} />
+}
+
+/** Microfone que a cena aberta não usa: em vez do fader, o botão para ligar nela. */
+function OffSceneStrip({
+  ch,
+  sceneName,
+  onAdd,
+  onOpen
+}: {
+  ch: AudioChannel
+  sceneName: string
+  onAdd: () => void
+  onOpen: () => void
+}): React.JSX.Element {
+  return (
+    <div
+      className="strip is-offscene"
+      onContextMenu={(e) => {
+        e.preventDefault()
+        onOpen()
+      }}
+    >
+      <div className="strip-head">
+        <span className="strip-kind">
+          <KindIcon kind={ch.kind} size={14} />
+        </span>
+        <span className="strip-name" title={ch.name}>
+          {ch.name}
+        </span>
+        <span className="strip-db">fora desta cena</span>
+        <IconButton label={`Propriedades e filtros de ${ch.name}`} className="strip-gear" onClick={onOpen}>
+          <IconSliders size={14} />
+        </IconButton>
+      </div>
+      <button className="strip-add" onClick={onAdd} title={`O microfone passa a tocar na cena “${sceneName}”`}>
+        <IconPlus size={13} /> Adicionar em “{sceneName}”
+      </button>
+    </div>
+  )
 }
 
 function Strip({
@@ -211,10 +251,22 @@ export function MixerDock(): React.JSX.Element {
   const patch = (id: string, p: Partial<AudioChannel>): void =>
     setChannels(mixer.channels.map((c) => (c.id === id ? { ...c, ...p } : c)))
 
+  // Microfone é por cena: o mixer mostra se a cena aberta no editor liga cada um.
+  const scene = editingScene(settings.scenes)
+  const micsHere = sceneMics(scene, false)
+
   const add = (ch: AudioChannel): void => {
-    setChannels([...mixer.channels, ch])
+    // Microfone novo já entra na cena aberta; nas outras, o usuário adiciona.
+    const scenes = ch.kind === 'mic' && scene ? addItem(settings.scenes, scene.id, audioItem(ch)) : settings.scenes
+    update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] }, scenes })
     setMenu(false)
     setEditing(ch.id)
+  }
+
+  const addToScene = (ch: AudioChannel): void => {
+    if (!scene) return
+    update({ scenes: addItem(settings.scenes, scene.id, audioItem(ch)) })
+    toast(`${ch.name} ligado na cena “${scene.name}”`, 'good')
   }
 
   const hasDesktop = mixer.channels.some((c) => c.kind === 'desktop')
@@ -232,9 +284,19 @@ export function MixerDock(): React.JSX.Element {
             <IconPlus size={15} /> Adicionar fonte de áudio
           </button>
         )}
-        {mixer.channels.map((ch) => (
-          <Strip key={ch.id} ch={ch} register={register} onChange={(p) => patch(ch.id, p)} onOpen={() => setEditing(ch.id)} />
-        ))}
+        {mixer.channels.map((ch) =>
+          ch.kind === 'mic' && !micsHere.has(ch.id) ? (
+            <OffSceneStrip
+              key={ch.id}
+              ch={ch}
+              sceneName={scene?.name ?? 'cena'}
+              onAdd={() => addToScene(ch)}
+              onOpen={() => setEditing(ch.id)}
+            />
+          ) : (
+            <Strip key={ch.id} ch={ch} register={register} onChange={(p) => patch(ch.id, p)} onOpen={() => setEditing(ch.id)} />
+          )
+        )}
       </div>
       <div className="dock-tools" ref={menuRef}>
         <IconButton label="Adicionar fonte de áudio" active={menu} onClick={() => setMenu((m) => !m)}>
@@ -247,7 +309,7 @@ export function MixerDock(): React.JSX.Element {
               <IconMic size={16} />
               <span className="add-menu-text">
                 <span>Microfone / entrada</span>
-                <small>Outro mic, placa de captura, mesa</small>
+                <small>Entra só nesta cena; nas outras, você adiciona</small>
               </span>
             </button>
             <button
@@ -305,13 +367,17 @@ export function MixerDock(): React.JSX.Element {
             const removed = editingCh
             const index = mixer.channels.findIndex((c) => c.id === removed.id)
             setEditing(null)
-            setChannels(mixer.channels.filter((c) => c.id !== removed.id))
+            const scenesBefore = settings.scenes
+            update({
+              audioMixer: { ...mixer, channels: mixer.channels.filter((c) => c.id !== removed.id) },
+              scenes: removeAudioChannelItems(settings.scenes, removed.id)
+            })
             toast(`“${removed.name}” removido do mixer`, 'info', {
               label: 'Desfazer',
               run: () => {
                 const list = [...settings.audioMixer.channels.filter((c) => c.id !== removed.id)]
                 list.splice(index, 0, removed)
-                setChannels(list)
+                update({ audioMixer: { ...settings.audioMixer, channels: list }, scenes: scenesBefore })
               }
             })
           }}
