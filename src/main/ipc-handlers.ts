@@ -15,7 +15,11 @@ import {
   type HostToViewer,
   type HotkeyAction,
   type MultistreamTarget,
+  type PlatformId,
+  type Scene,
+  type SceneItem,
   type SourceKind,
+  type UserProfile,
   type ViewerToHost
 } from '@shared/protocol'
 import { hostname } from 'node:os'
@@ -24,7 +28,26 @@ import { SignalingClient, SignalingServer } from './signaling'
 import { armSource, disarmSource, listSources } from './capture'
 import { findFreePort, listInterfaces, localAddress } from './net'
 import { authorize as firewallAuthorize, status as firewallStatus } from './firewall'
-import { getSettings, setSettings } from './store'
+import {
+  addItemToScene,
+  connectPlatform,
+  createScene,
+  deleteScene,
+  disconnectPlatform,
+  duplicateScene,
+  getScenesState,
+  getSettings,
+  getUserProfile,
+  removeItemFromScene,
+  reorderItemInScene,
+  selectScene,
+  setSettings,
+  setStudioMode,
+  transitionScenes,
+  updateItemInScene,
+  updateScene,
+  updateUserProfile
+} from './store'
 import { getMainWindow } from './window'
 import { MultistreamManager } from './multistream'
 import { RecorderManager } from './recorder'
@@ -238,6 +261,77 @@ export function registerIpc(): void {
   // -------------------------------------------------------------- firewall
   ipcMain.handle(CH.firewallStatus, () => firewallStatus())
   ipcMain.handle(CH.firewallAuthorize, () => firewallAuthorize())
+
+  // ------------------------------------------------------------------ cenas
+  ipcMain.handle(CH.scenesGetState, () => getScenesState())
+  ipcMain.handle(CH.scenesCreate, (_e, name: string) => createScene(name))
+  ipcMain.handle(CH.scenesUpdate, (_e, sceneId: string, patch: Partial<Scene>) =>
+    updateScene(sceneId, patch)
+  )
+  ipcMain.handle(CH.scenesDelete, (_e, sceneId: string) => deleteScene(sceneId))
+  ipcMain.handle(CH.scenesSelect, (_e, sceneId: string) => selectScene(sceneId))
+  ipcMain.handle(CH.scenesDuplicate, (_e, sceneId: string) => duplicateScene(sceneId))
+  ipcMain.handle(CH.scenesSetStudioMode, (_e, enabled: boolean) => setStudioMode(enabled))
+  ipcMain.handle(CH.scenesTransition, (_e, type: 'cut' | 'fade', durationMs?: number) =>
+    transitionScenes(type, durationMs)
+  )
+  ipcMain.handle(CH.scenesAddItem, (_e, sceneId: string, item: Omit<SceneItem, 'id'>) =>
+    addItemToScene(sceneId, item)
+  )
+  ipcMain.handle(
+    CH.scenesUpdateItem,
+    (_e, sceneId: string, itemId: string, patch: Partial<SceneItem>) =>
+      updateItemInScene(sceneId, itemId, patch)
+  )
+  ipcMain.handle(CH.scenesRemoveItem, (_e, sceneId: string, itemId: string) =>
+    removeItemFromScene(sceneId, itemId)
+  )
+  ipcMain.handle(
+    CH.scenesReorderItem,
+    (_e, sceneId: string, itemId: string, newIndex: number) =>
+      reorderItemInScene(sceneId, itemId, newIndex)
+  )
+
+  // ------------------------------------------------------------ autenticação
+  ipcMain.handle(CH.authGetProfile, () => getUserProfile())
+  ipcMain.handle(CH.authUpdateProfile, (_e, patch: Partial<UserProfile>) =>
+    updateUserProfile(patch)
+  )
+  ipcMain.handle(
+    CH.authConnectPlatform,
+    (
+      _e,
+      platform: PlatformId,
+      credentials?: { username?: string; streamKey?: string; rtmpUrl?: string }
+    ) => connectPlatform(platform, credentials)
+  )
+  ipcMain.handle(CH.authDisconnectPlatform, (_e, platform: PlatformId) =>
+    disconnectPlatform(platform)
+  )
+
+  // ------------------------------------------------------------- dispositivos
+  ipcMain.handle(CH.mediaListDevices, async () => {
+    return [
+      {
+        deviceId: 'default',
+        label: 'Microfone Padrão do Sistema',
+        kind: 'audioinput',
+        groupId: 'default-audio'
+      },
+      {
+        deviceId: 'default',
+        label: 'Alto-falantes / Fones Padrão',
+        kind: 'audiooutput',
+        groupId: 'default-output'
+      },
+      {
+        deviceId: 'default',
+        label: 'Webcam Padrão / Câmera Integrada',
+        kind: 'videoinput',
+        groupId: 'default-video'
+      }
+    ]
+  })
 
   // --------------------------------------------------------- preferencias
   ipcMain.handle(CH.settingsGet, () => getSettings())

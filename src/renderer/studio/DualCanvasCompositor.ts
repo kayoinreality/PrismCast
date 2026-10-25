@@ -1,4 +1,4 @@
-import type { StudioCompositorSettings, StreamWidget } from '@shared/protocol'
+import type { Scene, SceneItem, StudioCompositorSettings, StreamWidget } from '@shared/protocol'
 
 export interface ActiveAlert {
   title: string
@@ -24,6 +24,8 @@ export class DualCanvasCompositor {
 
   private studio: StudioCompositorSettings
   private widgets: StreamWidget[] = []
+  private activeScene: Scene | null = null
+  private selectedItemId: string | null = null
   private hostName = 'PrismCast Host'
   private sourceName = 'Tela Principal'
   private viewerCount = 0
@@ -122,6 +124,17 @@ export class DualCanvasCompositor {
     this.widgets = [...widgets]
   }
 
+  setActiveScene(scene: Scene | null, selectedItemId?: string | null): void {
+    this.activeScene = scene
+    if (selectedItemId !== undefined) {
+      this.selectedItemId = selectedItemId
+    }
+  }
+
+  setSelectedItemId(id: string | null): void {
+    this.selectedItemId = id
+  }
+
   triggerAlert(title: string, subtitle: string, accentColor = '#17d4b2'): void {
     this.activeAlert = {
       title,
@@ -204,6 +217,18 @@ export class DualCanvasCompositor {
       return
     }
 
+    if (this.activeScene && this.activeScene.items.length > 0) {
+      const items = [...this.activeScene.items].sort(
+        (a, b) => (a.transform.zIndex || 0) - (b.transform.zIndex || 0)
+      )
+      for (const item of items) {
+        if (!item.visible || !item.showOnHorizontal) continue
+        this.renderSceneItem(ctx, item, W, H, false)
+      }
+      this.drawWidgetsOverlay(ctx, W, H, false, now)
+      return
+    }
+
     if (this.screenVideo.readyState >= 2 && this.screenVideo.videoWidth > 0) {
       this.drawVideoContain(ctx, this.screenVideo, 0, 0, W, H)
     } else {
@@ -249,6 +274,18 @@ export class DualCanvasCompositor {
 
     if (this.studio.privacyShieldActive) {
       this.drawPrivacyShield(ctx, W, H, now, true)
+      return
+    }
+
+    if (this.activeScene && this.activeScene.items.length > 0) {
+      const items = [...this.activeScene.items].sort(
+        (a, b) => (a.verticalTransform.zIndex || 0) - (b.verticalTransform.zIndex || 0)
+      )
+      for (const item of items) {
+        if (!item.visible || !item.showOnVertical) continue
+        this.renderSceneItem(ctx, item, W, H, true)
+      }
+      this.drawWidgetsOverlay(ctx, W, H, true, now)
       return
     }
 
@@ -328,6 +365,112 @@ export class DualCanvasCompositor {
     }
 
     this.drawWidgetsOverlay(ctx, W, H, true, now)
+  }
+
+  private renderSceneItem(
+    ctx: CanvasRenderingContext2D,
+    item: SceneItem,
+    canvasW: number,
+    canvasH: number,
+    isVertical: boolean
+  ): void {
+    const tf = isVertical ? item.verticalTransform : item.transform
+    const x = Math.round(tf.x * canvasW)
+    const y = Math.round(tf.y * canvasH)
+    const w = Math.round(tf.width * canvasW)
+    const h = Math.round(tf.height * canvasH)
+
+    if (w <= 0 || h <= 0) return
+
+    ctx.save()
+
+    switch (item.type) {
+      case 'screen_capture':
+      case 'window_capture': {
+        if (this.screenVideo.readyState >= 2 && this.screenVideo.videoWidth > 0) {
+          this.drawVideoContain(ctx, this.screenVideo, x, y, w, h)
+        } else {
+          this.drawStandbyPattern(ctx, canvasW, canvasH)
+        }
+        break
+      }
+      case 'camera_input': {
+        if (
+          this.studio.webcamEnabled &&
+          this.webcamVideo.readyState >= 2 &&
+          this.webcamVideo.videoWidth > 0
+        ) {
+          this.drawRoundedVideo(ctx, this.webcamVideo, x, y, w, h, 16, '#17d4b2')
+        } else {
+          ctx.fillStyle = '#1e293b'
+          ctx.fillRect(x, y, w, h)
+          ctx.fillStyle = '#94a3b8'
+          ctx.font = 'bold 22px system-ui, sans-serif'
+          ctx.textAlign = 'center'
+          ctx.textBaseline = 'middle'
+          ctx.fillText('📷 Webcam Standby', x + w / 2, y + h / 2)
+        }
+        break
+      }
+      case 'color_source': {
+        ctx.fillStyle = (item.settings && item.settings.color) || '#090d16'
+        ctx.fillRect(x, y, w, h)
+        break
+      }
+      case 'text_source': {
+        const text = (item.settings && item.settings.text) || item.name
+        const fontSize = Math.max(16, (item.settings && item.settings.fontSize) || 32)
+        const color = (item.settings && item.settings.color) || '#ffffff'
+        ctx.fillStyle = color
+        ctx.font = `bold ${fontSize}px system-ui, sans-serif`
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.shadowColor = 'rgba(0,0,0,0.85)'
+        ctx.shadowBlur = 12
+        ctx.fillText(text, x + w / 2, y + h / 2)
+        break
+      }
+      case 'browser_source': {
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)'
+        ctx.fillRect(x, y, w, h)
+        ctx.strokeStyle = '#6366f1'
+        ctx.lineWidth = 2
+        ctx.strokeRect(x, y, w, h)
+        ctx.fillStyle = '#a5b4fc'
+        ctx.font = 'bold 16px system-ui, sans-serif'
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(`🌐 Overlay: ${item.name}`, x + w / 2, y + h / 2)
+        break
+      }
+      default:
+        break
+    }
+
+    // Highlight para o item selecionado (estilo OBS/Streamlabs Studio Editor)
+    if (this.selectedItemId === item.id) {
+      ctx.save()
+      ctx.strokeStyle = '#38bdf8'
+      ctx.lineWidth = 3
+      ctx.setLineDash([8, 6])
+      ctx.strokeRect(x, y, w, h)
+
+      // Handles nos cantos
+      const handleSize = 10
+      ctx.fillStyle = '#38bdf8'
+      const corners = [
+        [x - handleSize / 2, y - handleSize / 2],
+        [x + w - handleSize / 2, y - handleSize / 2],
+        [x - handleSize / 2, y + h - handleSize / 2],
+        [x + w - handleSize / 2, y + h - handleSize / 2]
+      ]
+      for (const [cx, cy] of corners) {
+        ctx.fillRect(cx, cy, handleSize, handleSize)
+      }
+      ctx.restore()
+    }
+
+    ctx.restore()
   }
 
   private drawVerticalTopBanner(ctx: CanvasRenderingContext2D, w: number, h: number): void {

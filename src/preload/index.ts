@@ -55,6 +55,32 @@ const api: Api = {
     select: (sourceId, withAudio) =>
       ipcRenderer.invoke(CH.sourcesSelect, sourceId, withAudio) as Promise<void>
   },
+  scenes: {
+    getState: () => ipcRenderer.invoke(CH.scenesGetState),
+    createScene: (name) => ipcRenderer.invoke(CH.scenesCreate, name),
+    updateScene: (sceneId, patch) => ipcRenderer.invoke(CH.scenesUpdate, sceneId, patch),
+    deleteScene: (sceneId) => ipcRenderer.invoke(CH.scenesDelete, sceneId),
+    selectScene: (sceneId) => ipcRenderer.invoke(CH.scenesSelect, sceneId),
+    duplicateScene: (sceneId) => ipcRenderer.invoke(CH.scenesDuplicate, sceneId),
+    setStudioMode: (enabled) => ipcRenderer.invoke(CH.scenesSetStudioMode, enabled),
+    transition: (type, durationMs) => ipcRenderer.invoke(CH.scenesTransition, type, durationMs),
+    addItem: (sceneId, item) => ipcRenderer.invoke(CH.scenesAddItem, sceneId, item),
+    updateItem: (sceneId, itemId, patch) =>
+      ipcRenderer.invoke(CH.scenesUpdateItem, sceneId, itemId, patch),
+    removeItem: (sceneId, itemId) => ipcRenderer.invoke(CH.scenesRemoveItem, sceneId, itemId),
+    reorderItem: (sceneId, itemId, newIndex) =>
+      ipcRenderer.invoke(CH.scenesReorderItem, sceneId, itemId, newIndex)
+  },
+  auth: {
+    getProfile: () => ipcRenderer.invoke(CH.authGetProfile),
+    updateProfile: (patch) => ipcRenderer.invoke(CH.authUpdateProfile, patch),
+    connectPlatform: (platform, credentials) =>
+      ipcRenderer.invoke(CH.authConnectPlatform, platform, credentials),
+    disconnectPlatform: (platform) => ipcRenderer.invoke(CH.authDisconnectPlatform, platform)
+  },
+  media: {
+    listDevices: () => ipcRenderer.invoke(CH.mediaListDevices)
+  },
   host: {
     start: (opts: HostStartOptions) =>
       ipcRenderer.invoke(CH.hostStart, opts) as Promise<HostStartResult>,

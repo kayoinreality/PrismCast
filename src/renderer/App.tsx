@@ -18,7 +18,7 @@ import './App.css'
 type Route = 'home' | 'host-setup' | 'host-live' | 'viewer-browse' | 'viewer-player'
 
 export function App(): React.JSX.Element {
-  const [route, setRoute] = useState<Route>('home')
+  const [route, setRoute] = useState<Route>('host-live')
   const [hostStream, setHostStream] = useState<MediaStream | null>(null)
   const [hostSource, setHostSource] = useState<DesktopSource | null>(null)
 
@@ -28,18 +28,14 @@ export function App(): React.JSX.Element {
 
   const stopBroadcast = useCallback(async (): Promise<void> => {
     await broadcast.stop()
-    hostStream?.getTracks().forEach((t) => t.stop())
-    setHostStream(null)
-    setHostSource(null)
-    setRoute('home')
-  }, [broadcast, hostStream])
+    setRoute('host-live')
+  }, [broadcast])
 
   useEffect(() => {
     const track = hostStream?.getVideoTracks()[0]
     if (!track || route !== 'host-live') return
     const onEnded = (): void => {
-      // Se a janela capturada fechar, nao derrubamos a live — o compositor
-      // entra em modo de espera ate o host escolher outra fonte ao vivo.
+      // Se a janela capturada fechar, o compositor entra em modo standby
       console.warn('[App] A fonte capturada foi encerrada; aguardando troca de fonte.')
     }
     track.addEventListener('ended', onEnded)
@@ -93,7 +89,7 @@ export function App(): React.JSX.Element {
 
   const leaveViewer = (): void => {
     viewer.disconnect()
-    setRoute('viewer-browse')
+    setRoute('host-live')
   }
 
   if (!settings) {
@@ -114,22 +110,27 @@ export function App(): React.JSX.Element {
       {route !== 'viewer-player' && (
         <Titlebar
           center={
-            broadcasting && route !== 'host-live' ? (
+            broadcasting ? (
               <button className="titlebar-live" onClick={() => setRoute('host-live')}>
                 <span className="live-dot" />
-                <span>Transmitindo</span>
+                <span>AO VIVO NO AR</span>
                 <Badge tone="live" icon={<IconUsers />}>
                   {broadcast.viewers.length}
                 </Badge>
               </button>
-            ) : undefined
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: 'var(--text-dim)' }}>
+                <span>PRISMCAST STUDIO</span>
+                <Badge tone="neutral">PREPARAÇÃO DE CENAS</Badge>
+              </div>
+            )
           }
         />
       )}
 
       {route === 'home' && (
         <Home
-          onShare={() => setRoute(broadcasting ? 'host-live' : 'host-setup')}
+          onShare={() => setRoute('host-live')}
           onWatch={() => setRoute('viewer-browse')}
         />
       )}
@@ -138,7 +139,7 @@ export function App(): React.JSX.Element {
         <HostSetup
           settings={settings}
           onSettingsChange={update}
-          onBack={() => setRoute('home')}
+          onBack={() => setRoute('host-live')}
           onStart={startBroadcast}
         />
       )}
@@ -151,7 +152,9 @@ export function App(): React.JSX.Element {
           settings={settings}
           onSettingsChange={update}
           onSourceSwitch={handleLiveSourceChanged}
+          onStartBroadcast={startBroadcast}
           onStop={() => void stopBroadcast()}
+          onOpenViewer={() => setRoute('viewer-browse')}
         />
       )}
 
@@ -159,7 +162,7 @@ export function App(): React.JSX.Element {
         <ViewerBrowse
           settings={settings}
           onSettingsChange={update}
-          onBack={() => setRoute('home')}
+          onBack={() => setRoute('host-live')}
           onConnect={connectToHost}
         />
       )}
@@ -177,10 +180,10 @@ export function App(): React.JSX.Element {
             variant="primary"
             onClick={() => {
               viewer.dismissClosed()
-              setRoute('viewer-browse')
+              setRoute('host-live')
             }}
           >
-            Voltar para a lista
+            Voltar ao Studio
           </Button>
         }
       />

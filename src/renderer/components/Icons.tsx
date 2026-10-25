@@ -277,3 +277,48 @@ export const IconWifi = (p: P): React.JSX.Element => (
     <path d="M12 19.5h.01" />
   </Svg>
 )
+
+export const IconPlus = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+)
+
+export const IconTrash = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+  </Svg>
+)
+
+export const IconEdit = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3Z" />
+  </Svg>
+)
+
+export const IconUp = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="m18 15-6-6-6 6" />
+  </Svg>
+)
+
+export const IconDown = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="m6 9 6 6 6-6" />
+  </Svg>
+)
+
+export const IconUser = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+    <circle cx="12" cy="7" r="4" />
+  </Svg>
+)
+
+export const IconCut = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="6" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12" />
+  </Svg>
+)

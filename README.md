@@ -1,15 +1,48 @@
-# PrismCast Studio (`v2.0.0`)
+# PrismCast Studio (`v2.1.0`)
 
-**PrismCast Studio** é um estúdio comercial de transmissão e compartilhamento de tela de ultra-baixa latência na rede local (LAN P2P) e Multistreaming RTMP simultâneo, alimentado por um **Core Nativo em Rust (`prismcast`)** e uma arquitetura de estúdio inspirada na engenharia reversa do **Streamlabs Desktop (`1.21.9`)**.
+**PrismCast Studio** é um estúdio comercial de transmissão e compartilhamento de tela de ultra-baixa latência na rede local (LAN P2P) e Multistreaming RTMP simultâneo, alimentado por um **Core Nativo em Rust (`prismcast`)**, interface moderna em **layout modular estilo OBS Studio / Streamlabs Desktop** e aceleração de vídeo por hardware com GPU zero-copy.
 
 ---
 
 ## Principais Funcionalidades
 
-1. **Core Nativo em Rust (`src-rust/`)**:
+1. **Layout e Experiência Estilo OBS Studio**:
+   - **Preparação e Edição Antes de Transmitir**: edite cenas, adicione fontes, organize camadas e configure seu áudio e overlays antes de iniciar a transmissão de fato.
+   - **Modo Estúdio (Prévia | Programa)**: visualize e edite a cena no palco de prévia e envie para o ar ao vivo com transições de **Corte (Cut)** ou **Esmaecer (Fade)**.
+   - **Docks Modulares Inferiores**: Cenas, Fontes da Cena Ativa, Mixer de Áudio com VU meters ao vivo, Transições e Controles da Live.
+
+2. **Gerenciador de Cenas e Fontes**:
+   - Cenas prontas para uso: `🎮 Gameplay & Cam`, `💬 Just Chatting`, `⏳ Começando em Breve`, `🛑 Pausa / Volto Já` e `🏁 Encerramento`.
+   - Adicione e gerencie fontes com visibilidade (olho), bloqueio de posição (cadeado), reordenação de camadas (Z-Index) e propriedades:
+     - 🖥️ Captura de Tela (Monitores completos)
+     - 🪟 Captura de Janela (Jogos e aplicativos)
+     - 📷 Câmera / Webcam (Facecam integrada)
+     - 🎙️ Entrada de Áudio (Microfone USB / XLR específico)
+     - 🔊 Saída de Áudio (Sons do PC / Desktop)
+     - 🌐 Browser Source (StreamElements, Alertas, Chat)
+     - 🎨 Fonte de Cor (Fundos e tarjas)
+     - 📝 Texto GDI+ / Personalizado
+
+3. **Sistema de Login & Conexão de Plataformas (Multicasting Automático)**:
+   - Login com **PrismCast Cloud ID** (nome, email, avatar, plano Studio).
+   - Conexão em 1 clique com as principais plataformas:
+     - 🟣 **Twitch** (`rtmp://live.twitch.tv/app`)
+     - 🔴 **YouTube Live** (`rtmp://a.rtmp.youtube.com/live2`)
+     - 🟢 **Kick** (`rtmps://fa723fc1b171.global-contribute.live-video.net/app`)
+     - ⬛ **TikTok Live** (`rtmp://push.tiktokv.com/live`)
+   - Ao conectar sua conta ou chave de stream, os destinos de multistreaming são ativados e configurados automaticamente sem necessidade de copiar URLs ou chaves manualmente.
+
+4. **Dual Output Simultâneo (`16:9 Horizontal` + `9:16 Vertical` Lado a Lado)**:
+   - Preview visual duplo renderizado em tempo real: **16:9 (1920x1080)** e **9:16 (1080x1920)** lado a lado no estúdio.
+   - 4 presets inteligentes de enquadramento vertical: **Split Cam + Jogo**, **Fundo Desfocado**, **Corte Central** e **PiP Vertical**.
+
+5. **Aceleração por Hardware GPU & Decodificação Zero-Copy**:
+   - Flags Chromium habilitadas para rasterização por GPU (`--enable-gpu-rasterization`, `--enable-zero-copy`, `--enable-hardware-overlays`).
+   - Detecção automática de encoders de hardware FFmpeg (`h264_nvenc`, `h264_amf`, `h264_qsv`, `libx264`).
+
+6. **Core Nativo em Rust (`src-rust/`)**:
    - Descoberta UDP na LAN com cálculo inteligente de broadcast e filtro anti-adaptadores virtuais (`net.rs`, `discovery.rs`).
    - Servidor e Cliente de Sinalização WebSocket assíncronos em Tokio com proteção anti-força bruta de PIN, Chat ao vivo, Reações e Party Voice (`signaling.rs`).
-   - Motor de Multistreaming RTMP e Dual Output com detecção automática de encoders de hardware (`h264_nvenc`, `h264_amf`, `h264_qsv`, `libx264`) (`multistream.rs`).
    - Gravador local contínuo + **Circular Replay Buffer** em memória (`VecDeque`) para salvar os últimos 30 segundos instantaneamente (`recorder.rs`).
    - Gerenciador de Firewall do Windows (`netsh advfirewall`) e persistência atômica (`firewall.rs`, `store.rs`).
 

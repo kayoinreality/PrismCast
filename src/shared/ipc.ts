@@ -7,19 +7,26 @@ import type {
   AudioMixerSettings,
   CanvasOrientation,
   ChatMessage,
+  ConnectedAccount,
   ConnectedViewer,
   DiscoveredHost,
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
+  MediaDeviceEntry,
   MultistreamStatus,
   MultistreamTarget,
+  PlatformId,
   ReactionEvent,
   RecorderStatus,
   RejectReason,
+  Scene,
+  SceneItem,
   SourceKind,
   StreamWidget,
   StudioCompositorSettings,
+  StudioScenesState,
+  UserProfile,
   ViewerToHost
 } from './protocol'
 
@@ -102,6 +109,8 @@ export interface AppSettings {
   hotkeys: HotkeyBindings
   multistreamTargets: MultistreamTarget[]
   widgets: StreamWidget[]
+  scenes: StudioScenesState
+  profile: UserProfile
 }
 
 export interface ViewerClosedInfo {
@@ -124,6 +133,32 @@ export interface Api {
   sources: {
     list(): Promise<DesktopSource[]>
     select(sourceId: string, withAudio: boolean): Promise<void>
+  }
+  scenes: {
+    getState(): Promise<StudioScenesState>
+    createScene(name: string): Promise<Scene>
+    updateScene(sceneId: string, patch: Partial<Scene>): Promise<Scene>
+    deleteScene(sceneId: string): Promise<void>
+    selectScene(sceneId: string): Promise<void>
+    duplicateScene(sceneId: string): Promise<Scene>
+    setStudioMode(enabled: boolean): Promise<boolean>
+    transition(type: 'cut' | 'fade', durationMs?: number): Promise<void>
+    addItem(sceneId: string, item: Omit<SceneItem, 'id'>): Promise<SceneItem>
+    updateItem(sceneId: string, itemId: string, patch: Partial<SceneItem>): Promise<SceneItem>
+    removeItem(sceneId: string, itemId: string): Promise<void>
+    reorderItem(sceneId: string, itemId: string, newIndex: number): Promise<void>
+  }
+  auth: {
+    getProfile(): Promise<UserProfile>
+    updateProfile(patch: Partial<UserProfile>): Promise<UserProfile>
+    connectPlatform(
+      platform: PlatformId,
+      credentials?: { username?: string; streamKey?: string; rtmpUrl?: string }
+    ): Promise<ConnectedAccount>
+    disconnectPlatform(platform: PlatformId): Promise<void>
+  }
+  media: {
+    listDevices(): Promise<MediaDeviceEntry[]>
   }
   host: {
     start(opts: HostStartOptions): Promise<HostStartResult>
@@ -237,6 +272,26 @@ export const CH = {
 
   firewallStatus: 'firewall:status',
   firewallAuthorize: 'firewall:authorize',
+
+  scenesGetState: 'scenes:get-state',
+  scenesCreate: 'scenes:create',
+  scenesUpdate: 'scenes:update',
+  scenesDelete: 'scenes:delete',
+  scenesSelect: 'scenes:select',
+  scenesDuplicate: 'scenes:duplicate',
+  scenesSetStudioMode: 'scenes:set-studio-mode',
+  scenesTransition: 'scenes:transition',
+  scenesAddItem: 'scenes:add-item',
+  scenesUpdateItem: 'scenes:update-item',
+  scenesRemoveItem: 'scenes:remove-item',
+  scenesReorderItem: 'scenes:reorder-item',
+
+  authGetProfile: 'auth:get-profile',
+  authUpdateProfile: 'auth:update-profile',
+  authConnectPlatform: 'auth:connect-platform',
+  authDisconnectPlatform: 'auth:disconnect-platform',
+
+  mediaListDevices: 'media:list-devices',
 
   settingsGet: 'settings:get',
   settingsSet: 'settings:set'

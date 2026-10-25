@@ -419,3 +419,134 @@ pub struct ConnectedViewer {
     pub joined_at: u64,
     pub ping_ms: Option<u64>,
 }
+
+// ------------------------------------------ Gerenciamento de Cenas & Fontes (OBS Style)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceType {
+    ScreenCapture,
+    WindowCapture,
+    CameraInput,
+    AudioInput,
+    AudioOutput,
+    BrowserSource,
+    ImageSource,
+    ColorSource,
+    TextSource,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceTransform {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub z_index: i32,
+    pub crop_top: Option<f32>,
+    pub crop_bottom: Option<f32>,
+    pub crop_left: Option<f32>,
+    pub crop_right: Option<f32>,
+}
+
+impl Default for SourceTransform {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+            z_index: 0,
+            crop_top: None,
+            crop_bottom: None,
+            crop_left: None,
+            crop_right: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SceneItem {
+    pub id: String,
+    pub source_id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub source_type: SourceType,
+    pub visible: bool,
+    pub locked: bool,
+    pub transform: SourceTransform,
+    pub vertical_transform: SourceTransform,
+    pub show_on_horizontal: bool,
+    pub show_on_vertical: bool,
+    #[serde(default)]
+    pub settings: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Scene {
+    pub id: String,
+    pub name: String,
+    pub items: Vec<SceneItem>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioScenesState {
+    pub scenes: Vec<Scene>,
+    pub active_scene_id: String,
+    pub preview_scene_id: String,
+    pub studio_mode: bool,
+    pub transition_type: String, // "cut" | "fade"
+    pub transition_duration_ms: u32,
+}
+
+// ------------------------------------------ Sistema de Login & Plataformas de Streaming
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlatformId {
+    Twitch,
+    Youtube,
+    Kick,
+    Tiktok,
+    Prismcast,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConnectedAccount {
+    pub platform: PlatformId,
+    pub username: String,
+    pub display_name: String,
+    pub avatar_url: String,
+    pub connected: bool,
+    pub rtmp_url: String,
+    pub stream_key: String,
+    pub channel_url: Option<String>,
+    pub connected_at: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserProfile {
+    pub is_logged_in: bool,
+    pub id: String,
+    pub name: String,
+    pub email: String,
+    pub avatar_url: String,
+    pub plan: String,
+    pub accounts: std::collections::HashMap<String, ConnectedAccount>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDeviceEntry {
+    pub device_id: String,
+    pub label: String,
+    pub kind: String, // "audioinput" | "audiooutput" | "videoinput"
+    pub group_id: String,
+}

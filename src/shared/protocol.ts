@@ -98,6 +98,104 @@ export interface MultistreamStatus {
   targets: MultistreamTargetStatus[]
 }
 
+// ------------------------------------------ Gerenciamento de Cenas & Fontes (OBS Style)
+
+export type SourceType =
+  | 'screen_capture'
+  | 'window_capture'
+  | 'camera_input'
+  | 'audio_input'
+  | 'audio_output'
+  | 'browser_source'
+  | 'image_source'
+  | 'color_source'
+  | 'text_source'
+
+export interface SourceTransform {
+  /** Posição X normalizada (0..1) em relação ao canvas */
+  x: number
+  /** Posição Y normalizada (0..1) em relação ao canvas */
+  y: number
+  /** Largura normalizada (0..1) */
+  width: number
+  /** Altura normalizada (0..1) */
+  height: number
+  /** Camada Z (maior = na frente) */
+  zIndex: number
+  cropTop?: number
+  cropBottom?: number
+  cropLeft?: number
+  cropRight?: number
+}
+
+export interface SceneItem {
+  id: string
+  sourceId: string
+  name: string
+  type: SourceType
+  visible: boolean
+  locked: boolean
+  /** Transform no canvas 16:9 Horizontal (1920x1080) */
+  transform: SourceTransform
+  /** Transform no canvas 9:16 Vertical (1080x1920) */
+  verticalTransform: SourceTransform
+  showOnHorizontal: boolean
+  showOnVertical: boolean
+  /** Configurações específicas da fonte (deviceId, windowId, url, text, color, volume, etc.) */
+  settings: Record<string, any>
+}
+
+export interface Scene {
+  id: string
+  name: string
+  items: SceneItem[]
+  createdAt: number
+}
+
+export interface StudioScenesState {
+  scenes: Scene[]
+  activeSceneId: string
+  previewSceneId: string
+  studioMode: boolean
+  transitionType: 'cut' | 'fade'
+  transitionDurationMs: number
+}
+
+// ------------------------------------------ Sistema de Login & Plataformas de Streaming
+
+export type PlatformId = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'prismcast'
+
+export interface ConnectedAccount {
+  platform: PlatformId
+  username: string
+  displayName: string
+  avatarUrl: string
+  connected: boolean
+  rtmpUrl: string
+  streamKey: string
+  channelUrl?: string
+  connectedAt?: number
+}
+
+export interface UserProfile {
+  isLoggedIn: boolean
+  id: string
+  name: string
+  email: string
+  avatarUrl: string
+  plan: 'free' | 'pro' | 'studio'
+  accounts: Record<PlatformId, ConnectedAccount>
+}
+
+// -------------------------------------- Dispositivos de Áudio e Vídeo do Sistema
+
+export interface MediaDeviceEntry {
+  deviceId: string
+  label: string
+  kind: 'audioinput' | 'audiooutput' | 'videoinput'
+  groupId: string
+}
+
 // -------------------------------------- Widgets & StreamElements Overlays
 
 export type WidgetKind =

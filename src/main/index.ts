@@ -13,6 +13,12 @@ import { createWindow, getMainWindow } from './window'
  */
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
+// Otimizações de decodificação e aceleração por GPU (baseado no Streamlabs OBS)
+app.commandLine.appendSwitch('enable-gpu-rasterization')
+app.commandLine.appendSwitch('enable-zero-copy')
+app.commandLine.appendSwitch('ignore-gpu-blocklist')
+app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,underlay')
+
 // Duas instancias na mesma maquina sao uteis para testar host + espectador
 // lado a lado, entao nao ha lock de instancia unica.
 

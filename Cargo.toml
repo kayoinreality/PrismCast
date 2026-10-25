@@ -1,6 +1,6 @@
 [package]
 name = "prismcast"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 authors = ["kayor"]
 description = "PrismCast Studio — Motor nativo em Rust para transmissão LAN P2P, Multistreaming (Twitch, YouTube, Kick, TikTok), Dual Output (16:9 + 9:16), Replay Buffer e Widgets"
