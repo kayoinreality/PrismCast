@@ -3,7 +3,7 @@ import { hostname, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import { defaultSettings, DEFAULT_PRESET_ID } from '@shared/quality'
-import { PLATFORM_INFO, type AppSettings } from '@shared/ipc'
+import { PLATFORM_INFO, PRISMCAST_TWITCH_CLIENT_ID, type AppSettings } from '@shared/ipc'
 import type {
   AudioMixerSettings,
   Destination,
@@ -306,7 +306,11 @@ function normalize(raw: unknown): AppSettings {
     hotkeys: { ...base.hotkeys, ...(typed.hotkeys ?? {}) },
     destinations: normalizeDestinations(typed.destinations, base.destinations),
     scenes,
-    twitchClientId: typeof typed.twitchClientId === 'string' ? typed.twitchClientId : '',
+    // Igual ao embutido não é "próprio": guarda vazio para seguir o do app se ele mudar.
+    twitchClientId:
+      typeof typed.twitchClientId === 'string' && typed.twitchClientId.trim() !== PRISMCAST_TWITCH_CLIENT_ID
+        ? typed.twitchClientId.trim()
+        : '',
     kitPath: typed.kitPath === undefined ? base.kitPath : typed.kitPath
   }
 }

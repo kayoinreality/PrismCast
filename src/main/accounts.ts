@@ -1,5 +1,5 @@
 import { shell } from 'electron'
-import { CH, type OkResult } from '@shared/ipc'
+import { CH, PRISMCAST_TWITCH_CLIENT_ID, type OkResult } from '@shared/ipc'
 import type { PlatformAccount, TwitchLoginState } from '@shared/protocol'
 import { getSettings, setSecret, streamKeySecret, updateDestination } from './store'
 import { getMainWindow } from './window'
@@ -12,7 +12,6 @@ import { getMainWindow } from './window'
  *     criptografada. Nada é inventado: sem chave, o destino fica desligado.
  *  2. "Entrar com a Twitch": login OAuth pelo fluxo device code. O usuário confirma
  *     um código em twitch.tv/activate e o app busca nome, avatar e a chave pela API.
- *     Precisa do Client ID de um app registrado em dev.twitch.tv (tipo "Público").
  */
 
 const TWITCH_SCOPES = 'channel:read:stream_key'
@@ -103,11 +102,7 @@ export async function startTwitchLogin(destinationId: string): Promise<void> {
   loginAbort = abort
   const { signal } = abort
 
-  const clientId = getSettings().twitchClientId.trim()
-  if (!clientId) {
-    emitTwitch({ step: 'error', message: 'Cole o Client ID do seu app da Twitch antes de entrar.' })
-    return
-  }
+  const clientId = getSettings().twitchClientId.trim() || PRISMCAST_TWITCH_CLIENT_ID
 
   try {
     const deviceRes = await postForm(
@@ -118,7 +113,9 @@ export async function startTwitchLogin(destinationId: string): Promise<void> {
     if (!deviceRes.ok) {
       throw new Error(
         deviceRes.status === 400
-          ? 'A Twitch recusou o Client ID. Confira se o app é do tipo "Público".'
+          ? clientId === PRISMCAST_TWITCH_CLIENT_ID
+            ? 'A Twitch recusou o login do PrismCast agora. Tente de novo em instantes ou cole a chave abaixo.'
+            : 'A Twitch recusou o seu Client ID. Confira se o app é do tipo "Público", ou apague o campo para usar o do PrismCast.'
           : `A Twitch respondeu ${deviceRes.status} ao pedir o código.`
       )
     }

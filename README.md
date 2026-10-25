@@ -38,11 +38,9 @@ aparecem **na live e na gravação**, não só na pré-visualização. Funciona 
 - As chaves de transmissão ficam criptografadas com o DPAPI do Windows (`safeStorage`) num arquivo separado e nunca
   voltam para a interface depois de salvas. O formato é validado (Twitch `live_…`, YouTube `xxxx-xxxx-…`, Kick `sk_…`).
 - **Entrar com a Twitch** usa OAuth (fluxo *device code*): o app mostra um código, você confirma em
-  `twitch.tv/activate` e ele busca nome, avatar e a chave pela API. Precisa de um Client ID:
-  1. Registre um app em <https://dev.twitch.tv/console/apps/create>.
-  2. URL de redirecionamento `https://localhost` (o fluxo device code não usa, mas a Twitch exige uma URL HTTPS),
-     categoria *Broadcaster Suite*, tipo de cliente **Público**.
-  3. Cole o Client ID em Destinos → Twitch → *Configurar login*.
+  `twitch.tv/activate` e ele busca nome, avatar e a chave pela API. O Client ID do app PrismCast (tipo **Público**,
+  sem secret) já vem embutido em `src/shared/ipc.ts`, então ninguém precisa registrar nada. Para usar um app
+  próprio (dev.twitch.tv, tipo Público, redirect `https://localhost`), cole o ID em Destinos → Twitch → *Avançado*.
 - Kick e TikTok mudam o servidor por conta: copie servidor e chave do painel de cada um.
 
 ## Como a live sai

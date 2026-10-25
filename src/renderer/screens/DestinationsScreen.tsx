@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { PLATFORM_INFO } from '@shared/ipc'
+import { PLATFORM_INFO, PRISMCAST_TWITCH_CLIENT_ID } from '@shared/ipc'
 import type { Destination, PlatformId, TwitchLoginState } from '@shared/protocol'
 import { Button, Field, TextInput, Toggle } from '@/components/ui'
 import { IconCheck, IconExternal, IconKey, IconPlus, IconTrash } from '@/components/Icons'
@@ -70,7 +70,8 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
   const { settings, update } = useStudio()
   const [clientId, setClientId] = useState(settings.twitchClientId)
   const [setup, setSetup] = useState(false)
-  const configured = settings.twitchClientId.trim().length > 0
+  const own = settings.twitchClientId.trim()
+  const custom = own.length > 0 && own !== PRISMCAST_TWITCH_CLIENT_ID
 
   if (state.step === 'code') {
     return (
@@ -92,40 +93,23 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
   return (
     <div className="twitch-login">
       <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-        <Button
-          className="btn-twitch"
-          disabled={!configured}
-          onClick={() => void window.api.destinations.twitchLogin(dest.id)}
-          title={configured ? '' : 'Configure o Client ID primeiro'}
-        >
+        <Button className="btn-twitch" onClick={() => void window.api.destinations.twitchLogin(dest.id)}>
           {dest.account ? 'Entrar de novo com a Twitch' : 'Entrar com a Twitch'}
         </Button>
-        <button className="link-btn" onClick={() => setSetup((s) => !s)}>
-          {configured ? 'Client ID configurado' : 'Configurar login (1 minuto)'}
-        </button>
+        <span className="hint">Só pede permissão para ler a sua chave de transmissão.</span>
       </div>
       {state.step === 'error' && <span className="error-text">{state.message}</span>}
+      <button className="link-btn twitch-advanced" onClick={() => setSetup((s) => !s)}>
+        {custom ? 'Usando o seu próprio Client ID' : 'Avançado: usar outro Client ID'}
+      </button>
       {setup && (
         <div className="twitch-setup">
-          <ol>
-            <li>
-              Abra{' '}
-              <button className="link-btn" onClick={() => window.api.app.openExternal('https://dev.twitch.tv/console/apps/create')}>
-                dev.twitch.tv/console/apps
-              </button>{' '}
-              e registre um app.
-            </li>
-            <li>
-              Nome: qualquer um (ex. “PrismCast do Kayo”). URL de redirecionamento: <code>https://localhost</code>{' '}
-              (clique em Add; o login não usa esse endereço, mas a Twitch exige um).
-            </li>
-            <li>
-              Categoria: <b>Broadcaster Suite</b>. Tipo de cliente: <b>Público</b>.
-            </li>
-            <li>Copie o Client ID e cole abaixo.</li>
-          </ol>
+          <span className="hint">
+            Opcional. O PrismCast já tem um app registrado na Twitch. Cole aqui só se quiser usar um app seu
+            (dev.twitch.tv, tipo Público). Deixe vazio para voltar ao do PrismCast.
+          </span>
           <div className="row" style={{ gap: 'var(--sp-2)' }}>
-            <TextInput value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client ID" spellCheck={false} />
+            <TextInput value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="Client ID do PrismCast" spellCheck={false} />
             <Button
               onClick={() => {
                 update({ twitchClientId: clientId.trim() })
@@ -136,9 +120,6 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
               Salvar
             </Button>
           </div>
-          <span className="hint">
-            O login usa só a permissão de ler a sua chave de transmissão. Ela fica criptografada neste PC.
-          </span>
         </div>
       )}
     </div>

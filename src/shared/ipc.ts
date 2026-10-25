@@ -106,7 +106,7 @@ export interface AppSettings {
   hotkeys: HotkeyBindings
   destinations: Destination[]
   scenes: StudioScenesState
-  /** Client ID de um app da Twitch (dev.twitch.tv) para o login "Entrar com a Twitch". */
+  /** Client ID próprio para o login da Twitch. Vazio = o do PrismCast (embutido). */
   twitchClientId: string
   /** Pasta do kit de widgets (overlays HTML), ex. E:\kayoinreality-kit */
   kitPath: string | null
@@ -221,6 +221,13 @@ export interface Api {
     onChanged(cb: (settings: AppSettings) => void): Unsubscribe
   }
 }
+
+/**
+ * Client ID do app "PrismCast" registrado em dev.twitch.tv (tipo Público). Não é
+ * segredo: clientes públicos não têm secret e o fluxo device code foi feito para
+ * o ID ir dentro do programa. Quem quiser usar o próprio app sobrescreve em Destinos.
+ */
+export const PRISMCAST_TWITCH_CLIENT_ID = 'xsohreda00eufw5ifqsxtakmgwyys6'
 
 /** Endereços de servidor conhecidos. Kick e TikTok mudam por conta: o usuário cola o dele. */
 export const PLATFORM_INFO: Record<

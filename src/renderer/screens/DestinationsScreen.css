@@ -124,6 +124,12 @@
   border-bottom: 1px solid var(--border);
 }
 
+.twitch-advanced {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
 .twitch-setup {
   display: flex;
   flex-direction: column;
