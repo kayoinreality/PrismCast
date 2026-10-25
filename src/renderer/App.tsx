@@ -56,14 +56,26 @@ function Shell(): React.JSX.Element {
     return window.api.app.onHotkey((action) => {
       const mixer = settings.audioMixer
       const studio = settings.studio
+      /** Muta/desmuta todos os canais de um tipo (vários microfones contam juntos). */
+      const toggleKind = (kind: 'mic' | 'desktop', on: string, off: string): void => {
+        const chans = mixer.channels.filter((c) => c.kind === kind)
+        if (chans.length === 0) return
+        const mute = chans.some((c) => !c.muted)
+        update({
+          audioMixer: { ...mixer, channels: mixer.channels.map((c) => (c.kind === kind ? { ...c, muted: mute } : c)) }
+        })
+        toast(mute ? off : on)
+      }
       switch (action) {
         case 'toggle-mic-mute':
-          update({ audioMixer: { ...mixer, micMuted: !mixer.micMuted } })
-          toast(mixer.micMuted ? 'Microfone ligado' : 'Microfone mudo')
+          toggleKind('mic', 'Microfone ligado', 'Microfone mudo')
           break
         case 'toggle-system-mute':
-          update({ audioMixer: { ...mixer, systemMuted: !mixer.systemMuted } })
-          toast(mixer.systemMuted ? 'Áudio do PC ligado' : 'Áudio do PC mudo')
+          toggleKind('desktop', 'Áudio do PC ligado', 'Áudio do PC mudo')
+          break
+        case 'toggle-camera':
+          update({ studio: { ...studio, cameraEnabled: !studio.cameraEnabled } })
+          toast(studio.cameraEnabled ? 'Câmera desligada — molduras escondidas' : 'Câmera ligada')
           break
         case 'toggle-privacy-shield':
           update({ studio: { ...studio, privacyShieldActive: !studio.privacyShieldActive } })

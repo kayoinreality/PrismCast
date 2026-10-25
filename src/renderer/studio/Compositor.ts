@@ -56,7 +56,9 @@ export class Compositor {
 
   constructor(
     studio: StudioCompositorSettings,
-    private readonly resolve: SourceResolver
+    private readonly resolve: SourceResolver,
+    /** fontes escondidas pelo estúdio (ex.: câmera desligada) */
+    private readonly suppressed: (item: SceneItem) => boolean = () => false
   ) {
     this.studio = { ...studio }
     const make = (w: number, h: number): HTMLCanvasElement => {
@@ -143,7 +145,7 @@ export class Compositor {
   /** Desenha uma cena; usado também pelo editor para miniaturas. */
   drawScene(ctx: CanvasRenderingContext2D, scene: Scene, W: number, H: number, vertical: boolean): void {
     const items = scene.items
-      .filter((it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal))
+      .filter((it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal) && !this.suppressed(it))
       .sort((a, b) => (vertical ? a.verticalTransform.zIndex - b.verticalTransform.zIndex : a.transform.zIndex - b.transform.zIndex))
     const base = ctx.globalAlpha
     for (const item of items) {

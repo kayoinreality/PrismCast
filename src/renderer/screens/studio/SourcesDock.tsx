@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Scene, SceneItem, SourceType } from '@shared/protocol'
 import { IconButton } from '@/components/ui'
-import { IconDown, IconEye, IconEyeOff, IconLock, IconPlus, IconTrash, IconUp } from '@/components/Icons'
+import { IconCameraOff, IconDown, IconEye, IconEyeOff, IconLock, IconPlus, IconTrash, IconUp } from '@/components/Icons'
 import { useStudio } from '@/studio/StudioContext'
 import { addItem, kitItem, makeItem, moveItem, removeItem, SOURCE_LABEL, updateItem } from '@/studio/scenes'
 import { SourceIcon } from './sourceIcons'
 import { SourcePickerModal, WidgetPickerModal, type WidgetChoice } from './Pickers'
+import { hiddenWithoutCamera } from '@/studio/widgets'
 
 const ADD_MENU: Array<{ type: SourceType; hint: string }> = [
   { type: 'screen_capture', hint: 'Monitor inteiro' },
@@ -26,9 +27,11 @@ export function SourcesDock({
   selectedId: string | null
   onSelect: (id: string | null) => void
 }): React.JSX.Element {
-  const { settings, update, toast } = useStudio()
+  const { settings, update, toast, kit, undo } = useStudio()
   const st = settings.scenes
   const [menu, setMenu] = useState(false)
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const cameraOn = settings.studio.cameraEnabled
   const [picker, setPicker] = useState<'screen' | 'window' | null>(null)
   const [widgetPicker, setWidgetPicker] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -138,12 +141,36 @@ export function SourcesDock({
             key={it.id}
             className={`dock-row ${it.id === selectedId ? 'is-selected' : ''} ${it.visible ? '' : 'is-hidden'}`}
             onClick={() => onSelect(it.id)}
-            title={SOURCE_LABEL[it.type]}
+            onDoubleClick={() => setRenaming(it.id)}
+            title={`${SOURCE_LABEL[it.type]} · duplo clique renomeia`}
           >
             <span className="dock-icon">
               <SourceIcon type={it.type} />
             </span>
-            <span className="dock-name">{it.name}</span>
+            {renaming === it.id ? (
+              <input
+                className="dock-rename"
+                defaultValue={it.name}
+                autoFocus
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.stopPropagation()}
+                onBlur={(e) => {
+                  if (e.target.value.trim()) patch(it, { name: e.target.value.trim() })
+                  setRenaming(null)
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                  if (e.key === 'Escape') setRenaming(null)
+                }}
+              />
+            ) : (
+              <span className="dock-name">{it.name}</span>
+            )}
+            {!cameraOn && hiddenWithoutCamera(it, kit) && (
+              <span className="dock-flag" title="Câmera desligada: não aparece na live">
+                <IconCameraOff size={13} />
+              </span>
+            )}
             <button
               className={`dock-toggle is-lock ${it.locked ? 'is-on' : ''}`}
               title={it.locked ? 'Destravar' : 'Travar posição'}
@@ -194,6 +221,7 @@ export function SourcesDock({
             if (!selected) return
             update({ scenes: removeItem(st, scene.id, selected.id) })
             onSelect(null)
+            toast(`“${selected.name}” removida`, 'info', { label: 'Desfazer', run: () => undo() })
           }}
         >
           <IconTrash size={15} />

@@ -72,6 +72,8 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
   const [setup, setSetup] = useState(false)
   const own = settings.twitchClientId.trim()
   const custom = own.length > 0 && own !== PRISMCAST_TWITCH_CLIENT_ID
+  const scopes = dest.account?.scopes ?? []
+  const outdated = dest.account !== null && !(scopes.includes('channel:manage:broadcast') && scopes.includes('user:write:chat'))
 
   if (state.step === 'code') {
     return (
@@ -96,8 +98,14 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
         <Button className="btn-twitch" onClick={() => void window.api.destinations.twitchLogin(dest.id)}>
           {dest.account ? 'Entrar de novo com a Twitch' : 'Entrar com a Twitch'}
         </Button>
-        <span className="hint">Só pede permissão para ler a sua chave de transmissão.</span>
+        <span className="hint">Pede a chave de transmissão, mudar título/categoria e escrever no chat.</span>
       </div>
+      {outdated && (
+        <div className="dest-warn">
+          Seu login é da versão anterior e só libera a chave. Entre de novo para o PrismCast mudar o título da live e
+          escrever no chat por você.
+        </div>
+      )}
       {state.step === 'error' && <span className="error-text">{state.message}</span>}
       <button className="link-btn twitch-advanced" onClick={() => setSetup((s) => !s)}>
         {custom ? 'Usando o seu próprio Client ID' : 'Avançado: usar outro Client ID'}
@@ -131,6 +139,7 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
   const state = useEngineState()
   const [advanced, setAdvanced] = useState(PLATFORM_INFO[dest.platform].serverFromDashboard && !dest.server)
   const [confirmRemove, setConfirmRemove] = useState(false)
+  const [showKey, setShowKey] = useState(false)
   const info = PLATFORM_INFO[dest.platform]
   const status = state.multistream.destinations.find((s) => s.id === dest.id)
   const live = state.live && (status?.state === 'live' || status?.state === 'connecting')
@@ -176,7 +185,13 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
       {status?.error && <div className="dest-error">{status.error}</div>}
 
       {dest.platform === 'twitch' && <TwitchLogin dest={dest} state={twitch} />}
-      <KeyForm dest={dest} />
+      {dest.platform === 'twitch' && dest.account && !showKey ? (
+        <button className="link-btn dest-advanced-toggle" onClick={() => setShowKey(true)}>
+          Colar a chave manualmente
+        </button>
+      ) : (
+        <KeyForm dest={dest} />
+      )}
 
       <button className="link-btn dest-advanced-toggle" onClick={() => setAdvanced((a) => !a)}>
         {advanced ? 'Esconder opções' : 'Servidor e qualidade'}
@@ -284,8 +299,9 @@ export function DestinationsScreen(): React.JSX.Element {
         <header className="page-header">
           <h1>Destinos</h1>
           <p>
-            Para onde a live vai quando você clica em “Entrar ao vivo”. Ligue quantos quiser: o PrismCast manda para
-            todos ao mesmo tempo. {enabled > 0 ? `${enabled} ligado${enabled > 1 ? 's' : ''} agora.` : ''}
+            Conecte suas plataformas uma vez. Em cada live você escolhe quais vão: direto na barra de baixo do Estúdio
+            ou em “Entrar ao vivo”. O PrismCast manda para todas ao mesmo tempo.{' '}
+            {enabled > 0 ? `${enabled} ligado${enabled > 1 ? 's' : ''} agora.` : ''}
           </p>
         </header>
 

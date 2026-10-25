@@ -1,10 +1,9 @@
 import { app, BrowserWindow, session } from 'electron'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { installDisplayMediaHandler, setOwnWindowTitle } from './capture'
 import { registerGlobalHotkeys, registerIpc, shutdown } from './ipc-handlers'
 import { createWindow, getMainWindow } from './window'
+import { helperPath } from './audio-apps'
 
 /**
  * Sem isto o Chromium troca os IPs locais por nomes .local (privacidade do
@@ -25,11 +24,7 @@ app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,unde
 let rustEngineProc: ChildProcess | null = null
 
 function startRustSidecarIfAvailable(): void {
-  const candidates = [
-    join(app.getAppPath(), 'target', 'release', 'prismcast.exe'),
-    join(app.getAppPath(), 'target', 'debug', 'prismcast.exe')
-  ]
-  const binPath = candidates.find((p) => existsSync(p))
+  const binPath = helperPath('prismcast.exe')
   if (!binPath) return
   try {
     rustEngineProc = spawn(binPath, [], {

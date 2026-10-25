@@ -177,3 +177,94 @@ kbd {
   background: var(--surface-active);
   box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.4);
 }
+
+.toasts .toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  pointer-events: auto;
+}
+
+.toast-action {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  font-size: 12.5px;
+  font-weight: 650;
+  flex: none;
+}
+
+.toast-action:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* ------------------------------------------------------ atalhos editáveis */
+
+.hotkey-btn {
+  min-width: 150px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  text-align: right;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.hotkey-btn:hover {
+  background: var(--surface);
+}
+
+.hotkey-btn.is-recording {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+/* --------------------------------------------------------- textos do kit */
+
+.kit-texts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+
+.kit-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kit-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.kit-list-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kit-list-row .text-input {
+  height: 34px;
+  font-size: 13px;
+}
+
+.kit-rede {
+  width: 130px;
+  height: 34px;
+  flex: none;
+}
+
+.dest-warn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--warning-soft);
+  color: #ffd9a8;
+  font-size: 12.5px;
+  line-height: 1.45;
+}

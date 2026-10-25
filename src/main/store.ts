@@ -3,11 +3,13 @@ import { hostname, userInfo } from 'node:os'
 import { dirname, join } from 'node:path'
 import { app, safeStorage } from 'electron'
 import { defaultSettings, DEFAULT_PRESET_ID } from '@shared/quality'
+import { defaultMixer, normalizeMixer } from '@shared/audio'
 import { PLATFORM_INFO, PRISMCAST_TWITCH_CLIENT_ID, type AppSettings } from '@shared/ipc'
 import type {
-  AudioMixerSettings,
+  ChatSettings,
   Destination,
   HotkeyBindings,
+  LiveInfo,
   PlatformId,
   Scene,
   SceneItem,
@@ -40,24 +42,9 @@ function friendlyName(): string {
   }
 }
 
-export function defaultAudioMixer(): AudioMixerSettings {
-  return {
-    systemAudioEnabled: true,
-    systemVolume: 1,
-    systemMuted: false,
-    micEnabled: false,
-    micDeviceId: null,
-    micVolume: 1,
-    micMuted: false,
-    noiseSuppression: true,
-    echoCancellation: true,
-    compressorEnabled: true,
-    partyVoiceEnabled: true
-  }
-}
-
 export function defaultStudioSettings(): StudioCompositorSettings {
   return {
+    cameraEnabled: true,
     dualOutputEnabled: false,
     fps: 60,
     privacyShieldActive: false,
@@ -73,8 +60,17 @@ export function defaultHotkeys(): HotkeyBindings {
     toggleSystemMute: 'CommandOrControl+Shift+D',
     togglePrivacyShield: 'CommandOrControl+Shift+P',
     saveReplayClip: 'CommandOrControl+Shift+S',
-    toggleVerticalPreview: 'CommandOrControl+Shift+V'
+    toggleVerticalPreview: 'CommandOrControl+Shift+V',
+    toggleCamera: 'CommandOrControl+Shift+C'
   }
+}
+
+export function defaultLive(): LiveInfo {
+  return { title: '', categoryId: '', categoryName: '' }
+}
+
+export function defaultChat(): ChatSettings {
+  return { channel: '', fontSize: 14, showTimestamps: false, popoutOnTop: true, popoutBounds: null }
 }
 
 export function makeDestination(platform: PlatformId, id = `${platform}-main`): Destination {
@@ -142,13 +138,15 @@ function fresh(): AppSettings {
     requirePin: true,
     preferredInterface: null,
     firewallPromptDismissed: false,
-    audioMixer: defaultAudioMixer(),
+    audioMixer: defaultMixer(),
     studio: defaultStudioSettings(),
     hotkeys: defaultHotkeys(),
     destinations: defaultDestinations(),
     scenes: defaultScenesState(),
     twitchClientId: '',
-    kitPath: guessKitPath()
+    kitPath: guessKitPath(),
+    live: defaultLive(),
+    chat: defaultChat()
   }
 }
 
@@ -301,7 +299,7 @@ function normalize(raw: unknown): AppSettings {
     requirePin: typed.requirePin ?? base.requirePin,
     preferredInterface: typed.preferredInterface ?? null,
     firewallPromptDismissed: typed.firewallPromptDismissed ?? false,
-    audioMixer: { ...base.audioMixer, ...(typed.audioMixer ?? {}) },
+    audioMixer: normalizeMixer(typed.audioMixer),
     studio: { ...base.studio, ...(typed.studio ?? {}) },
     hotkeys: { ...base.hotkeys, ...(typed.hotkeys ?? {}) },
     destinations: normalizeDestinations(typed.destinations, base.destinations),
@@ -311,7 +309,9 @@ function normalize(raw: unknown): AppSettings {
       typeof typed.twitchClientId === 'string' && typed.twitchClientId.trim() !== PRISMCAST_TWITCH_CLIENT_ID
         ? typed.twitchClientId.trim()
         : '',
-    kitPath: typed.kitPath === undefined ? base.kitPath : typed.kitPath
+    kitPath: typed.kitPath === undefined ? base.kitPath : typed.kitPath,
+    live: { ...base.live, ...(typed.live ?? {}) },
+    chat: { ...base.chat, ...(typed.chat ?? {}) }
   }
 }
 

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { IconButton } from '@/components/ui'
 import { IconCopy, IconDown, IconPlus, IconTrash, IconUp } from '@/components/Icons'
-import { useStudio } from '@/studio/StudioContext'
+import { useEngineState, useStudio } from '@/studio/StudioContext'
 import {
   createScene,
   deleteScene,
@@ -13,11 +13,11 @@ import {
 } from '@/studio/scenes'
 
 export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): React.JSX.Element {
-  const { settings, update } = useStudio()
+  const { settings, update, toast, undo } = useStudio()
+  const live = useEngineState().live
   const st = settings.scenes
   const current = editingScene(st)
   const [renaming, setRenaming] = useState<string | null>(null)
-  const [confirmDelete, setConfirmDelete] = useState(false)
 
   const set = (next: typeof st): void => update({ scenes: next })
 
@@ -52,10 +52,10 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
               className={`dock-row scene-row ${current?.id === sc.id ? 'is-selected' : ''}`}
               onClick={() => {
                 set(selectScene(st, sc.id))
-                setConfirmDelete(false)
                 onSelectScene()
               }}
               onDoubleClick={() => setRenaming(sc.id)}
+              title={i < 9 ? `Tecla ${i + 1} troca para esta cena · duplo clique renomeia` : 'Duplo clique renomeia'}
             >
               <span className="scene-key mono">{i + 1}</span>
               {renaming === sc.id ? (
@@ -97,26 +97,18 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
           <IconDown size={16} />
         </IconButton>
         <div className="spacer" />
-        {confirmDelete ? (
-          <button
-            className="dock-confirm"
-            onClick={() => {
-              if (current) set(deleteScene(st, current.id))
-              setConfirmDelete(false)
-            }}
-          >
-            Apagar “{current?.name}”?
-          </button>
-        ) : (
-          <IconButton
-            label="Apagar cena"
-            variant="danger"
-            disabled={st.scenes.length <= 1}
-            onClick={() => setConfirmDelete(true)}
-          >
-            <IconTrash size={15} />
-          </IconButton>
-        )}
+        <IconButton
+          label="Apagar cena"
+          variant="danger"
+          disabled={st.scenes.length <= 1 || !current || (live && current.id === st.activeSceneId)}
+          onClick={() => {
+            if (!current) return
+            set(deleteScene(st, current.id))
+            toast(`Cena “${current.name}” apagada`, 'info', { label: 'Desfazer', run: () => undo() })
+          }}
+        >
+          <IconTrash size={15} />
+        </IconButton>
       </div>
     </div>
   )

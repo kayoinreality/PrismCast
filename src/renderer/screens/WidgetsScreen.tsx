@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import type { KitWidget } from '@shared/protocol'
 import { Button } from '@/components/ui'
-import { IconExternal, IconFolder, IconGlobe, IconPlus, IconRefresh } from '@/components/Icons'
+import { IconEdit, IconExternal, IconFolder, IconGlobe, IconPlus, IconRefresh } from '@/components/Icons'
 import { useStudio } from '@/studio/StudioContext'
 import { addItem, buildKitScenes, editingScene, kitItem, makeItem } from '@/studio/scenes'
 import { WidgetPickerModal, type WidgetChoice } from './studio/Pickers'
+import { KitTextsModal } from './KitTextsModal'
 import './WidgetsScreen.css'
 
 const ROLE_LABEL: Record<KitWidget['role'], string> = {
@@ -47,6 +48,7 @@ function WidgetCard({ kitPath, widget, onAdd }: { kitPath: string; widget: KitWi
 export function WidgetsScreen({ onDone }: { onDone: () => void }): React.JSX.Element {
   const { settings, update, kit, reloadKit, toast } = useStudio()
   const [picker, setPicker] = useState(false)
+  const [texts, setTexts] = useState(false)
   const scene = editingScene(settings.scenes)
 
   const addToScene = (name: string, build: () => ReturnType<typeof kitItem>): void => {
@@ -99,8 +101,9 @@ export function WidgetsScreen({ onDone }: { onDone: () => void }): React.JSX.Ele
         <header className="page-header">
           <h1>Widgets</h1>
           <p>
-            Overlays HTML entram no vídeo da live como no OBS. Os do seu kit já vêm configurados com os parâmetros de
-            cada tela; você ajusta textos e contagem no painel de propriedades da fonte.
+            Overlays HTML entram no vídeo da live como no OBS. Os textos que aparecem em todas as telas (jogo do
+            dia, recados, redes, próxima live) mudam em “Textos do kit”; as opções de cada tela (contagem, canto da
+            câmera, chat) ficam nas propriedades da fonte, no Estúdio.
           </p>
         </header>
 
@@ -113,6 +116,9 @@ export function WidgetsScreen({ onDone }: { onDone: () => void }): React.JSX.Ele
                 <div className="hint mono">{kit.path}</div>
               </div>
               <div className="row" style={{ gap: 'var(--sp-2)' }}>
+                <Button size="sm" icon={<IconEdit size={14} />} onClick={() => setTexts(true)}>
+                  Textos do kit
+                </Button>
                 <Button size="sm" variant="ghost" icon={<IconRefresh size={14} />} onClick={reloadKit}>
                   Recarregar
                 </Button>
@@ -174,6 +180,7 @@ export function WidgetsScreen({ onDone }: { onDone: () => void }): React.JSX.Ele
         </section>
       </div>
       <WidgetPickerModal open={picker} onClose={() => setPicker(false)} onPick={addCustom} />
+      <KitTextsModal open={texts} onClose={() => setTexts(false)} />
     </div>
   )
 }

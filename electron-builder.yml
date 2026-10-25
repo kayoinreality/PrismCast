@@ -6,8 +6,12 @@ directories:
 files:
   - out/**/*
   - target/release/prismcast.exe
+  - target/release/prismcast-audio.exe
   - package.json
 asar: true
+# Executáveis não rodam de dentro do .asar: ficam em app.asar.unpacked.
+asarUnpack:
+  - target/release/*.exe
 compression: maximum
 win:
   target:

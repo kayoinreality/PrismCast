@@ -1,7 +1,7 @@
 import { randomInt, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname } from 'node:path'
-import { app, dialog, globalShortcut, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, globalShortcut, ipcMain, shell } from 'electron'
 import { CH } from '@shared/ipc'
 import type {
   AppInfo,
@@ -17,6 +17,8 @@ import {
   type CanvasOrientation,
   type HostToViewer,
   type HotkeyAction,
+  type KitConfig,
+  type LiveInfo,
   type SourceKind,
   type ViewerToHost
 } from '@shared/protocol'
@@ -37,7 +39,10 @@ import {
   reloadBrowserSource,
   syncBrowserSources
 } from './browser-sources'
-import { loadKit } from './kit'
+import { loadKit, readKitConfig, writeKitConfig } from './kit'
+import { appForWindow, disposeAudioApps, listAudioApps, syncAudioApps } from './audio-apps'
+import { getChannelInfo, searchCategories, sendChat, twitchCapabilities, updateChannelInfo } from './twitch-api'
+import { closeChatPopout, isChatPopoutOpen, openChatPopout, setChatPopoutOnTop } from './chat-window'
 
 const discovery = new Discovery()
 const server = new SignalingServer()
@@ -76,7 +81,8 @@ export function registerGlobalHotkeys(): void {
       [bindings.toggleSystemMute, 'toggle-system-mute'],
       [bindings.togglePrivacyShield, 'toggle-privacy-shield'],
       [bindings.saveReplayClip, 'save-replay-clip'],
-      [bindings.toggleVerticalPreview, 'toggle-vertical-preview']
+      [bindings.toggleVerticalPreview, 'toggle-vertical-preview'],
+      [bindings.toggleCamera, 'toggle-camera']
     ]
     for (const [accel, action] of entries) {
       if (!accel) continue
@@ -120,15 +126,16 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.on(CH.appMinimize, () => getMainWindow()?.minimize())
-  ipcMain.on(CH.appToggleMaximize, () => {
-    const win = getMainWindow()
+  // A janela do chat usa os mesmos botões: cada pedido vale para a janela que o fez.
+  ipcMain.on(CH.appMinimize, (e) => BrowserWindow.fromWebContents(e.sender)?.minimize())
+  ipcMain.on(CH.appToggleMaximize, (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) return
     win.isMaximized() ? win.unmaximize() : win.maximize()
   })
-  ipcMain.on(CH.appClose, () => getMainWindow()?.close())
-  ipcMain.handle(CH.appAlwaysOnTop, (_e, value: boolean) => {
-    const win = getMainWindow()
+  ipcMain.on(CH.appClose, (e) => BrowserWindow.fromWebContents(e.sender)?.close())
+  ipcMain.handle(CH.appAlwaysOnTop, (e, value: boolean) => {
+    const win = BrowserWindow.fromWebContents(e.sender)
     if (!win) return false
     win.setAlwaysOnTop(value)
     return win.isAlwaysOnTop()
@@ -161,6 +168,25 @@ export function registerIpc(): void {
 
   // ------------------------------------------------------------------ kit
   ipcMain.handle(CH.kitLoad, (_e, path: string | null) => loadKit(path))
+  ipcMain.handle(CH.kitReadConfig, (_e, path: string) => readKitConfig(path))
+  ipcMain.handle(CH.kitWriteConfig, (_e, path: string, config: KitConfig) => writeKitConfig(path, config))
+
+  // ------------------------------------------------- áudio de aplicativo
+  ipcMain.handle(CH.audioListApps, () => listAudioApps())
+  ipcMain.handle(CH.audioAppForWindow, (_e, captureId: string) => appForWindow(captureId))
+  ipcMain.on(CH.audioSync, (_e, channels: Array<{ id: string; exe: string }>) => syncAudioApps(channels))
+
+  // ---------------------------------------------------------------- twitch
+  ipcMain.handle(CH.twitchCapabilities, () => twitchCapabilities())
+  ipcMain.handle(CH.twitchGetInfo, () => getChannelInfo())
+  ipcMain.handle(CH.twitchUpdateInfo, (_e, info: LiveInfo) => updateChannelInfo(info))
+  ipcMain.handle(CH.twitchSearchCategories, (_e, query: string) => searchCategories(query))
+  ipcMain.handle(CH.twitchSendChat, (_e, text: string) => sendChat(text))
+
+  // ------------------------------------------------------- chat separado
+  ipcMain.on(CH.chatOpenPopout, () => openChatPopout())
+  ipcMain.on(CH.chatClosePopout, () => closeChatPopout())
+  ipcMain.handle(CH.chatIsPopoutOpen, () => isChatPopoutOpen())
   ipcMain.handle(CH.kitPickFolder, async () => {
     const win = getMainWindow()
     const res = win
@@ -316,11 +342,19 @@ export function registerIpc(): void {
 
   // --------------------------------------------------------- preferencias
   ipcMain.handle(CH.settingsGet, () => getSettings())
-  ipcMain.handle(CH.settingsSet, (_e, patch: Partial<AppSettings>) => {
-    const prevHotkeys = JSON.stringify(getSettings().hotkeys)
+  ipcMain.handle(CH.settingsSet, (e, patch: Partial<AppSettings>) => {
+    const prev = getSettings()
+    const prevHotkeys = JSON.stringify(prev.hotkeys)
     const next = setSettings(patch)
     discovery.preferredInterface = next.preferredInterface
     if (JSON.stringify(next.hotkeys) !== prevHotkeys) registerGlobalHotkeys()
+    if (next.chat.popoutOnTop !== prev.chat.popoutOnTop) setChatPopoutOnTop(next.chat.popoutOnTop)
+    // A outra janela (estúdio ou chat separado) fica sabendo da mudança.
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.webContents !== e.sender && !win.isDestroyed() && !win.webContents.isOffscreen()) {
+        win.webContents.send(CH.settingsChanged, next)
+      }
+    }
     return next
   })
 }
@@ -335,6 +369,8 @@ export async function shutdown(): Promise<void> {
   multistream.stop()
   recorder.stopRecording()
   disposeBrowserSources()
+  disposeAudioApps()
+  closeChatPopout()
   await stopHosting()
   await discovery.dispose()
 }

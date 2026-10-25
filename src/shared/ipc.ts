@@ -4,8 +4,11 @@
 
 import type { QualitySettings, PresetId } from './quality'
 import type {
+  AudioApp,
+  AudioChannelStatus,
   AudioMixerSettings,
   BrowserSourceFrame,
+  ChatSettings,
   BrowserSourceSpec,
   CanvasOrientation,
   ChatMessage,
@@ -15,6 +18,8 @@ import type {
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
+  KitConfig,
+  LiveInfo,
   MultistreamStatus,
   PlatformId,
   ReactionEvent,
@@ -23,6 +28,9 @@ import type {
   SourceKind,
   StudioCompositorSettings,
   StudioScenesState,
+  TwitchActionResult,
+  TwitchCapabilities,
+  TwitchCategory,
   TwitchLoginState,
   ViewerToHost,
   WidgetKit
@@ -110,6 +118,9 @@ export interface AppSettings {
   twitchClientId: string
   /** Pasta do kit de widgets (overlays HTML), ex. E:\kayoinreality-kit */
   kitPath: string | null
+  /** título e categoria da próxima live */
+  live: LiveInfo
+  chat: ChatSettings
 }
 
 export interface ViewerClosedInfo {
@@ -156,6 +167,33 @@ export interface Api {
   kit: {
     load(path: string | null): Promise<WidgetKit | null>
     pickFolder(): Promise<string | null>
+    /** Lê os textos do kit (src/config.js). */
+    readConfig(path: string): Promise<KitConfig | null>
+    writeConfig(path: string, config: KitConfig): Promise<OkResult>
+  }
+  audio: {
+    /** Janelas e programas que podem virar fonte de áudio de aplicativo. */
+    listApps(): Promise<AudioApp[]>
+    /** Exe de cada janela (para "capturar o áudio desta janela"). */
+    appForWindow(captureId: string): Promise<AudioApp | null>
+    /** Quais canais de aplicativo devem estar capturando agora. */
+    sync(channels: Array<{ id: string; exe: string }>): void
+    /** PCM f32 estéreo intercalado, 48 kHz */
+    onPcm(cb: (id: string, pcm: Float32Array) => void): Unsubscribe
+    onStatus(cb: (status: AudioChannelStatus[]) => void): Unsubscribe
+  }
+  twitch: {
+    capabilities(): Promise<TwitchCapabilities>
+    getChannelInfo(): Promise<LiveInfo | null>
+    updateChannelInfo(info: LiveInfo): Promise<TwitchActionResult>
+    searchCategories(query: string): Promise<TwitchCategory[]>
+    sendChat(text: string): Promise<TwitchActionResult>
+  }
+  chat: {
+    openPopout(): void
+    closePopout(): void
+    isPopoutOpen(): Promise<boolean>
+    onPopoutChange(cb: (open: boolean) => void): Unsubscribe
   }
   files: {
     pickImage(): Promise<string | null>
@@ -318,6 +356,25 @@ export const CH = {
 
   kitLoad: 'kit:load',
   kitPickFolder: 'kit:pick-folder',
+  kitReadConfig: 'kit:read-config',
+  kitWriteConfig: 'kit:write-config',
+
+  audioListApps: 'audio:list-apps',
+  audioAppForWindow: 'audio:app-for-window',
+  audioSync: 'audio:sync',
+  audioPcm: 'audio:pcm',
+  audioStatus: 'audio:status',
+
+  twitchCapabilities: 'twitch:capabilities',
+  twitchGetInfo: 'twitch:get-info',
+  twitchUpdateInfo: 'twitch:update-info',
+  twitchSearchCategories: 'twitch:search-categories',
+  twitchSendChat: 'twitch:send-chat',
+
+  chatOpenPopout: 'chat:open-popout',
+  chatClosePopout: 'chat:close-popout',
+  chatIsPopoutOpen: 'chat:is-popout-open',
+  chatPopoutChanged: 'chat:popout-changed',
 
   filesPickImage: 'files:pick-image',
   filesPickHtml: 'files:pick-html',

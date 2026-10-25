@@ -66,7 +66,36 @@ export interface PlatformAccount {
   login: string
   displayName: string
   avatarUrl: string
+  /** id do canal na Twitch (logins antigos não têm; o main busca quando precisar) */
+  id?: string
+  /** permissões que o login deu; logins da 2.2 só tinham a da chave */
+  scopes?: string[]
 }
+
+/** Título e categoria da live. Na Twitch o PrismCast atualiza sozinho. */
+export interface LiveInfo {
+  title: string
+  categoryId: string
+  categoryName: string
+}
+
+export interface TwitchCategory {
+  id: string
+  name: string
+  boxArtUrl: string
+}
+
+/** O que dá para fazer na Twitch com o login atual. */
+export interface TwitchCapabilities {
+  linked: boolean
+  login: string | null
+  /** mudar título/categoria */
+  canEditInfo: boolean
+  /** escrever no chat */
+  canChat: boolean
+}
+
+export type TwitchActionResult = { ok: true } | { ok: false; error: string; needsRelogin?: boolean }
 
 /**
  * Um lugar para onde a live vai.
@@ -144,6 +173,13 @@ export interface SourceSettings {
   fontSize?: number
   /** borda arredondada para câmera e imagem */
   rounded?: boolean
+  /**
+   * Widget: recarrega a página toda vez que a cena entra no ar (contagem
+   * regressiva, cronômetro). Sem valor = o padrão do widget do kit.
+   */
+  restartOnShow?: boolean
+  /** janela: canal do mixer que captura o áudio deste programa */
+  audioChannelId?: string
 }
 
 export interface SourceTransform {
@@ -232,7 +268,31 @@ export interface KitWidget {
   /** tela cheia que cobre tudo (cena de pausa/abertura) ou overlay transparente */
   role: 'scene' | 'overlay' | 'frame' | 'chat'
   /** parâmetros de URL que a página entende, para o painel de propriedades */
-  params: Array<{ key: string; label: string; placeholder: string }>
+  params: KitParam[]
+  /** recarregar quando a cena entra no ar (contagem e cronômetro recomeçam) */
+  restartOnShow?: boolean
+  /** como desligar a parte da câmera do overlay quando o estúdio está sem câmera */
+  camera?: { param: string; off: string } | 'hide'
+}
+
+export type KitParam =
+  | { key: string; label: string; hint?: string; type: 'text'; placeholder: string }
+  | { key: string; label: string; hint?: string; type: 'number'; placeholder: string; min?: number; max?: number; unit?: string }
+  | { key: string; label: string; hint?: string; type: 'select'; options: Array<{ value: string; label: string }> }
+  | { key: string; label: string; hint?: string; type: 'toggle'; on: string; off: string; defaultOn: boolean }
+
+/** Textos do kit (src/config.js): valem para todas as telas de uma vez. */
+export interface KitConfig {
+  canal: string
+  nome: string
+  jogo: string
+  contagem: number
+  agenda: string
+  pix: string
+  redes: Array<{ rede: string; handle: string }>
+  recados: string[]
+  /** chaves que o PrismCast não conhece, preservadas ao salvar */
+  extra: Record<string, unknown>
 }
 
 export interface WidgetKit {
@@ -245,21 +305,78 @@ export interface WidgetKit {
 
 // ------------------------------------------------ Mixer de Áudio & Estúdio
 
-export interface AudioMixerSettings {
-  systemAudioEnabled: boolean
-  systemVolume: number
-  systemMuted: boolean
-  micEnabled: boolean
-  micDeviceId: string | null
-  micVolume: number
-  micMuted: boolean
+/**
+ * Filtros de uma fonte de áudio, na ordem em que o som passa por eles
+ * (como a janela de Filtros do OBS).
+ */
+export interface AudioFilters {
+  /** só microfone: processamento do próprio Chromium/Windows */
   noiseSuppression: boolean
   echoCancellation: boolean
-  compressorEnabled: boolean
+  autoGain: boolean
+  /** corta graves (ventoinha, batida na mesa). 0 = desligado */
+  highpassHz: number
+  gate: { enabled: boolean; thresholdDb: number; releaseMs: number }
+  compressor: {
+    enabled: boolean
+    thresholdDb: number
+    ratio: number
+    attackMs: number
+    releaseMs: number
+    makeupDb: number
+  }
+  /** ganho antes do fader, em dB */
+  gainDb: number
+  limiter: { enabled: boolean; ceilingDb: number }
+}
+
+export type AudioChannelKind = 'desktop' | 'mic' | 'app'
+
+/** off: só vai para a live · monitor: live e fone · monitor-only: só fone */
+export type AudioMonitorMode = 'off' | 'monitor' | 'monitor-only'
+
+export interface AudioChannel {
+  id: string
+  kind: AudioChannelKind
+  name: string
+  /** microfone: dispositivo (null = o padrão do Windows) */
+  deviceId: string | null
+  /** aplicativo: exe que é capturado (ex. "VALORANT-Win64-Shipping.exe") */
+  appExe: string | null
+  /** volume do fader, em dB (-60 = mudo, 0 = 100%, +12 no máximo) */
+  volumeDb: number
+  muted: boolean
+  monitor: AudioMonitorMode
+  /** atraso para sincronizar com a câmera, em ms */
+  syncOffsetMs: number
+  filters: AudioFilters
+}
+
+export interface AudioMixerSettings {
+  channels: AudioChannel[]
   partyVoiceEnabled: boolean
 }
 
+/** Estado vivo de um canal (não vai para as preferências). */
+export interface AudioChannelStatus {
+  id: string
+  state: 'ok' | 'waiting' | 'error' | 'off'
+  message: string | null
+}
+
+/** Janela ou programa que pode virar fonte de áudio de aplicativo. */
+export interface AudioApp {
+  hwnd: number
+  pid: number
+  exe: string
+  title: string
+  /** tocando som agora */
+  audio: boolean
+}
+
 export interface StudioCompositorSettings {
+  /** Desligado: fontes de câmera somem e os overlays escondem a moldura da câmera. */
+  cameraEnabled: boolean
   dualOutputEnabled: boolean
   /** Quadros por segundo do canvas e da saída RTMP. */
   fps: 30 | 60
@@ -275,6 +392,7 @@ export interface HotkeyBindings {
   togglePrivacyShield: string
   saveReplayClip: string
   toggleVerticalPreview: string
+  toggleCamera: string
 }
 
 export type HotkeyAction =
@@ -283,6 +401,18 @@ export type HotkeyAction =
   | 'toggle-privacy-shield'
   | 'save-replay-clip'
   | 'toggle-vertical-preview'
+  | 'toggle-camera'
+
+/** Chat da Twitch dentro do app e na janela separada. */
+export interface ChatSettings {
+  /** canal lido; vazio = o da conta da Twitch conectada */
+  channel: string
+  fontSize: number
+  showTimestamps: boolean
+  /** a janela separada fica por cima do jogo */
+  popoutOnTop: boolean
+  popoutBounds: { x: number; y: number; width: number; height: number } | null
+}
 
 export interface RecorderStatus {
   recording: boolean

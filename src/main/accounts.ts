@@ -3,6 +3,7 @@ import { CH, PRISMCAST_TWITCH_CLIENT_ID, type OkResult } from '@shared/ipc'
 import type { PlatformAccount, TwitchLoginState } from '@shared/protocol'
 import { getSettings, setSecret, streamKeySecret, updateDestination } from './store'
 import { getMainWindow } from './window'
+import { rememberAccessToken, SCOPE_CHAT, SCOPE_INFO } from './twitch-api'
 
 /**
  * Contas e chaves de transmissão.
@@ -14,7 +15,8 @@ import { getMainWindow } from './window'
  *     um código em twitch.tv/activate e o app busca nome, avatar e a chave pela API.
  */
 
-const TWITCH_SCOPES = 'channel:read:stream_key'
+/** chave de transmissão, título/categoria da live e escrever no chat */
+const TWITCH_SCOPES = ['channel:read:stream_key', SCOPE_INFO, SCOPE_CHAT].join(' ')
 
 function emitTwitch(state: TwitchLoginState): void {
   const win = getMainWindow()
@@ -136,7 +138,7 @@ export async function startTwitchLogin(destinationId: string): Promise<void> {
     void shell.openExternal(device.verification_uri)
 
     let interval = Math.max(1, device.interval) * 1000
-    let token: { access_token: string; refresh_token?: string } | null = null
+    let token: { access_token: string; refresh_token?: string; expires_in?: number; scope?: string[] } | null = null
     while (!token) {
       if (Date.now() > expiresAt) throw new Error('O código expirou. Tente de novo.')
       await sleep(interval, signal)
@@ -151,7 +153,7 @@ export async function startTwitchLogin(destinationId: string): Promise<void> {
         signal
       )
       if (res.ok) {
-        token = (await res.json()) as { access_token: string; refresh_token?: string }
+        token = (await res.json()) as { access_token: string; refresh_token?: string; expires_in?: number; scope?: string[] }
         break
       }
       const err = (await res.json().catch(() => ({}))) as { message?: string }
@@ -184,10 +186,13 @@ export async function startTwitchLogin(destinationId: string): Promise<void> {
     const account: PlatformAccount = {
       login: user.login,
       displayName: user.display_name,
-      avatarUrl: user.profile_image_url
+      avatarUrl: user.profile_image_url,
+      id: user.id,
+      scopes: token.scope ?? TWITCH_SCOPES.split(' ')
     }
     setSecret(streamKeySecret(destinationId), streamKey)
     if (token.refresh_token) setSecret(`twitchRefresh:${destinationId}`, token.refresh_token)
+    rememberAccessToken(destinationId, token.access_token, token.expires_in ?? 3600)
     updateDestination(destinationId, { hasKey: true, enabled: true, account, name: 'Twitch' })
     emitSettings()
     emitTwitch({ step: 'done', account })

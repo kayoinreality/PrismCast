@@ -1,16 +1,20 @@
 import type { AppSettings } from '@shared/ipc'
 import type {
+  AudioChannelStatus,
   BrowserSourceSpec,
+  LiveInfo,
   MultistreamStatus,
   RecorderStatus,
   Scene,
-  SceneItem
+  SceneItem,
+  WidgetKit
 } from '@shared/protocol'
 import { AudioMixerEngine, type AudioLevels } from './AudioMixerEngine'
 import { BrowserSourceCanvases } from './BrowserSourceCanvases'
 import { CaptureManager, type Capture } from './CaptureManager'
 import { Compositor } from './Compositor'
 import { OutputManager } from './OutputManager'
+import { effectiveUrl, hiddenWithoutCamera, restartsOnShow } from './widgets'
 
 export interface EngineState {
   live: boolean
@@ -20,6 +24,8 @@ export interface EngineState {
   recorder: RecorderStatus
   /** muda quando alguma captura muda de estado (para o editor se atualizar) */
   captureVersion: number
+  /** muda quando uma fonte de áudio abre, cai ou fica esperando o programa */
+  audioVersion: number
 }
 
 const IDLE_RECORDER: RecorderStatus = {
@@ -31,9 +37,9 @@ const IDLE_RECORDER: RecorderStatus = {
   replaySavedPath: null
 }
 
-export function browserSourceId(item: SceneItem): string {
+export function browserSourceId(item: SceneItem, url = item.settings.url ?? ''): string {
   const s = item.settings
-  return `${s.width ?? 1920}x${s.height ?? 1080}@${s.fps ?? 30}|${s.url ?? ''}`
+  return `${s.width ?? 1920}x${s.height ?? 1080}@${s.fps ?? 30}|${url}`
 }
 
 export function captureKeyOf(item: SceneItem): string | null {
@@ -61,6 +67,8 @@ export class StudioEngine {
   private statusTimer: number
   private lastBrowserSpecs = ''
   private systemAudioRequested = false
+  private kit: WidgetKit | null = null
+  private lastProgramId: string | null = null
 
   state: EngineState = {
     live: false,
@@ -68,19 +76,25 @@ export class StudioEngine {
     goingLive: false,
     multistream: { active: false, encoder: '…', ffmpegFound: true, destinations: [] },
     recorder: IDLE_RECORDER,
-    captureVersion: 0
+    captureVersion: 0,
+    audioVersion: 0
   }
 
   constructor(settings: AppSettings) {
     this.settings = settings
     this.mixer = new AudioMixerEngine(settings.audioMixer)
-    this.compositor = new Compositor(settings.studio, (item) => this.resolve(item))
+    this.compositor = new Compositor(
+      settings.studio,
+      (item) => this.resolve(item),
+      (item) => !this.settings.studio.cameraEnabled && hiddenWithoutCamera(item, this.kit)
+    )
     this.outputs = new OutputManager(
       () => new MediaStream([this.compositor.programStream.getVideoTracks()[0], this.mixer.outputTrack]),
       () =>
         new MediaStream([this.compositor.verticalStream.getVideoTracks()[0], this.mixer.outputTrack.clone()])
     )
     this.captures.onChange = () => this.patch({ captureVersion: this.state.captureVersion + 1 })
+    this.mixer.onStatus = () => this.patch({ audioVersion: this.state.audioVersion + 1 })
     this.captures.setFps(settings.studio.fps)
     this.statusTimer = window.setInterval(() => void this.pollStatus(), 1000)
     void window.api.recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
@@ -117,8 +131,37 @@ export class StudioEngine {
     this.syncMedia()
   }
 
+  /** Id da janela do widget como ele está no ar (com a câmera ligada ou não). */
+  browserIdOf(item: SceneItem): string {
+    return browserSourceId(item, effectiveUrl(item, this.kit, this.settings.studio.cameraEnabled))
+  }
+
   reloadBrowserSource(item: SceneItem): void {
-    window.api.browserSources.reload(browserSourceId(item))
+    window.api.browserSources.reload(this.browserIdOf(item))
+  }
+
+  /** Recarrega todos os widgets do kit (depois de editar os textos dele). */
+  reloadKitWidgets(): void {
+    const st = this.settings.scenes
+    for (const scene of st.scenes) {
+      for (const item of scene.items) {
+        if (item.type === 'browser_source' && item.settings.kitWidget) this.reloadBrowserSource(item)
+      }
+    }
+  }
+
+  audioStatus(id: string): AudioChannelStatus {
+    return this.mixer.status(id)
+  }
+
+  setKit(kit: WidgetKit | null): void {
+    this.kit = kit
+    this.lastBrowserSpecs = ''
+    this.syncMedia()
+  }
+
+  get currentKit(): WidgetKit | null {
+    return this.kit
   }
 
   // ---------------------------------------------------------- preferências
@@ -144,7 +187,8 @@ export class StudioEngine {
       ms: settings.scenes.transitionDurationMs
     })
     void this.mixer.applyConfig(settings.audioMixer)
-    if (settings.audioMixer.systemAudioEnabled && !this.systemAudioRequested) {
+    const wantsDesktop = settings.audioMixer.channels.some((c) => c.kind === 'desktop')
+    if (wantsDesktop && !this.systemAudioRequested) {
       this.systemAudioRequested = true
       void this.captures.acquireSystemAudio().then((s) => {
         if (s) this.mixer.setSystemStream(s)
@@ -152,6 +196,23 @@ export class StudioEngine {
       })
     }
     this.syncMedia()
+    this.restartOnShow()
+  }
+
+  /**
+   * Cena que acabou de entrar no ar: contagem regressiva e cronômetro
+   * recomeçam (a página fica viva fora do ar para o chat não perder mensagens).
+   */
+  private restartOnShow(): void {
+    const program = this.programScene()
+    const id = program?.id ?? null
+    if (id === this.lastProgramId) return
+    const first = this.lastProgramId === null
+    this.lastProgramId = id
+    if (first || !program) return
+    for (const item of program.items) {
+      if (item.visible && restartsOnShow(item, this.kit)) this.reloadBrowserSource(item)
+    }
   }
 
   /** Abre só o que a cena no ar e a cena em prévia usam. */
@@ -166,10 +227,13 @@ export class StudioEngine {
       if (item.type === 'screen_capture' || item.type === 'window_capture') {
         wanted.set(captureKeyOf(item)!, this.captures.openDisplay(s.captureId, s.captureName))
       } else if (item.type === 'camera_input') {
-        wanted.set(captureKeyOf(item)!, this.captures.openCamera(s.deviceId))
+        // Câmera desligada no estúdio: nem abre (a luz da webcam fica apagada).
+        if (this.settings.studio.cameraEnabled) wanted.set(captureKeyOf(item)!, this.captures.openCamera(s.deviceId))
       } else if (item.type === 'browser_source' && s.url) {
-        const id = browserSourceId(item)
-        specs.set(id, { id, url: s.url, width: s.width ?? 1920, height: s.height ?? 1080, fps: s.fps ?? 30 })
+        if (!this.settings.studio.cameraEnabled && hiddenWithoutCamera(item, this.kit)) continue
+        const url = effectiveUrl(item, this.kit, this.settings.studio.cameraEnabled)
+        const id = browserSourceId(item, url)
+        specs.set(id, { id, url, width: s.width ?? 1920, height: s.height ?? 1080, fps: s.fps ?? 30 })
       } else if (item.type === 'image_source' && s.path && !this.images.has(s.path)) {
         this.loadImage(s.path)
       }
@@ -201,7 +265,7 @@ export class StudioEngine {
         return cap && cap.state === 'live' && cap.video.readyState >= 2 ? cap.video : null
       }
       case 'browser_source':
-        return item.settings.url ? this.browsers.get(browserSourceId(item)) : null
+        return item.settings.url ? this.browsers.get(this.browserIdOf(item)) : null
       case 'image_source': {
         const img = item.settings.path ? this.images.get(item.settings.path) : undefined
         return img && img.complete && img.naturalWidth > 0 ? img : null
@@ -212,6 +276,14 @@ export class StudioEngine {
   }
 
   // -------------------------------------------------------- live e gravação
+
+  /** Manda título e categoria para a Twitch (se houver login com essa permissão). */
+  async pushLiveInfo(info: LiveInfo): Promise<string | null> {
+    const caps = await window.api.twitch.capabilities()
+    if (!caps.linked || !caps.canEditInfo) return null
+    const res = await window.api.twitch.updateChannelInfo(info)
+    return res.ok ? null : res.error
+  }
 
   async goLive(): Promise<string | null> {
     if (this.state.live || this.state.goingLive) return null

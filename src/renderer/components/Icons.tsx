@@ -398,3 +398,59 @@ export const IconFolder = (p: P): React.JSX.Element => (
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
   </Svg>
 )
+
+export const IconCameraOff = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M10.5 5.5H14l1.5 2h3A2.5 2.5 0 0 1 21 10v7.5M17.5 19.5h-12A2.5 2.5 0 0 1 3 17v-7a2.5 2.5 0 0 1 2.5-2.5H7" />
+    <path d="M9.6 10.6a3.3 3.3 0 0 0 4.7 4.7" />
+    <path d="M3 3l18 18" />
+  </Svg>
+)
+
+export const IconSliders = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1" />
+    <circle cx="15" cy="6" r="2" />
+    <circle cx="9" cy="12" r="2" />
+    <circle cx="17" cy="18" r="2" />
+  </Svg>
+)
+
+export const IconMore = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="5.5" cy="12" r="1.2" fill="currentColor" />
+    <circle cx="12" cy="12" r="1.2" fill="currentColor" />
+    <circle cx="18.5" cy="12" r="1.2" fill="currentColor" />
+  </Svg>
+)
+
+export const IconApp = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="3" y="4" width="18" height="14" rx="2" />
+    <path d="M3 8h18" />
+    <path d="M10 12.5v3l2.6-1.5z" fill="currentColor" />
+  </Svg>
+)
+
+export const IconHeadphones = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M4 15v-3a8 8 0 0 1 16 0v3" />
+    <rect x="3" y="14" width="4.5" height="6.5" rx="1.5" />
+    <rect x="16.5" y="14" width="4.5" height="6.5" rx="1.5" />
+  </Svg>
+)
+
+export const IconPopout = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="3" y="7" width="12" height="13" rx="2" />
+    <path d="M9 4h9a2 2 0 0 1 2 2v9" />
+    <path d="M13 11l7-7M15 4h5v5" />
+  </Svg>
+)
+
+export const IconUndo = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M9 14L4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </Svg>
+)

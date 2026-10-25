@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
-import type { Scene, SceneItem, SourceSettings, SourceTransform } from '@shared/protocol'
+import type { KitParam, Scene, SceneItem, SourceSettings, SourceTransform } from '@shared/protocol'
+import { makeChannel } from '@shared/audio'
 import { Button, Field, IconButton, Slider, TextInput, Toggle } from '@/components/ui'
-import { IconClose, IconRefresh } from '@/components/Icons'
+import { IconCameraOff, IconClose, IconEdit, IconRefresh } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
 import { SOURCE_LABEL, widgetParams, widgetUrl } from '@/studio/scenes'
 import { CANVAS_H, CANVAS_V } from '@/studio/Compositor'
 import { SourceIcon } from './sourceIcons'
 import { SourcePickerModal } from './Pickers'
+import { KitTextsModal } from '../KitTextsModal'
+import { kitWidgetOf, restartsOnShow } from '@/studio/widgets'
 import type { StageView } from './Stage'
 
 function useVideoInputs(): MediaDeviceInfo[] {
@@ -47,11 +50,43 @@ function PxInput({ label, value, onChange }: { label: string; value: number; onC
 }
 
 function CaptureSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
-  const { engine } = useStudio()
+  const { engine, settings, update, toast } = useStudio()
   useEngineState()
   const [picking, setPicking] = useState(false)
+  const [linking, setLinking] = useState(false)
   const cap = engine.capture(item)
   const window_ = item.type === 'window_capture'
+  const mixer = settings.audioMixer
+  const audioCh = mixer.channels.find((c) => c.id === item.settings.audioChannelId) ?? null
+
+  /** "Capturar áudio" da captura de janela do OBS: vira um canal no mixer. */
+  const toggleAudio = async (on: boolean): Promise<void> => {
+    if (!on) {
+      if (audioCh) update({ audioMixer: { ...mixer, channels: mixer.channels.filter((c) => c.id !== audioCh.id) } })
+      onPatch({ settings: { audioChannelId: undefined } })
+      return
+    }
+    const id = item.settings.captureId
+    if (!id?.startsWith('window:')) return
+    setLinking(true)
+    const app = await window.api.audio.appForWindow(id)
+    setLinking(false)
+    if (!app) {
+      toast('Não achei o programa dessa janela. Ela está aberta?', 'bad')
+      return
+    }
+    const existing = mixer.channels.find((c) => c.kind === 'app' && c.appExe?.toLowerCase() === app.exe.toLowerCase())
+    const ch = existing ?? makeChannel('app', { name: item.name.slice(0, 40), appExe: app.exe })
+    if (!existing) update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] } })
+    onPatch({ settings: { audioChannelId: ch.id } })
+    toast(
+      mixer.channels.some((c) => c.kind === 'desktop' && !c.muted)
+        ? `Áudio de ${app.exe} no mixer. Com “Áudio do PC” ligado ele sai em dobro: mute um dos dois.`
+        : `Áudio de ${app.exe} no mixer`,
+      'good'
+    )
+  }
+
   return (
     <div className="insp-section">
       <Field label={window_ ? 'Janela' : 'Tela'}>
@@ -72,6 +107,19 @@ function CaptureSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Parti
           </Button>
         )}
       </div>
+      {window_ && (
+        <Toggle
+          label="Capturar o áudio desta janela"
+          hint={
+            audioCh
+              ? `Canal “${audioCh.name}” no mixer (${audioCh.appExe})`
+              : 'Só o som deste programa, num canal próprio do mixer'
+          }
+          checked={audioCh !== null}
+          disabled={linking}
+          onChange={(v) => void toggleAudio(v)}
+        />
+      )}
       <SourcePickerModal
         open={picking}
         kind={window_ ? 'window' : 'screen'}
@@ -89,55 +137,133 @@ function CaptureSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Parti
   )
 }
 
+/** Um parâmetro do widget com o controle certo (lista, número, liga/desliga, texto). */
+function ParamControl({
+  param,
+  value,
+  onChange
+}: {
+  param: KitParam
+  value: string | undefined
+  onChange: (v: string) => void
+}): React.JSX.Element {
+  const [text, setText] = useState(value ?? '')
+  useEffect(() => setText(value ?? ''), [value])
+
+  switch (param.type) {
+    case 'toggle': {
+      const on = value === undefined || value === '' ? param.defaultOn : value === param.on
+      return <Toggle label={param.label} hint={param.hint} checked={on} onChange={(v) => onChange(v ? param.on : param.off)} />
+    }
+    case 'select':
+      return (
+        <Field label={param.label} hint={param.hint}>
+          <select className="select" value={value ?? ''} onChange={(e) => onChange(e.target.value)}>
+            {param.options.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )
+    case 'number': {
+      const current = Number(text || param.placeholder) || 0
+      const clamp = (n: number): string => String(Math.max(param.min ?? 0, Math.min(param.max ?? 9999, n)))
+      return (
+        <Field label={param.label} hint={param.unit}>
+          <div className="stepper">
+            <button aria-label="Menos" onClick={() => onChange(clamp(current - 1))}>
+              –
+            </button>
+            <input
+              value={text}
+              inputMode="numeric"
+              placeholder={param.placeholder}
+              onChange={(e) => setText(e.target.value.replace(/[^0-9.]/g, ''))}
+              onBlur={() => text !== (value ?? '') && onChange(text ? clamp(Number(text)) : '')}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+            <button aria-label="Mais" onClick={() => onChange(clamp(current + 1))}>
+              +
+            </button>
+          </div>
+        </Field>
+      )
+    }
+    default:
+      return (
+        <Field label={param.label} hint={param.hint}>
+          <TextInput
+            value={text}
+            placeholder={param.placeholder}
+            onChange={(e) => setText(e.target.value)}
+            onBlur={() => text !== (value ?? '') && onChange(text)}
+            onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+          />
+        </Field>
+      )
+  }
+}
+
 function WidgetSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
   const { kit, engine } = useStudio()
   const s = item.settings
-  const known = kit?.widgets.find((w) => w.file === s.kitWidget)
-  const [params, setParams] = useState<Record<string, string>>(() => widgetParams(s.url ?? ''))
+  const known = kitWidgetOf(item, kit)
+  const params = widgetParams(s.url ?? '')
   const [url, setUrl] = useState(s.url ?? '')
-  useEffect(() => {
-    setParams(widgetParams(s.url ?? ''))
-    setUrl(s.url ?? '')
-  }, [s.url])
+  const [advanced, setAdvanced] = useState(!known)
+  const [texts, setTexts] = useState(false)
+  useEffect(() => setUrl(s.url ?? ''), [s.url])
 
-  const applyParams = (next: Record<string, string>): void => {
-    setParams(next)
-    onPatch({ settings: { url: widgetUrl(s.url ?? '', next) } })
+  const setParam = (key: string, v: string): void => {
+    onPatch({ settings: { url: widgetUrl(s.url ?? '', { ...params, [key]: v }) } })
   }
 
   return (
     <div className="insp-section">
-      {known && known.params.length > 0 && (
+      {known && (
         <>
           <div className="insp-sub">Opções do widget</div>
           {known.params.map((p) => (
-            <Field key={p.key} label={p.label}>
-              <TextInput
-                value={params[p.key] ?? ''}
-                placeholder={p.placeholder}
-                onChange={(e) => setParams({ ...params, [p.key]: e.target.value })}
-                onBlur={() => applyParams(params)}
-                onKeyDown={(e) => e.key === 'Enter' && applyParams(params)}
-              />
-            </Field>
+            <ParamControl key={p.key} param={p} value={params[p.key]} onChange={(v) => setParam(p.key, v)} />
           ))}
+          <Button size="sm" icon={<IconEdit size={14} />} onClick={() => setTexts(true)}>
+            Textos do kit (jogo, recados, redes…)
+          </Button>
         </>
       )}
-      <Field label="Endereço">
-        <TextInput
-          value={url}
-          onChange={(e) => setUrl(e.target.value)}
-          onBlur={() => url !== s.url && onPatch({ settings: { url: url.trim() } })}
-          className="mono-input"
-        />
-      </Field>
-      <div className="insp-row">
-        <PxInput label="Largura da página" value={s.width ?? 1920} onChange={(v) => onPatch({ settings: { width: Math.max(50, Math.min(3840, v)) } })} />
-        <PxInput label="Altura" value={s.height ?? 1080} onChange={(v) => onPatch({ settings: { height: Math.max(50, Math.min(2160, v)) } })} />
+      <Toggle
+        label="Reiniciar quando a cena entrar no ar"
+        hint="Contagem regressiva e cronômetro começam do zero toda vez"
+        checked={restartsOnShow(item, kit)}
+        onChange={(v) => onPatch({ settings: { restartOnShow: v } })}
+      />
+      <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
+        <Button size="sm" icon={<IconRefresh size={14} />} onClick={() => engine.reloadBrowserSource(item)}>
+          Recarregar agora
+        </Button>
+        <button className="link-btn insp-more" onClick={() => setAdvanced((a) => !a)}>
+          {advanced ? 'Menos opções' : 'Endereço e tamanho'}
+        </button>
       </div>
-      <Button size="sm" icon={<IconRefresh size={14} />} onClick={() => engine.reloadBrowserSource(item)}>
-        Recarregar widget
-      </Button>
+      {advanced && (
+        <>
+          <Field label="Endereço">
+            <TextInput
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              onBlur={() => url !== s.url && onPatch({ settings: { url: url.trim() } })}
+              className="mono-input"
+            />
+          </Field>
+          <div className="insp-row">
+            <PxInput label="Largura da página" value={s.width ?? 1920} onChange={(v) => onPatch({ settings: { width: Math.max(50, Math.min(3840, v)) } })} />
+            <PxInput label="Altura" value={s.height ?? 1080} onChange={(v) => onPatch({ settings: { height: Math.max(50, Math.min(2160, v)) } })} />
+          </div>
+        </>
+      )}
+      <KitTextsModal open={texts} onClose={() => setTexts(false)} />
     </div>
   )
 }
@@ -156,6 +282,8 @@ export function Inspector({
   onClose: () => void
 }): React.JSX.Element {
   const cams = useVideoInputs()
+  const { settings } = useStudio()
+  const cameraOn = settings.studio.cameraEnabled
 
   if (!scene || !item) {
     return (
@@ -167,7 +295,16 @@ export function Inspector({
           </span>
           <div className="insp-shortcuts">
             <span>
-              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> Volto já
+              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> Tela de pausa
+            </span>
+            <span>
+              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Ligar / desligar câmera
+            </span>
+            <span>
+              <kbd>1</kbd>…<kbd>9</kbd> Trocar de cena
+            </span>
+            <span>
+              <kbd>Ctrl</kbd>+<kbd>Z</kbd> Desfazer
             </span>
             <span>
               <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> Salvar replay
@@ -214,6 +351,11 @@ export function Inspector({
 
         {item.type === 'camera_input' && (
           <div className="insp-section">
+            {!cameraOn && (
+              <div className="insp-note">
+                <IconCameraOff size={14} /> A câmera está desligada no estúdio: esta fonte não aparece na live.
+              </div>
+            )}
             <Field label="Câmera">
               <select
                 className="select"

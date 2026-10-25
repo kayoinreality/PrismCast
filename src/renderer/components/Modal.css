@@ -73,3 +73,21 @@
   background: rgba(0, 0, 0, 0.22);
   border-top: 1px solid var(--border);
 }
+
+/* Modais longos (filtros de áudio, textos do kit) rolam por dentro; cabeçalho e rodapé ficam. */
+.modal {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+}
+
+.modal-head,
+.modal-foot {
+  flex: none;
+}
+
+.modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

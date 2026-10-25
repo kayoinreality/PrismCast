@@ -1,6 +1,6 @@
 {
   "name": "prismcast-studio",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "PrismCast Studio — Transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML (browser sources) e login real nas plataformas",
   "main": "./out/main/index.js",
   "author": "kayor",

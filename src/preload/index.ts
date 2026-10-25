@@ -16,6 +16,8 @@ import type {
   ViewerConnectResult
 } from '@shared/ipc'
 import type {
+  AudioApp,
+  AudioChannelStatus,
   BrowserSourceFrame,
   CanvasOrientation,
   ChatMessage,
@@ -23,10 +25,15 @@ import type {
   DiscoveredHost,
   HostToViewer,
   HotkeyAction,
+  KitConfig,
+  LiveInfo,
   MultistreamStatus,
   ReactionEvent,
   RecorderStatus,
   SourceKind,
+  TwitchActionResult,
+  TwitchCapabilities,
+  TwitchCategory,
   TwitchLoginState,
   ViewerToHost,
   WidgetKit
@@ -75,7 +82,29 @@ const api: Api = {
   },
   kit: {
     load: (path) => ipcRenderer.invoke(CH.kitLoad, path) as Promise<WidgetKit | null>,
-    pickFolder: () => ipcRenderer.invoke(CH.kitPickFolder) as Promise<string | null>
+    pickFolder: () => ipcRenderer.invoke(CH.kitPickFolder) as Promise<string | null>,
+    readConfig: (path) => ipcRenderer.invoke(CH.kitReadConfig, path) as Promise<KitConfig | null>,
+    writeConfig: (path, config) => ipcRenderer.invoke(CH.kitWriteConfig, path, config) as Promise<OkResult>
+  },
+  audio: {
+    listApps: () => ipcRenderer.invoke(CH.audioListApps) as Promise<AudioApp[]>,
+    appForWindow: (captureId) => ipcRenderer.invoke(CH.audioAppForWindow, captureId) as Promise<AudioApp | null>,
+    sync: (channels) => ipcRenderer.send(CH.audioSync, channels),
+    onPcm: (cb) => subscribe<[string, Float32Array]>(CH.audioPcm, cb),
+    onStatus: (cb) => subscribe<[AudioChannelStatus[]]>(CH.audioStatus, cb)
+  },
+  twitch: {
+    capabilities: () => ipcRenderer.invoke(CH.twitchCapabilities) as Promise<TwitchCapabilities>,
+    getChannelInfo: () => ipcRenderer.invoke(CH.twitchGetInfo) as Promise<LiveInfo | null>,
+    updateChannelInfo: (info) => ipcRenderer.invoke(CH.twitchUpdateInfo, info) as Promise<TwitchActionResult>,
+    searchCategories: (query) => ipcRenderer.invoke(CH.twitchSearchCategories, query) as Promise<TwitchCategory[]>,
+    sendChat: (text) => ipcRenderer.invoke(CH.twitchSendChat, text) as Promise<TwitchActionResult>
+  },
+  chat: {
+    openPopout: () => ipcRenderer.send(CH.chatOpenPopout),
+    closePopout: () => ipcRenderer.send(CH.chatClosePopout),
+    isPopoutOpen: () => ipcRenderer.invoke(CH.chatIsPopoutOpen) as Promise<boolean>,
+    onPopoutChange: (cb) => subscribe<[boolean]>(CH.chatPopoutChanged, cb)
   },
   files: {
     pickImage: () => ipcRenderer.invoke(CH.filesPickImage) as Promise<string | null>,

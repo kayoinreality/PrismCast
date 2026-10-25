@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import type { Scene, SceneItem, SourceTransform } from '@shared/protocol'
 import { Button, Segmented } from '@/components/ui'
-import { IconSend } from '@/components/Icons'
+import { IconCameraOff, IconSend } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
 import { setStudioMode, transition } from '@/studio/scenes'
+import { hiddenWithoutCamera } from '@/studio/widgets'
 
 export type StageView = 'horizontal' | 'vertical'
 
@@ -50,14 +51,17 @@ function StageEditor({
   onSelect: (id: string | null) => void
   onPatchItem: (id: string, patch: Partial<SceneItem>) => void
 }): React.JSX.Element {
-  const { engine } = useStudio()
+  const { engine, settings, kit } = useStudio()
   useEngineState() // redesenha quando uma captura muda de estado
   const ref = useRef<HTMLDivElement>(null)
+  const cameraOn = settings.studio.cameraEnabled
   const [drag, setDrag] = useState<Drag | null>(null)
   const [hoverId, setHoverId] = useState<string | null>(null)
 
   const tfOf = (it: SceneItem): SourceTransform => (vertical ? it.verticalTransform : it.transform)
-  const shown = scene.items.filter((it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal))
+  const shown = scene.items.filter(
+    (it) => it.visible && (vertical ? it.showOnVertical : it.showOnHorizontal) && (cameraOn || !hiddenWithoutCamera(it, kit))
+  )
   const key = vertical ? 'verticalTransform' : 'transform'
 
   const rel = (e: { clientX: number; clientY: number }): { x: number; y: number } => {
@@ -244,7 +248,17 @@ export function Stage({
   onPatchItem: (id: string, patch: Partial<SceneItem>) => void
 }): React.JSX.Element {
   const { engine, settings, update } = useStudio()
+  const state = useEngineState()
   const st = settings.scenes
+  const cameraOn = settings.studio.cameraEnabled
+  // Tem câmera na cena mas ela não abre: oferece desligar em vez de mostrar um buraco na live.
+  const cameraMissing =
+    cameraOn &&
+    (scene?.items ?? []).some((it) => {
+      if (it.type !== 'camera_input' || !it.visible) return false
+      const cap = engine.capture(it)
+      return cap !== null && (cap.state === 'missing' || cap.state === 'error')
+    })
   const studioMode = st.studioMode
   const dual = settings.studio.dualOutputEnabled
   const program = st.scenes.find((s) => s.id === st.activeSceneId)
@@ -267,8 +281,26 @@ export function Stage({
     <div className="stage">
       <div className="stage-bar">
         <div className="stage-title">
-          {studioMode ? 'Prévia' : 'No ar'}
+          {studioMode ? 'Prévia' : state.live ? <span className="stage-onair">No ar</span> : 'Cena'}
           <span className="stage-scene">{scene?.name}</span>
+          {!cameraOn && (
+            <button
+              className="stage-chip"
+              onClick={() => update({ studio: { ...settings.studio, cameraEnabled: true } })}
+              title="Religar a câmera"
+            >
+              <IconCameraOff size={13} /> sem câmera
+            </button>
+          )}
+          {cameraMissing && (
+            <button
+              className="stage-chip is-warn"
+              onClick={() => update({ studio: { ...settings.studio, cameraEnabled: false } })}
+              title="Esconde a câmera e as molduras dos overlays"
+            >
+              <IconCameraOff size={13} /> Câmera não abriu — desligar câmera
+            </button>
+          )}
           {scene && scene.items.length === 0 && (
             <span className="stage-empty-hint">Cena vazia — adicione uma fonte em “Fontes”</span>
           )}
@@ -321,7 +353,7 @@ export function Stage({
             <div className="stage-pane">
               <div className="canvas-frame is-program">
                 <CanvasHost canvas={engine.compositor.program} />
-                <span className="pane-label">No ar · {program?.name}</span>
+                <span className="pane-label">{state.live ? 'No ar' : 'Programa'} · {program?.name}</span>
               </div>
             </div>
           </>
