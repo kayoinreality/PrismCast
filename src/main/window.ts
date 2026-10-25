@@ -10,10 +10,11 @@ export function getMainWindow(): BrowserWindow | null {
 
 export function createWindow(): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 960,
-    minHeight: 640,
+    title: 'PrismCast Studio',
+    width: 1380,
+    height: 860,
+    minWidth: 1060,
+    minHeight: 680,
     show: false,
     frame: false,
     // Evita o flash branco entre a janela abrir e o React pintar.

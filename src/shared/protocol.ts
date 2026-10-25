@@ -1,26 +1,21 @@
 /**
- * Contrato de rede entre instancias do app.
+ * Contrato de rede e modelos compartilhados do PrismCast Studio.
  *
- * Este arquivo e compartilhado por main (Node) e renderer (Chromium), entao nao
- * pode referenciar tipos do DOM. As cargas de WebRTC sao descritas de forma
- * estrutural (`SessionDescriptionPayload`, `IceCandidatePayload`) para serem
- * compativeis com RTCSessionDescriptionInit / RTCIceCandidateInit sem importa-los.
+ * Compartilhado entre o motor nativo em Rust (`src-rust/protocol.rs`),
+ * a ponte Electron/Main (`src/main`) e a interface Studio (`src/renderer`).
  */
 
 export const PROTOCOL_VERSION = 1
 
-/** Porta UDP de descoberta. Fixa: e o unico ponto de encontro entre as maquinas. */
 export const DISCOVERY_PORT = 41234
-/** Porta TCP inicial de sinalizacao. Incrementa se estiver ocupada. */
 export const SIGNALING_PORT = 41235
+export const RUST_RPC_PORT = 41236
 
 export const ANNOUNCE_INTERVAL_MS = 2000
-/** Host nao visto por este tempo some da lista do espectador. */
 export const HOST_TTL_MS = 6000
 
 export const MAX_VIEWERS = 4
 
-/** Tentativas de PIN antes do bloqueio temporario, por endereco IP. */
 export const PIN_MAX_ATTEMPTS = 5
 export const PIN_BLOCK_MS = 60_000
 
@@ -31,9 +26,7 @@ export type SourceKind = 'screen' | 'window'
 export interface HostAnnounce {
   t: 'announce'
   v: number
-  /** Id da sessao de transmissao, novo a cada "Iniciar". */
   id: string
-  /** Nome legivel do host, ex. "PC do Kayor". */
   name: string
   ip: string
   port: number
@@ -58,10 +51,156 @@ export interface HostBye {
 
 export type DiscoveryMessage = HostAnnounce | DiscoveryQuery | HostBye
 
-/** Um host visto na rede, do ponto de vista do espectador. */
 export interface DiscoveredHost extends Omit<HostAnnounce, 't' | 'v'> {
-  /** Timestamp local do ultimo announce recebido; usado para o TTL. */
   lastSeen: number
+}
+
+// -------------------------------------------- Multistream & Dual Output (9:16)
+
+export type CanvasOrientation = 'horizontal' | 'vertical'
+
+export type VerticalLayoutPreset =
+  | 'split-cam-top'
+  | 'blurred-backdrop'
+  | 'center-crop'
+  | 'pip-vertical'
+
+export type StreamProvider = 'twitch' | 'youtube' | 'kick' | 'tiktok' | 'custom'
+
+export interface MultistreamTarget {
+  id: string
+  provider: StreamProvider
+  name: string
+  enabled: boolean
+  rtmpUrl: string
+  streamKey: string
+  /** Qual canvas alimenta este destino: Horizontal (16:9) ou Vertical (9:16 p/ TikTok & Shorts) */
+  orientation: CanvasOrientation
+  bitrateKbps: number
+}
+
+export interface MultistreamTargetStatus {
+  id: string
+  provider: StreamProvider
+  name: string
+  orientation: CanvasOrientation
+  state: 'idle' | 'connecting' | 'live' | 'error'
+  uptimeSec: number
+  bytesSent: number
+  lastError: string | null
+}
+
+export interface MultistreamStatus {
+  active: boolean
+  encoder: string
+  horizontalLive: boolean
+  verticalLive: boolean
+  targets: MultistreamTargetStatus[]
+}
+
+// -------------------------------------- Widgets & StreamElements Overlays
+
+export type WidgetKind =
+  | 'streamelements'
+  | 'alert-box'
+  | 'chat-overlay'
+  | 'goal-bar'
+  | 'viewer-counter'
+  | 'lower-third'
+  | 'custom-url'
+
+export interface StreamWidget {
+  id: string
+  name: string
+  kind: WidgetKind
+  enabled: boolean
+  url: string
+  primaryText: string
+  secondaryText: string
+  accentColor: string
+  /** Posição normalizada (0..1) no canvas 16:9 */
+  x: number
+  y: number
+  width: number
+  height: number
+  /** Posição normalizada (0..1) no canvas vertical 9:16 */
+  verticalX: number
+  verticalY: number
+  showOnHorizontal: boolean
+  showOnVertical: boolean
+  opacity: number
+}
+
+// ------------------------------------------------ Mixer de Áudio & Estúdio
+
+export interface AudioMixerSettings {
+  systemAudioEnabled: boolean
+  systemVolume: number
+  systemMuted: boolean
+  micEnabled: boolean
+  micDeviceId: string | null
+  micVolume: number
+  micMuted: boolean
+  noiseSuppression: boolean
+  echoCancellation: boolean
+  compressorEnabled: boolean
+  partyVoiceEnabled: boolean
+}
+
+export interface StudioCompositorSettings {
+  dualOutputEnabled: boolean
+  verticalLayout: VerticalLayoutPreset
+  webcamEnabled: boolean
+  webcamDeviceId: string | null
+  webcamPosition: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'
+  webcamScale: number
+  webcamRound: boolean
+  privacyShieldActive: boolean
+  privacyShieldTitle: string
+  privacyShieldSubtitle: string
+  replayBufferSeconds: number
+}
+
+export interface HotkeyBindings {
+  toggleMicMute: string
+  toggleSystemMute: string
+  togglePrivacyShield: string
+  saveReplayClip: string
+  toggleVerticalPreview: string
+}
+
+export type HotkeyAction =
+  | 'toggle-mic-mute'
+  | 'toggle-system-mute'
+  | 'toggle-privacy-shield'
+  | 'save-replay-clip'
+  | 'toggle-vertical-preview'
+
+export interface RecorderStatus {
+  recording: boolean
+  recordingPath: string | null
+  recordingDurationSec: number
+  replayBufferActive: boolean
+  replayBufferedSeconds: number
+  replaySavedPath: string | null
+}
+
+// ------------------------------------------------- Chat LAN & Reações Ao Vivo
+
+export interface ChatMessage {
+  id: string
+  senderId: string
+  senderName: string
+  role: 'host' | 'viewer' | 'system'
+  text: string
+  timestamp: number
+}
+
+export interface ReactionEvent {
+  id: string
+  senderName: string
+  emoji: string
+  timestamp: number
 }
 
 // --------------------------------------------------------------- sinalizacao
@@ -98,23 +237,36 @@ export type ViewerToHost =
   | { t: 'answer'; desc: SessionDescriptionPayload }
   | { t: 'ice'; candidate: IceCandidatePayload }
   | { t: 'ping'; sentAt: number }
+  | { t: 'chat'; text: string }
+  | { t: 'reaction'; emoji: string }
+  | { t: 'voice-offer'; desc: SessionDescriptionPayload }
+  | { t: 'voice-ice'; candidate: IceCandidatePayload }
   | { t: 'bye' }
 
 export type HostToViewer =
-  | { t: 'welcome'; viewerId: string; hostName: string; sourceName: string; sourceKind: SourceKind }
+  | {
+      t: 'welcome'
+      viewerId: string
+      hostName: string
+      sourceName: string
+      sourceKind: SourceKind
+    }
   | { t: 'rejected'; reason: RejectReason; retryAfterMs?: number }
   | { t: 'offer'; desc: SessionDescriptionPayload }
   | { t: 'ice'; candidate: IceCandidatePayload }
   | { t: 'pong'; sentAt: number }
+  | { t: 'chat'; message: ChatMessage }
+  | { t: 'reaction'; reaction: ReactionEvent }
+  | { t: 'source-changed'; sourceName: string; sourceKind: SourceKind }
+  | { t: 'voice-answer'; desc: SessionDescriptionPayload }
+  | { t: 'voice-ice'; candidate: IceCandidatePayload }
   | { t: 'kicked' }
   | { t: 'ended' }
 
-/** Um espectador conectado, do ponto de vista do host. */
 export interface ConnectedViewer {
   id: string
   name: string
   address: string
   joinedAt: number
-  /** RTT da sinalizacao em ms; null enquanto o primeiro ping nao voltou. */
   pingMs: number | null
 }

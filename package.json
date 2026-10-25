@@ -1,14 +1,16 @@
 {
-  "name": "lan-screenshare",
-  "version": "1.0.1",
-  "description": "Compartilhamento de tela na rede local, sem controle remoto",
+  "name": "prismcast-studio",
+  "version": "2.0.0",
+  "description": "PrismCast Studio — Transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets StreamElements e Core Nativo em Rust",
   "main": "./out/main/index.js",
   "author": "kayor",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
     "dev:2": "electron-vite preview",
-    "build": "npm run typecheck && electron-vite build",
+    "rust:build": "cargo build --release",
+    "rust:test": "cargo test",
+    "build": "npm run typecheck && cargo build --release && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "dist": "npm run build && electron-builder --win --config electron-builder.yml"
   },

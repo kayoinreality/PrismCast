@@ -1,5 +1,5 @@
 import { randomInt, randomUUID } from 'node:crypto'
-import { app, ipcMain } from 'electron'
+import { app, globalShortcut, ipcMain } from 'electron'
 import { CH } from '@shared/ipc'
 import type {
   AppInfo,
@@ -8,7 +8,16 @@ import type {
   HostStartResult,
   ViewerConnectOptions
 } from '@shared/ipc'
-import { MAX_VIEWERS, type HostToViewer, type ViewerToHost } from '@shared/protocol'
+import {
+  MAX_VIEWERS,
+  SIGNALING_PORT,
+  type CanvasOrientation,
+  type HostToViewer,
+  type HotkeyAction,
+  type MultistreamTarget,
+  type SourceKind,
+  type ViewerToHost
+} from '@shared/protocol'
 import { hostname } from 'node:os'
 import { Discovery } from './discovery'
 import { SignalingClient, SignalingServer } from './signaling'
@@ -17,11 +26,14 @@ import { findFreePort, listInterfaces, localAddress } from './net'
 import { authorize as firewallAuthorize, status as firewallStatus } from './firewall'
 import { getSettings, setSettings } from './store'
 import { getMainWindow } from './window'
-import { SIGNALING_PORT } from '@shared/protocol'
+import { MultistreamManager } from './multistream'
+import { RecorderManager } from './recorder'
 
 const discovery = new Discovery()
 const server = new SignalingServer()
 const client = new SignalingClient()
+const multistream = new MultistreamManager()
+const recorder = new RecorderManager()
 
 function toRenderer(channel: string, ...args: unknown[]): void {
   const win = getMainWindow()
@@ -32,7 +44,6 @@ function makePin(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, '0')
 }
 
-// Eventos vindos da rede sao empurrados para o renderer, que e quem fala WebRTC.
 discovery.onHosts = (hosts) => toRenderer(CH.discoveryHosts, hosts)
 
 server.onViewers = (viewers) => {
@@ -40,21 +51,44 @@ server.onViewers = (viewers) => {
   toRenderer(CH.hostViewers, viewers)
 }
 server.onMessage = (viewerId, msg) => toRenderer(CH.hostMessage, viewerId, msg)
+server.onChat = (msg) => toRenderer(CH.hostChat, msg)
+server.onReaction = (reaction) => toRenderer(CH.hostReaction, reaction)
 
 client.onMessage = (msg) => toRenderer(CH.viewerMessage, msg)
 client.onClosed = (info) => toRenderer(CH.viewerClosed, info)
 
-/**
- * Derruba tudo que a transmissao segura.
- *
- * Roda incondicionalmente: se `server.start()` funciona e o announce falha logo
- * depois, o caminho de erro precisa fechar o servidor mesmo sem a sessao ter se
- * completado — senao a porta fica escutando para sempre. As duas chamadas sao
- * seguras quando nao ha nada rodando.
- */
+export function registerGlobalHotkeys(): void {
+  try {
+    globalShortcut.unregisterAll()
+    const bindings = getSettings().hotkeys
+    const entries: Array<[string, HotkeyAction]> = [
+      [bindings.toggleMicMute, 'toggle-mic-mute'],
+      [bindings.toggleSystemMute, 'toggle-system-mute'],
+      [bindings.togglePrivacyShield, 'toggle-privacy-shield'],
+      [bindings.saveReplayClip, 'save-replay-clip'],
+      [bindings.toggleVerticalPreview, 'toggle-vertical-preview']
+    ]
+    for (const [accel, action] of entries) {
+      if (!accel) continue
+      const normalized = accel.replace(/^Ctrl\+/i, 'CommandOrControl+')
+      try {
+        globalShortcut.register(normalized, () => {
+          toRenderer(CH.appHotkey, action)
+        })
+      } catch {
+        /* acelerador invalido ou ocupado */
+      }
+    }
+  } catch {
+    /* chamado antes de app.whenReady */
+  }
+}
+
 async function stopHosting(): Promise<void> {
   await discovery.stopAnnouncing()
   await server.stop()
+  multistream.stop()
+  recorder.resetStream()
   disarmSource()
 }
 
@@ -62,10 +96,12 @@ export function registerIpc(): void {
   // ------------------------------------------------------------------- app
   ipcMain.handle(CH.appInfo, (): AppInfo => {
     return {
-      name: app.getName(),
+      name: 'PrismCast Studio',
       version: app.getVersion(),
       hostname: hostname(),
-      isPackaged: app.isPackaged
+      isPackaged: app.isPackaged,
+      rustEngineActive: true,
+      hardwareEncoder: multistream.detectedEncoder
     }
   })
 
@@ -109,6 +145,8 @@ export function registerIpc(): void {
         maxViewers
       })
 
+      recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
+
       discovery.preferredInterface = settings.preferredInterface
       await discovery.startAnnouncing({
         id: sessionId,
@@ -140,6 +178,15 @@ export function registerIpc(): void {
     server.send(viewerId, msg)
   })
 
+  ipcMain.on(CH.hostBroadcast, (_e, msg: HostToViewer) => {
+    server.broadcast(msg)
+  })
+
+  ipcMain.on(CH.hostUpdateSource, (_e, sourceName: string, sourceKind: SourceKind) => {
+    server.updateSession({ sourceName, sourceKind })
+    discovery.patchAnnounce({ sourceName, sourceKind })
+  })
+
   ipcMain.on(CH.hostSetViewerCount, (_e, n: number) => {
     discovery.patchAnnounce({ viewers: n })
   })
@@ -159,6 +206,32 @@ export function registerIpc(): void {
   ipcMain.on(CH.viewerSend, (_e, msg: ViewerToHost) => client.send(msg))
   ipcMain.on(CH.viewerDisconnect, () => client.disconnect())
 
+  // ----------------------------------------------------------- multistream
+  ipcMain.handle(CH.multistreamStatus, () => multistream.status())
+  ipcMain.handle(
+    CH.multistreamStart,
+    (_e, targets: MultistreamTarget[], fps: number) => multistream.start(targets, fps)
+  )
+  ipcMain.on(
+    CH.multistreamPushChunk,
+    (_e, orientation: CanvasOrientation, chunk: Uint8Array) => {
+      multistream.pushChunk(orientation, chunk)
+    }
+  )
+  ipcMain.handle(CH.multistreamStop, () => multistream.stop())
+
+  // --------------------------------------------- gravador & replay buffer
+  ipcMain.handle(CH.recorderStatus, () => recorder.status())
+  ipcMain.handle(CH.recorderStart, () => recorder.startRecording())
+  ipcMain.handle(CH.recorderStop, () => recorder.stopRecording())
+  ipcMain.handle(CH.recorderSetReplay, (_e, enabled: boolean, seconds: number) =>
+    recorder.setReplayBuffer(enabled, seconds)
+  )
+  ipcMain.on(CH.recorderPushChunk, (_e, chunk: Uint8Array) => {
+    recorder.pushChunk(chunk)
+  })
+  ipcMain.handle(CH.recorderSaveReplay, () => recorder.saveReplay())
+
   // ------------------------------------------------------------------ rede
   ipcMain.handle(CH.netInterfaces, () => listInterfaces())
 
@@ -170,14 +243,18 @@ export function registerIpc(): void {
   ipcMain.handle(CH.settingsGet, () => getSettings())
   ipcMain.handle(CH.settingsSet, (_e, patch: Partial<AppSettings>) => {
     const next = setSettings(patch)
-    // A troca de interface vale para o proximo announce, sem reiniciar nada.
     discovery.preferredInterface = next.preferredInterface
+    registerGlobalHotkeys()
     return next
   })
 }
 
-/** Derruba tudo que segura socket, antes do processo sair. */
 export async function shutdown(): Promise<void> {
+  try {
+    globalShortcut.unregisterAll()
+  } catch {
+    /* ignorar */
+  }
   client.disconnect()
   await stopHosting()
   await discovery.dispose()

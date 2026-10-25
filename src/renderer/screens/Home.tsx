@@ -1,12 +1,17 @@
 import { useDiscovery } from '@/hooks/useDiscovery'
 import { Badge } from '@/components/ui'
-import { IconBroadcast, IconEye, IconUsers, IconWifi } from '@/components/Icons'
+import {
+  IconBroadcast,
+  IconEye,
+  IconGlobe,
+  IconLayers,
+  IconMic,
+  IconSmartphone,
+  IconUsers,
+  IconWifi
+} from '@/components/Icons'
 import './Home.css'
 
-/**
- * A descoberta ja roda aqui: saber que existe alguem transmitindo antes de
- * clicar em "Assistir" evita a tela vazia mais frustrante do app.
- */
 export function Home({
   onShare,
   onWatch
@@ -20,9 +25,19 @@ export function Home({
     <div className="screen home fade-in">
       <div className="home-inner">
         <header className="home-head">
-          <h1 className="home-title">O que você quer fazer?</h1>
+          <div className="home-pills">
+            <Badge tone="live">Core Nativo em Rust</Badge>
+            <Badge tone="accent" icon={<IconSmartphone size={12} />}>
+              Dual Output 16:9 + 9:16
+            </Badge>
+            <Badge tone="neutral" icon={<IconGlobe size={12} />}>
+              Twitch · YouTube · Kick · TikTok
+            </Badge>
+          </div>
+          <h1 className="home-title">PrismCast Studio</h1>
           <p className="home-sub">
-            Tudo acontece dentro da sua rede local. Nada sai para a internet.
+            Estúdio completo de transmissão P2P na LAN com latência zero, Multistreaming RTMP,
+            Tela Vertical 9:16, Mixer de Áudio Duplo, Replay Buffer e Widgets StreamElements.
           </p>
         </header>
 
@@ -31,12 +46,18 @@ export function Home({
             <span className="home-card-icon">
               <IconBroadcast size={26} />
             </span>
-            <span className="home-card-title">Compartilhar</span>
+            <span className="home-card-title">Abrir Estúdio & Transmitir</span>
             <span className="home-card-desc">
-              Escolha uma tela ou uma janela e deixe até 4 pessoas assistirem.
+              Capture tela ou janela com Webcam PiP, mixe áudio do sistema + microfone, adicione
+              overlays do StreamElements e transmita na LAN e para Twitch, YouTube, Kick e TikTok.
             </span>
             <span className="home-card-foot">
-              <Badge tone="accent">Vídeo + áudio do sistema</Badge>
+              <Badge tone="accent" icon={<IconMic size={12} />}>
+                Mixer Sistema + Mic · Replay 30s
+              </Badge>
+              <Badge tone="neutral" icon={<IconLayers size={12} />}>
+                Cenas & Widgets
+              </Badge>
             </span>
           </button>
 
@@ -44,20 +65,21 @@ export function Home({
             <span className="home-card-icon">
               <IconEye size={26} />
             </span>
-            <span className="home-card-title">Assistir</span>
+            <span className="home-card-title">Assistir na Rede Local</span>
             <span className="home-card-desc">
-              Entre na transmissão de alguém que está na mesma rede que você.
+              Conecte-se instantaneamente a uma transmissão na mesma rede com áudio Opus estéreo,
+              Chat ao vivo, Reações flutuantes e Retorno de Voz (Party Voice).
             </span>
             <span className="home-card-foot">
               {hosts.length > 0 ? (
                 <Badge tone="live" icon={<IconUsers />}>
                   {hosts.length === 1
-                    ? '1 transmissão agora'
-                    : `${hosts.length} transmissões agora`}
+                    ? '1 estúdio ao vivo agora'
+                    : `${hosts.length} estúdios ao vivo agora`}
                 </Badge>
               ) : (
                 <Badge tone="neutral" icon={<IconWifi />}>
-                  Procurando na rede
+                  Procurando estúdios na LAN
                 </Badge>
               )}
             </span>
@@ -65,7 +87,9 @@ export function Home({
         </div>
 
         <p className="home-note">
-          Este app só mostra a imagem. Ninguém controla o seu mouse ou teclado.
+          Atalhos Globais: <code>Ctrl+Shift+M</code> Mutar Mic · <code>Ctrl+Shift+D</code> Mutar
+          Sistema · <code>Ctrl+Shift+P</code> Modo Volto Já · <code>Ctrl+Shift+S</code> Salvar
+          Replay 30s · <code>Ctrl+Shift+V</code> Preview 9:16
         </p>
       </div>
     </div>

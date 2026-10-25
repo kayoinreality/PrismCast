@@ -1,0 +1,31 @@
+[package]
+name = "prismcast"
+version = "2.0.0"
+edition = "2021"
+authors = ["kayor"]
+description = "PrismCast Studio — Motor nativo em Rust para transmissão LAN P2P, Multistreaming (Twitch, YouTube, Kick, TikTok), Dual Output (16:9 + 9:16), Replay Buffer e Widgets"
+license = "MIT"
+
+[[bin]]
+name = "prismcast"
+path = "src-rust/main.rs"
+
+[lib]
+name = "prismcast_core"
+path = "src-rust/lib.rs"
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.12", features = ["v4", "serde"] }
+socket2 = { version = "0.5", features = ["all"] }
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+log = "0.4"
+env_logger = "0.11"
+dirs = "6.0"
+hostname = "0.4"
+base64 = "0.22"

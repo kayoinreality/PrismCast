@@ -17,7 +17,6 @@ import {
 } from '@/components/Icons'
 import './HostSetup.css'
 
-/** Constraints de captura a partir da qualidade escolhida. */
 function videoConstraints(q: QualitySettings): MediaTrackConstraints {
   return {
     frameRate: { ideal: q.fps, max: q.fps },
@@ -52,7 +51,6 @@ export function HostSetup({
   const [showFirewall, setShowFirewall] = useState(false)
 
   const videoRef = useRef<HTMLVideoElement>(null)
-  // A previa e descartada no unmount, exceto quando vira a transmissao.
   const handedOffRef = useRef(false)
 
   const quality = settings.quality
@@ -71,7 +69,6 @@ export function HostSetup({
     void window.api.firewall.status().then(setFirewall)
   }, [loadSources])
 
-  // Solta a previa ao sair da tela — a nao ser que ela tenha virado transmissao.
   useEffect(() => {
     return () => {
       if (!handedOffRef.current) stopStream(preview)
@@ -82,11 +79,6 @@ export function HostSetup({
     if (videoRef.current) videoRef.current.srcObject = preview
   }, [preview])
 
-  /**
-   * Trocar de fonte ou ligar/desligar o audio exige uma captura nova. Mudar
-   * resolucao ou fps, nao: `applyConstraints` resolve na track existente, sem
-   * o piscar de reabrir a captura.
-   */
   useEffect(() => {
     if (!selected) return
     let cancelled = false
@@ -108,8 +100,6 @@ export function HostSetup({
           return stream
         })
 
-        // Fechar a janela compartilhada encerra a track: limpar a selecao evita
-        // o usuario clicar em "Iniciar" com uma fonte que ja nao existe.
         stream.getVideoTracks()[0]?.addEventListener('ended', () => {
           if (cancelled) return
           setSelected(null)
@@ -130,7 +120,6 @@ export function HostSetup({
     return () => {
       cancelled = true
     }
-    // Resolucao e fps sao aplicados no efeito abaixo, sem recapturar.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selected?.id, quality.audio, loadSources])
 
@@ -155,8 +144,6 @@ export function HostSetup({
   }
 
   const handleStartClick = (): void => {
-    // O aviso do firewall aparece uma vez por instalacao; depois disso o
-    // usuario decide sozinho quando quer rever.
     if (firewall && !firewall.ruleExists && !settings.firewallPromptDismissed) {
       setShowFirewall(true)
       return
@@ -173,8 +160,11 @@ export function HostSetup({
           <IconArrowLeft size={19} />
         </IconButton>
         <div>
-          <div className="page-title">Compartilhar</div>
-          <div className="page-sub">Escolha o que as outras pessoas vão ver.</div>
+          <div className="page-title">Configurar Estúdio & Fonte</div>
+          <div className="page-sub">
+            Escolha a tela ou janela principal. Você poderá trocar de fonte ao vivo durante a
+            transmissão.
+          </div>
         </div>
         <div className="spacer" />
         <Segmented
@@ -198,7 +188,11 @@ export function HostSetup({
               <span>Procurando telas e janelas...</span>
             </div>
           ) : (
-            <SourceGrid sources={visible} selectedId={selected?.id ?? null} onSelect={setSelected} />
+            <SourceGrid
+              sources={visible}
+              selectedId={selected?.id ?? null}
+              onSelect={setSelected}
+            />
           )}
         </section>
 
@@ -206,7 +200,6 @@ export function HostSetup({
           <div className="setup-panel-scroll screen-scroll">
             <div className="preview-frame">
               {preview ? (
-                // Sempre mudo: tocar o loopback do sistema realimentaria a captura.
                 <video ref={videoRef} autoPlay muted playsInline />
               ) : (
                 <div className="preview-placeholder">
@@ -235,10 +228,43 @@ export function HostSetup({
             <div className="setup-divider" />
 
             <Toggle
+              checked={settings.audioMixer.micEnabled}
+              onChange={(micEnabled) =>
+                onSettingsChange({
+                  audioMixer: { ...settings.audioMixer, micEnabled }
+                })
+              }
+              label="Incluir Microfone no Mixer Ao Vivo"
+              hint="Mixa sua voz com o áudio do sistema (com supressão de ruído e compressor)."
+            />
+
+            <Toggle
+              checked={settings.studio.webcamEnabled}
+              onChange={(webcamEnabled) =>
+                onSettingsChange({
+                  studio: { ...settings.studio, webcamEnabled }
+                })
+              }
+              label="Picture-in-Picture (Webcam sobre a tela)"
+              hint="Adiciona sua câmera com borda arredondada nos layouts 16:9 e 9:16."
+            />
+
+            <Toggle
+              checked={settings.studio.dualOutputEnabled}
+              onChange={(dualOutputEnabled) =>
+                onSettingsChange({
+                  studio: { ...settings.studio, dualOutputEnabled }
+                })
+              }
+              label="Dual Output Vertical (9:16 TikTok / Shorts)"
+              hint="Renderiza simultaneamente uma cena vertical 1080x1920 otimizada."
+            />
+
+            <Toggle
               checked={settings.requirePin}
               onChange={(v) => onSettingsChange({ requirePin: v })}
-              label="Pedir um código para entrar"
-              hint="Recomendado em rede compartilhada, como faculdade ou trabalho."
+              label="Pedir um código PIN para entrar na LAN"
+              hint="Recomendado em redes compartilhadas."
             />
 
             {firewall && !firewall.ruleExists && firewall.checked && (
@@ -270,18 +296,18 @@ export function HostSetup({
               onClick={handleStartClick}
               icon={<IconBroadcast size={18} />}
             >
-              Iniciar transmissão
+              Entrar no Estúdio Ao Vivo
             </Button>
             <p className="setup-actions-note">
               {settings.requirePin ? (
                 <>
-                  <IconLock size={13} /> Um código de 6 dígitos será gerado
+                  <IconLock size={13} /> Código PIN de 6 dígitos ativo
                 </>
               ) : (
-                <>Qualquer pessoa na rede poderá entrar</>
+                <>Entrada livre na LAN</>
               )}
               {' · '}
-              até {MAX_VIEWERS} pessoas
+              até {MAX_VIEWERS} espectadores P2P + Multistream RTMP
             </p>
           </div>
         </aside>

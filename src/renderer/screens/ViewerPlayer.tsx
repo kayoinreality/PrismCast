@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Badge, IconButton, StatPill } from '@/components/ui'
+import { Badge, Button, IconButton, StatPill } from '@/components/ui'
 import {
   IconActivity,
   IconArrowLeft,
+  IconChat,
   IconFullscreen,
+  IconMic,
+  IconMicOff,
   IconPin,
   IconVolume,
   IconVolumeOff
@@ -12,7 +15,8 @@ import { formatBitrate } from '@/rtc/stats'
 import type { ViewerStream } from '@/hooks/useViewerStream'
 import './ViewerPlayer.css'
 
-const IDLE_MS = 2600
+const IDLE_MS = 2800
+const QUICK_EMOJIS = ['🔥', '👏', '😂', '❤️', '🚀', '🎉']
 
 const STATE_LABEL: Record<string, string> = {
   conectando: 'Conectando',
@@ -37,9 +41,19 @@ export function ViewerPlayer({
   const [volume, setVolume] = useState(1)
   const [onTop, setOnTop] = useState(false)
   const [showStats, setShowStats] = useState(false)
+  const [showChat, setShowChat] = useState(false)
+  const [chatText, setChatText] = useState('')
   const [fullscreen, setFullscreen] = useState(false)
 
-  const { stream, state, stats, connection } = viewer
+  const {
+    stream,
+    state,
+    stats,
+    connection,
+    chatMessages,
+    reactions,
+    partyVoiceActive
+  } = viewer
 
   useEffect(() => {
     if (videoRef.current) videoRef.current.srcObject = stream
@@ -52,7 +66,6 @@ export function ViewerPlayer({
     video.volume = volume
   }, [muted, volume])
 
-  /** Os controles somem sozinhos; qualquer movimento do mouse os traz de volta. */
   const wake = useCallback((): void => {
     setControlsVisible(true)
     window.clearTimeout(idleTimer.current)
@@ -77,6 +90,7 @@ export function ViewerPlayer({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') return
       if (e.key === 'f' || e.key === 'F') toggleFullscreen()
       else if (e.key === 'm' || e.key === 'M') setMuted((m) => !m)
       else if (e.key === 'Escape' && !document.fullscreenElement) onLeave()
@@ -90,12 +104,19 @@ export function ViewerPlayer({
     setOnTop(await window.api.app.setAlwaysOnTop(!onTop))
   }
 
+  const handleChatSubmit = (e: React.FormEvent): void => {
+    e.preventDefault()
+    if (!chatText.trim()) return
+    viewer.sendChat(chatText)
+    setChatText('')
+  }
+
   const waiting = !stream || state === 'conectando'
 
   return (
     <div
       ref={shellRef}
-      className={`player ${controlsVisible ? '' : 'is-idle'}`}
+      className={`player ${controlsVisible || showChat ? '' : 'is-idle'}`}
       onMouseMove={wake}
       onDoubleClick={toggleFullscreen}
     >
@@ -104,13 +125,22 @@ export function ViewerPlayer({
       {waiting && (
         <div className="player-waiting">
           <span className="spinner" />
-          <span>Negociando a conexão com {connection?.hostName ?? 'o host'}...</span>
+          <span>Negociando a conexão P2P com {connection?.hostName ?? 'o estúdio'}...</span>
         </div>
       )}
 
       {state === 'instavel' && (
         <div className="player-banner">A conexão oscilou. Tentando recuperar...</div>
       )}
+
+      <div className="player-reactions">
+        {reactions.map((r) => (
+          <div key={r.id} className="player-reaction-item">
+            <span>{r.emoji}</span>
+            <small>{r.senderName}</small>
+          </div>
+        ))}
+      </div>
 
       <div className="player-top">
         <IconButton label="Sair da transmissão" onClick={onLeave}>
@@ -150,7 +180,41 @@ export function ViewerPlayer({
           />
         </div>
 
+        <div className="player-quick-emojis">
+          {QUICK_EMOJIS.map((em) => (
+            <button
+              key={em}
+              type="button"
+              className="player-emoji-btn"
+              onClick={() => viewer.sendReaction(em)}
+              title={`Reagir com ${em}`}
+            >
+              {em}
+            </button>
+          ))}
+        </div>
+
         <div className="spacer" />
+
+        <IconButton
+          label={
+            partyVoiceActive
+              ? 'Desligar Voz na Sala (Party Voice)'
+              : 'Falar com o Host (Party Voice)'
+          }
+          active={partyVoiceActive}
+          onClick={() => void viewer.togglePartyVoice()}
+        >
+          {partyVoiceActive ? <IconMic size={18} /> : <IconMicOff size={18} />}
+        </IconButton>
+
+        <IconButton
+          label="Chat da Sala"
+          active={showChat}
+          onClick={() => setShowChat((c) => !c)}
+        >
+          <IconChat size={18} />
+        </IconButton>
 
         <IconButton
           label="Estatísticas"
@@ -169,6 +233,42 @@ export function ViewerPlayer({
           <IconFullscreen size={18} />
         </IconButton>
       </div>
+
+      {showChat && (
+        <aside className="player-chat-drawer fade-in" onDoubleClick={(e) => e.stopPropagation()}>
+          <div className="player-chat-head">
+            <span>Chat ao Vivo</span>
+            <Badge tone="live">{chatMessages.length}</Badge>
+          </div>
+          <div className="player-chat-list">
+            {chatMessages.length === 0 ? (
+              <div className="player-chat-empty">Mande uma mensagem para o host e a sala!</div>
+            ) : (
+              chatMessages.map((m) => (
+                <div key={m.id} className="player-chat-msg">
+                  <strong style={{ color: m.role === 'host' ? '#7c6aff' : '#17d4b2' }}>
+                    {m.senderName}:
+                  </strong>{' '}
+                  <span>{m.text}</span>
+                </div>
+              ))
+            )}
+          </div>
+          <form className="player-chat-form" onSubmit={handleChatSubmit}>
+            <input
+              type="text"
+              className="player-chat-input"
+              placeholder="Mensagem..."
+              value={chatText}
+              onChange={(e) => setChatText(e.target.value)}
+              maxLength={280}
+            />
+            <Button type="submit" size="sm" variant="primary">
+              Enviar
+            </Button>
+          </form>
+        </aside>
+      )}
 
       {showStats && (
         <div className="player-stats fade-in">

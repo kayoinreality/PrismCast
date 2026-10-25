@@ -23,9 +23,6 @@ export function App(): React.JSX.Element {
   const [hostSource, setHostSource] = useState<DesktopSource | null>(null)
 
   const { settings, update } = useSettings()
-  // Os dois hooks vivem aqui de proposito: as assinaturas de IPC precisam estar
-  // de pe antes das telas montarem, senao a primeira oferta ou o primeiro
-  // espectador chegam sem ninguem escutando.
   const broadcast = useHostBroadcast()
   const viewer = useViewerStream()
 
@@ -37,17 +34,17 @@ export function App(): React.JSX.Element {
     setRoute('home')
   }, [broadcast, hostStream])
 
-  /**
-   * Fechar a janela compartilhada encerra a track de video. Sem isto a
-   * transmissao continuaria de pe, anunciada na rede, entregando tela preta.
-   */
   useEffect(() => {
     const track = hostStream?.getVideoTracks()[0]
     if (!track || route !== 'host-live') return
-    const onEnded = (): void => void stopBroadcast()
+    const onEnded = (): void => {
+      // Se a janela capturada fechar, nao derrubamos a live — o compositor
+      // entra em modo de espera ate o host escolher outra fonte ao vivo.
+      console.warn('[App] A fonte capturada foi encerrada; aguardando troca de fonte.')
+    }
     track.addEventListener('ended', onEnded)
     return () => track.removeEventListener('ended', onEnded)
-  }, [hostStream, route, stopBroadcast])
+  }, [hostStream, route])
 
   const startBroadcast = async (
     stream: MediaStream,
@@ -68,6 +65,20 @@ export function App(): React.JSX.Element {
     setRoute('host-live')
     return null
   }
+
+  const handleLiveSourceChanged = useCallback(
+    (newStream: MediaStream, newSource: DesktopSource): void => {
+      setHostStream((old) => {
+        if (old && old !== newStream) {
+          old.getTracks().forEach((t) => t.stop())
+        }
+        return newStream
+      })
+      setHostSource(newSource)
+      broadcast.notifySourceChanged(newSource.id, newSource.name, newSource.kind)
+    },
+    [broadcast]
+  )
 
   const connectToHost = async (
     target: ConnectTarget,
@@ -139,6 +150,7 @@ export function App(): React.JSX.Element {
           sourceName={hostSource?.name ?? ''}
           settings={settings}
           onSettingsChange={update}
+          onSourceSwitch={handleLiveSourceChanged}
           onStop={() => void stopBroadcast()}
         />
       )}

@@ -3,10 +3,7 @@ import { IconBroadcast, IconClose, IconMaximize, IconMinimize, IconRestore } fro
 import './Titlebar.css'
 
 /**
- * Barra de titulo propria (a janela e `frame: false`).
- *
- * A regiao arrastavel usa -webkit-app-region: drag; qualquer botao dentro dela
- * precisa voltar para `no-drag`, senao vira area de arrasto e nao clica.
+ * Barra de titulo propria do PrismCast Studio (a janela e `frame: false`).
  */
 export function Titlebar({ center }: { center?: ReactNode }): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
@@ -17,7 +14,20 @@ export function Titlebar({ center }: { center?: ReactNode }): React.JSX.Element 
     <div className="titlebar">
       <div className="titlebar-brand">
         <IconBroadcast size={16} />
-        <span>LAN ScreenShare</span>
+        <span>PrismCast Studio</span>
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            padding: '1px 6px',
+            borderRadius: 999,
+            background: 'rgba(23, 212, 178, 0.14)',
+            color: 'var(--live)',
+            letterSpacing: '0.04em'
+          }}
+        >
+          RUST CORE
+        </span>
       </div>
 
       <div className="titlebar-center">{center}</div>

@@ -15,16 +15,19 @@ import type {
   ViewerConnectResult
 } from '@shared/ipc'
 import type {
+  CanvasOrientation,
+  ChatMessage,
   ConnectedViewer,
   DiscoveredHost,
   HostToViewer,
+  HotkeyAction,
+  MultistreamStatus,
+  MultistreamTarget,
+  ReactionEvent,
+  RecorderStatus,
+  SourceKind,
   ViewerToHost
 } from '@shared/protocol'
-
-/**
- * Unica ponte entre o renderer e o Node. O renderer roda com contextIsolation
- * e sandbox ligados: nao existe `require` do outro lado, so este objeto.
- */
 
 function subscribe<A extends unknown[]>(
   channel: string,
@@ -44,7 +47,8 @@ const api: Api = {
     toggleMaximize: () => ipcRenderer.send(CH.appToggleMaximize),
     close: () => ipcRenderer.send(CH.appClose),
     setAlwaysOnTop: (value) => ipcRenderer.invoke(CH.appAlwaysOnTop, value) as Promise<boolean>,
-    onMaximizeChange: (cb) => subscribe<[boolean]>(CH.appMaximizeChanged, cb)
+    onMaximizeChange: (cb) => subscribe<[boolean]>(CH.appMaximizeChanged, cb),
+    onHotkey: (cb) => subscribe<[HotkeyAction]>(CH.appHotkey, cb)
   },
   sources: {
     list: () => ipcRenderer.invoke(CH.sourcesList) as Promise<DesktopSource[]>,
@@ -57,9 +61,14 @@ const api: Api = {
     stop: () => ipcRenderer.invoke(CH.hostStop) as Promise<void>,
     kick: (viewerId) => ipcRenderer.invoke(CH.hostKick, viewerId) as Promise<void>,
     send: (viewerId, msg: HostToViewer) => ipcRenderer.send(CH.hostSend, viewerId, msg),
+    broadcast: (msg: HostToViewer) => ipcRenderer.send(CH.hostBroadcast, msg),
+    updateSource: (sourceName: string, sourceKind: SourceKind) =>
+      ipcRenderer.send(CH.hostUpdateSource, sourceName, sourceKind),
     setViewerCount: (n) => ipcRenderer.send(CH.hostSetViewerCount, n),
     onViewers: (cb) => subscribe<[ConnectedViewer[]]>(CH.hostViewers, cb),
-    onMessage: (cb) => subscribe<[string, ViewerToHost]>(CH.hostMessage, cb)
+    onMessage: (cb) => subscribe<[string, ViewerToHost]>(CH.hostMessage, cb),
+    onChat: (cb) => subscribe<[ChatMessage]>(CH.hostChat, cb),
+    onReaction: (cb) => subscribe<[ReactionEvent]>(CH.hostReaction, cb)
   },
   discovery: {
     start: () => ipcRenderer.invoke(CH.discoveryStart) as Promise<void>,
@@ -74,6 +83,38 @@ const api: Api = {
     disconnect: () => ipcRenderer.send(CH.viewerDisconnect),
     onMessage: (cb) => subscribe<[HostToViewer]>(CH.viewerMessage, cb),
     onClosed: (cb) => subscribe<[ViewerClosedInfo]>(CH.viewerClosed, cb)
+  },
+  multistream: {
+    status: () => ipcRenderer.invoke(CH.multistreamStatus) as Promise<MultistreamStatus>,
+    start: (targets: MultistreamTarget[], fps: number) =>
+      ipcRenderer.invoke(CH.multistreamStart, targets, fps) as Promise<{
+        ok: boolean
+        status?: MultistreamStatus
+        error?: string
+      }>,
+    pushChunk: (orientation: CanvasOrientation, chunk: Uint8Array) =>
+      ipcRenderer.send(CH.multistreamPushChunk, orientation, chunk),
+    stop: () => ipcRenderer.invoke(CH.multistreamStop) as Promise<MultistreamStatus>
+  },
+  recorder: {
+    status: () => ipcRenderer.invoke(CH.recorderStatus) as Promise<RecorderStatus>,
+    start: () =>
+      ipcRenderer.invoke(CH.recorderStart) as Promise<{
+        ok: boolean
+        status?: RecorderStatus
+        error?: string
+      }>,
+    stop: () => ipcRenderer.invoke(CH.recorderStop) as Promise<RecorderStatus>,
+    setReplayBuffer: (enabled: boolean, seconds: number) =>
+      ipcRenderer.invoke(CH.recorderSetReplay, enabled, seconds) as Promise<RecorderStatus>,
+    pushChunk: (chunk: Uint8Array) => ipcRenderer.send(CH.recorderPushChunk, chunk),
+    saveReplay: () =>
+      ipcRenderer.invoke(CH.recorderSaveReplay) as Promise<{
+        ok: boolean
+        path?: string
+        status?: RecorderStatus
+        error?: string
+      }>
   },
   net: {
     interfaces: () => ipcRenderer.invoke(CH.netInterfaces) as Promise<NetInterface[]>

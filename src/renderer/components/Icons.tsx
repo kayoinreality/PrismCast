@@ -1,10 +1,5 @@
 import type { SVGProps } from 'react'
 
-/**
- * Icones em linha. Todos herdam `currentColor` e usam o mesmo grid de 24px com
- * traco de 1.75 — e o que faz o conjunto parecer uma familia so.
- */
-
 type P = SVGProps<SVGSVGElement> & { size?: number }
 
 function Svg({ size = 20, children, ...rest }: P): React.JSX.Element {
@@ -64,6 +59,15 @@ export const IconEye = (p: P): React.JSX.Element => (
   <Svg {...p}>
     <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
     <circle cx="12" cy="12" r="3" />
+  </Svg>
+)
+
+export const IconEyeOff = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M3 3l18 18" />
+    <path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" />
+    <path d="M9.9 5.1A10.5 10.5 0 0 1 12 5c6 0 9.5 7 9.5 7a17 17 0 0 1-3.2 4.3" />
+    <path d="M6.2 6.2C3.9 8 2.5 12 2.5 12S6 18.5 12 18.5a10 10 0 0 0 5.8-1.8" />
   </Svg>
 )
 
@@ -146,6 +150,63 @@ export const IconVolumeOff = (p: P): React.JSX.Element => (
   <Svg {...p}>
     <path d="M11 5 6.5 8.8H3v6.4h3.5L11 19V5Z" />
     <path d="m16 9.5 5 5M21 9.5l-5 5" />
+  </Svg>
+)
+
+export const IconMic = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5 11a7 7 0 0 0 14 0M12 18v3M8 21h8" />
+  </Svg>
+)
+
+export const IconMicOff = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="m3 3 18 18" />
+    <path d="M9 9v2a3 3 0 0 0 5.1 2.1M15 9V6a3 3 0 0 0-5.7-1.3" />
+    <path d="M5 11a7 7 0 0 0 11.9 5M12 18v3M8 21h8" />
+  </Svg>
+)
+
+export const IconCamera = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="2.5" y="6" width="14" height="12" rx="2" />
+    <path d="m16.5 10.5 5-3v9l-5-3v-3Z" />
+  </Svg>
+)
+
+export const IconSmartphone = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <rect x="6.5" y="2.5" width="11" height="19" rx="2.2" />
+    <path d="M11 18.5h2" />
+  </Svg>
+)
+
+export const IconLayers = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="m12 3 9 5-9 5-9-5 9-5Z" />
+    <path d="m3 12 9 5 9-5" />
+    <path d="m3 16.5 9 5 9-5" />
+  </Svg>
+)
+
+export const IconGlobe = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3.5 12h17M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18" />
+  </Svg>
+)
+
+export const IconDisc = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="3" fill="currentColor" />
+  </Svg>
+)
+
+export const IconChat = (p: P): React.JSX.Element => (
+  <Svg {...p}>
+    <path d="M21 12a8 8 0 0 1-8 8H7l-4 3v-6.5A8 8 0 1 1 21 12Z" />
   </Svg>
 )
 

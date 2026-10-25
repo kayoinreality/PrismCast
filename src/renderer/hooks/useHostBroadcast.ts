@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ConnectedViewer } from '@shared/protocol'
+import type {
+  ChatMessage,
+  ConnectedViewer,
+  ReactionEvent,
+  SourceKind
+} from '@shared/protocol'
 import type { HostStartOptions, HostStartResult } from '@shared/ipc'
 import type { QualitySettings } from '@shared/quality'
 import { HostSession, type PeerState } from '@/rtc/HostSession'
@@ -17,6 +22,8 @@ export interface HostBroadcast {
   viewers: ConnectedViewer[]
   states: Record<string, PeerState>
   stats: Map<string, StreamStats>
+  chatMessages: ChatMessage[]
+  reactions: ReactionEvent[]
   start(
     stream: MediaStream,
     settings: QualitySettings,
@@ -25,25 +32,22 @@ export interface HostBroadcast {
   stop(): Promise<void>
   updateSettings(settings: QualitySettings): void
   kick(viewerId: string): void
+  sendChat(text: string, hostName?: string): void
+  sendReaction(emoji: string, hostName?: string): void
+  replaceVideoTrack(track: MediaStreamTrack): Promise<void>
+  replaceAudioTrack(track: MediaStreamTrack | null): Promise<void>
+  setPartyVoiceEnabled(enabled: boolean): void
+  notifySourceChanged(sourceId: string, sourceName: string, sourceKind: SourceKind): void
 }
 
-/**
- * Transmissao ativa.
- *
- * Vive no App, nao na tela: a assinatura de `host.onMessage` precisa existir
- * antes do primeiro espectador chegar, e ele pode chegar em milissegundos —
- * o announce vai para a rede assim que `host.start` retorna.
- *
- * O roster do servidor de sinalizacao e a fonte da verdade: entrou alguem na
- * lista, criamos a conexao WebRTC; saiu, derrubamos. Assim nao ha dois lugares
- * decidindo quem esta conectado.
- */
 export function useHostBroadcast(): HostBroadcast {
   const sessionRef = useRef<HostSession | null>(null)
   const [info, setInfo] = useState<HostInfo | null>(null)
   const [viewers, setViewers] = useState<ConnectedViewer[]>([])
   const [states, setStates] = useState<Record<string, PeerState>>({})
   const [stats, setStats] = useState<Map<string, StreamStats>>(new Map())
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [reactions, setReactions] = useState<ReactionEvent[]>([])
 
   useEffect(() => {
     const offViewers = window.api.host.onViewers((list) => {
@@ -54,9 +58,6 @@ export function useHostBroadcast(): HostBroadcast {
 
       const present = new Set(list.map((v) => v.id))
 
-      // Quem entrou no roster ganha uma conexao; quem saiu tem a sua derrubada.
-      // A comparacao e contra os peers da sessao, nao contra o estado do React:
-      // este callback e assinado uma vez e enxergaria sempre o valor inicial.
       for (const viewer of list) {
         if (session.getState(viewer.id) === null) {
           void session.addViewer(viewer.id).catch((err) => {
@@ -79,13 +80,25 @@ export function useHostBroadcast(): HostBroadcast {
       void sessionRef.current?.handleMessage(viewerId, msg)
     })
 
+    const offChat = window.api.host.onChat((chat) => {
+      setChatMessages((prev) => [...prev.slice(-99), chat])
+    })
+
+    const offReaction = window.api.host.onReaction((reaction) => {
+      setReactions((prev) => [...prev.slice(-24), reaction])
+      setTimeout(() => {
+        setReactions((prev) => prev.filter((r) => r.id !== reaction.id))
+      }, 3600)
+    })
+
     return () => {
       offViewers()
       offMessage()
+      offChat()
+      offReaction()
     }
   }, [])
 
-  // Amostragem de estatisticas so enquanto ha transmissao.
   useEffect(() => {
     if (!info) return
     const timer = setInterval(() => {
@@ -109,6 +122,8 @@ export function useHostBroadcast(): HostBroadcast {
 
       const result = await window.api.host.start(opts)
       if (result.ok) {
+        setChatMessages([])
+        setReactions([])
         setInfo({ sessionId: result.sessionId, ip: result.ip, port: result.port, pin: result.pin })
       } else {
         session.close()
@@ -127,6 +142,8 @@ export function useHostBroadcast(): HostBroadcast {
     setViewers([])
     setStates({})
     setStats(new Map())
+    setChatMessages([])
+    setReactions([])
   }, [])
 
   const updateSettings = useCallback((settings: QualitySettings): void => {
@@ -137,5 +154,70 @@ export function useHostBroadcast(): HostBroadcast {
     void window.api.host.kick(viewerId)
   }, [])
 
-  return { info, viewers, states, stats, start, stop, updateSettings, kick }
+  const sendChat = useCallback((text: string, hostName = 'Host'): void => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const message: ChatMessage = {
+      id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      senderId: 'host',
+      senderName: hostName,
+      role: 'host',
+      text: trimmed,
+      timestamp: Date.now()
+    }
+    setChatMessages((prev) => [...prev.slice(-99), message])
+    window.api.host.broadcast({ t: 'chat', message })
+  }, [])
+
+  const sendReaction = useCallback((emoji: string, hostName = 'Host'): void => {
+    const reaction: ReactionEvent = {
+      id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      senderName: hostName,
+      emoji,
+      timestamp: Date.now()
+    }
+    setReactions((prev) => [...prev.slice(-24), reaction])
+    setTimeout(() => {
+      setReactions((prev) => prev.filter((r) => r.id !== reaction.id))
+    }, 3600)
+    window.api.host.broadcast({ t: 'reaction', reaction })
+  }, [])
+
+  const replaceVideoTrack = useCallback(async (track: MediaStreamTrack): Promise<void> => {
+    await sessionRef.current?.replaceVideoTrack(track)
+  }, [])
+
+  const replaceAudioTrack = useCallback(async (track: MediaStreamTrack | null): Promise<void> => {
+    await sessionRef.current?.replaceAudioTrack(track)
+  }, [])
+
+  const setPartyVoiceEnabled = useCallback((enabled: boolean): void => {
+    sessionRef.current?.setPartyVoiceEnabled(enabled)
+  }, [])
+
+  const notifySourceChanged = useCallback(
+    (_sourceId: string, sourceName: string, sourceKind: SourceKind): void => {
+      window.api.host.updateSource(sourceName, sourceKind)
+    },
+    []
+  )
+
+  return {
+    info,
+    viewers,
+    states,
+    stats,
+    chatMessages,
+    reactions,
+    start,
+    stop,
+    updateSettings,
+    kick,
+    sendChat,
+    sendReaction,
+    replaceVideoTrack,
+    replaceAudioTrack,
+    setPartyVoiceEnabled,
+    notifySourceChanged
+  }
 }

@@ -9,20 +9,47 @@
   margin-left: 4px;
 }
 
+.studio-head {
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.studio-title-wrap {
+  min-width: 160px;
+}
+
+.studio-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.studio-toast {
+  margin: 0 var(--sp-6) var(--sp-2);
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: var(--r-md);
+  background: rgba(23, 212, 178, 0.14);
+  border: 1px solid rgba(23, 212, 178, 0.35);
+  color: var(--live);
+  font-size: 12.5px;
+  font-weight: 560;
+}
+
 .live-body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 340px;
-  gap: var(--sp-5);
-  padding: 0 var(--sp-6) var(--sp-5);
+  grid-template-columns: minmax(0, 1fr) 370px;
+  gap: var(--sp-4);
+  padding: 0 var(--sp-6) var(--sp-4);
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1100px) {
   .live-body {
-    grid-template-columns: minmax(0, 1fr) 300px;
-    gap: var(--sp-4);
-    padding: 0 var(--sp-4) var(--sp-4);
+    grid-template-columns: minmax(0, 1fr) 320px;
+    gap: var(--sp-3);
+    padding: 0 var(--sp-4) var(--sp-3);
   }
 }
 
@@ -33,13 +60,31 @@
   min-height: 0;
 }
 
+/* ------------------------------------------- Palco Dual Output (16:9 + 9:16) */
+
+.studio-stage {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-3);
+}
+
+.studio-stage.has-vertical {
+  grid-template-columns: minmax(0, 1fr) 230px;
+}
+
 .live-preview {
+  position: relative;
   flex: 1;
   min-height: 0;
   border-radius: var(--r-lg);
-  background: #000;
+  background: #06080c;
   overflow: hidden;
   box-shadow: inset 0 0 0 1px var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .live-preview video {
@@ -47,6 +92,140 @@
   height: 100%;
   object-fit: contain;
   display: block;
+}
+
+.stage-badge {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 4;
+  padding: 3px 9px;
+  border-radius: var(--r-full);
+  background: rgba(9, 11, 16, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+}
+
+.stage-badge-vert {
+  color: var(--live);
+  border-color: rgba(23, 212, 178, 0.3);
+}
+
+.studio-widget-iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: none;
+  pointer-events: none;
+  z-index: 3;
+}
+
+.floating-reactions {
+  position: absolute;
+  bottom: 16px;
+  right: 18px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.floating-emoji {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--r-full);
+  background: rgba(13, 15, 22, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 18px;
+  animation: fadeIn 0.25s ease-out;
+}
+
+.floating-emoji small {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+/* --------------------------------------------------- Mixer de Audio Duplo */
+
+.studio-mixer {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  flex: none;
+}
+
+.mixer-channel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mixer-channel-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mixer-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  margin-right: auto;
+}
+
+.mixer-pct {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  min-width: 42px;
+  text-align: right;
+}
+
+.mixer-chip {
+  font-size: 10.5px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: var(--r-full);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  border: 1px solid transparent;
+  transition: all var(--fast) var(--ease);
+}
+
+.mixer-chip.is-on {
+  background: rgba(23, 212, 178, 0.14);
+  color: var(--live);
+  border-color: rgba(23, 212, 178, 0.3);
+}
+
+.mixer-vu {
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  overflow: hidden;
+}
+
+.mixer-vu-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #17d4b2, #6c5ce7);
+  transition: width 55ms linear;
+}
+
+.mixer-vu-mic {
+  background: linear-gradient(90deg, #17d4b2, #f59e0b);
 }
 
 .live-stats {
@@ -72,25 +251,273 @@
   flex: none;
 }
 
-.live-warning svg {
-  flex: none;
-}
-
-/* ------------------------------------------------------------- lateral */
+/* --------------------------------------------------- Barra Lateral & Abas */
 
 .live-side {
   display: flex;
   flex-direction: column;
-  gap: var(--sp-4);
-  padding-right: var(--sp-1);
+  gap: var(--sp-3);
+  min-height: 0;
 }
+
+.studio-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  flex: none;
+}
+
+.studio-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 6px 4px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  font-weight: 560;
+  color: var(--text-muted);
+  transition: all var(--fast) var(--ease);
+}
+
+.studio-tab:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.studio-tab.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.studio-tab-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding-right: 4px;
+}
+
+.studio-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  flex: none;
+}
+
+.studio-card-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 630;
+  color: var(--text);
+}
+
+.studio-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.studio-field-label {
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--text-muted);
+}
+
+.preset-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.preset-btn {
+  padding: 7px 10px;
+  border-radius: var(--r-sm);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  font-size: 11.5px;
+  font-weight: 560;
+  color: var(--text-muted);
+  text-align: center;
+  transition: all var(--fast) var(--ease);
+}
+
+.preset-btn.is-active {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.widget-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.widget-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid var(--border);
+}
+
+.widget-item-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+
+.widget-subfields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.widget-row-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.widget-url-preview {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.widget-add-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: var(--sp-2);
+  border-top: 1px solid var(--border);
+}
+
+.studio-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.studio-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.multistream-err {
+  font-size: 11px;
+  color: var(--danger);
+}
+
+/* ----------------------------------------------------------- Chat da Sala */
+
+.studio-chat-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  flex: none;
+}
+
+.studio-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.emoji-bar {
+  display: flex;
+  gap: 2px;
+}
+
+.emoji-btn {
+  padding: 2px 5px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  transition: transform var(--fast) var(--ease);
+}
+
+.emoji-btn:hover {
+  transform: scale(1.2);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.studio-chat-messages {
+  max-height: 150px;
+  min-height: 90px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: var(--r-sm);
+  background: rgba(0, 0, 0, 0.22);
+  font-size: 12px;
+}
+
+.studio-chat-empty {
+  color: var(--text-dim);
+  font-size: 11.5px;
+  margin: auto;
+  text-align: center;
+}
+
+.chat-msg {
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.chat-author {
+  font-weight: 650;
+  color: var(--live);
+}
+
+.chat-msg.is-host .chat-author {
+  color: var(--accent);
+}
+
+.studio-chat-form {
+  display: flex;
+  gap: 6px;
+}
+
+/* --------------------------------------------------- Codigo & Espectadores */
 
 .code-card {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--sp-3);
-  padding: var(--sp-5) var(--sp-4);
+  gap: var(--sp-2);
+  padding: var(--sp-3);
   border-radius: var(--r-lg);
   background: linear-gradient(180deg, rgba(124, 106, 255, 0.13), rgba(124, 106, 255, 0.03));
   box-shadow: inset 0 0 0 1px var(--accent-line);
@@ -101,7 +528,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
+  font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--accent);
@@ -111,7 +538,7 @@
 .code-digits {
   display: flex;
   align-items: center;
-  font-size: 38px;
+  font-size: 32px;
   font-weight: 680;
   letter-spacing: 0.09em;
   line-height: 1;
@@ -119,7 +546,7 @@
 }
 
 .code-gap {
-  width: 14px;
+  width: 12px;
 }
 
 .code-card-open {
@@ -132,10 +559,10 @@
 }
 
 .code-open-text {
-  font-size: 12.5px;
+  font-size: 12px;
   color: var(--text-muted);
   text-align: center;
-  line-height: 1.55;
+  line-height: 1.5;
 }
 
 .live-address {
@@ -144,12 +571,10 @@
   align-items: center;
   gap: 2px;
   padding: var(--sp-2);
-  margin-top: calc(-1 * var(--sp-2));
   border-radius: var(--r-sm);
   font-size: 11.5px;
   color: var(--text-dim);
   flex: none;
-  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 
 .live-address-line {
@@ -158,41 +583,27 @@
   gap: 6px;
 }
 
-.live-address svg {
-  opacity: 0.55;
-}
-
 .live-address:hover:not(:disabled) {
   background: var(--surface);
   color: var(--text-muted);
 }
 
-.live-address:hover:not(:disabled) svg {
-  opacity: 1;
-}
-
-.live-address:disabled {
-  cursor: default;
-}
-
 .live-address-hint {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-dim);
   opacity: 0.75;
 }
-
-/* ---------------------------------------------------------- espectadores */
 
 .viewers {
   flex: none;
 }
 
 .viewers-head {
-  margin-bottom: var(--sp-2);
+  margin-bottom: 6px;
 }
 
 .viewers-title {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
   color: var(--text-muted);
 }
@@ -201,13 +612,12 @@
   display: flex;
   align-items: center;
   gap: var(--sp-3);
-  padding: var(--sp-4);
+  padding: var(--sp-3);
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--border);
   color: var(--text-dim);
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
 }
 
 .viewer-list {
@@ -216,14 +626,14 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-2);
+  gap: 6px;
 }
 
 .viewer-row {
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3);
+  padding: 6px 8px 6px 12px;
   border-radius: var(--r-md);
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--border);
@@ -237,7 +647,7 @@
 }
 
 .viewer-name {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 560;
   white-space: nowrap;
   overflow: hidden;
@@ -245,24 +655,18 @@
 }
 
 .viewer-meta {
-  font-size: 11px;
+  font-size: 10.5px;
   color: var(--text-dim);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
-
-/* -------------------------------------------------------------- qualidade */
 
 .live-quality {
   display: flex;
   flex-direction: column;
   gap: var(--sp-1);
-  padding: var(--sp-4);
+  padding: var(--sp-3);
   border-radius: var(--r-lg);
   background: var(--surface);
   box-shadow: inset 0 0 0 1px var(--border);
-  flex: none;
 }
 
 .live-quality-title {
@@ -274,5 +678,22 @@
 .live-quality-note {
   font-size: 11.5px;
   color: var(--text-dim);
-  margin-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2);
+}
+
+.source-switch-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+.source-switch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.source-switch-grid {
+  max-height: 360px;
+  overflow-y: auto;
 }

@@ -1,27 +1,33 @@
 /**
- * Superficie de IPC: nomes de canais e o formato de `window.api`.
- *
- * O renderer nunca toca em Node diretamente (contextIsolation + sandbox ligados).
- * Tudo passa por aqui, tipado nas duas pontas.
+ * Superfície de IPC entre a interface do PrismCast Studio e o motor nativo Rust / Main.
  */
 
 import type { QualitySettings, PresetId } from './quality'
 import type {
+  AudioMixerSettings,
+  CanvasOrientation,
+  ChatMessage,
+  ConnectedViewer,
   DiscoveredHost,
   HostToViewer,
-  ViewerToHost,
-  SourceKind,
+  HotkeyAction,
+  HotkeyBindings,
+  MultistreamStatus,
+  MultistreamTarget,
+  ReactionEvent,
+  RecorderStatus,
   RejectReason,
-  ConnectedViewer
+  SourceKind,
+  StreamWidget,
+  StudioCompositorSettings,
+  ViewerToHost
 } from './protocol'
 
 export interface DesktopSource {
   id: string
   name: string
   kind: SourceKind
-  /** data: URL da miniatura, ja redimensionada no main. */
   thumbnail: string
-  /** data: URL do icone do app (so para janelas). */
   appIcon: string | null
   displayId: string
 }
@@ -29,9 +35,10 @@ export interface DesktopSource {
 export interface AppInfo {
   name: string
   version: string
-  /** Nome da maquina, usado como nome padrao do host. */
   hostname: string
   isPackaged: boolean
+  rustEngineActive?: boolean
+  hardwareEncoder?: string
 }
 
 export interface HostStartOptions {
@@ -55,7 +62,13 @@ export interface ViewerConnectOptions {
 }
 
 export type ViewerConnectResult =
-  | { ok: true; hostName: string; sourceName: string; sourceKind: SourceKind; viewerId: string }
+  | {
+      ok: true
+      hostName: string
+      sourceName: string
+      sourceKind: SourceKind
+      viewerId: string
+    }
   | { ok: false; reason: RejectReason | 'rede'; message: string; retryAfterMs?: number }
 
 export interface NetInterface {
@@ -63,7 +76,6 @@ export interface NetInterface {
   address: string
   netmask: string
   broadcast: string
-  /** Interface da rota padrao: a escolha automatica. */
   isPreferred: boolean
 }
 
@@ -72,11 +84,8 @@ export type NetworkProfile = 'private' | 'public' | 'domain' | 'unknown'
 export interface FirewallStatus {
   ruleExists: boolean
   execPath: string
-  /** Comando exato, para o campo copiavel do fallback manual. */
   command: string
-  /** Em perfil `public` o Windows bloqueia mesmo com a regra criada. */
   profile: NetworkProfile
-  /** false quando a checagem em si falhou (netsh ausente, permissao, etc). */
   checked: boolean
 }
 
@@ -86,9 +95,13 @@ export interface AppSettings {
   quality: QualitySettings
   presetId: PresetId
   requirePin: boolean
-  /** IP da interface escolhida a mao; null = deteccao automatica. */
   preferredInterface: string | null
   firewallPromptDismissed: boolean
+  audioMixer: AudioMixerSettings
+  studio: StudioCompositorSettings
+  hotkeys: HotkeyBindings
+  multistreamTargets: MultistreamTarget[]
+  widgets: StreamWidget[]
 }
 
 export interface ViewerClosedInfo {
@@ -106,10 +119,10 @@ export interface Api {
     close(): void
     setAlwaysOnTop(value: boolean): Promise<boolean>
     onMaximizeChange(cb: (maximized: boolean) => void): Unsubscribe
+    onHotkey(cb: (action: HotkeyAction) => void): Unsubscribe
   }
   sources: {
     list(): Promise<DesktopSource[]>
-    /** Arma o handler de getDisplayMedia com a fonte escolhida. Chamar ANTES do getDisplayMedia. */
     select(sourceId: string, withAudio: boolean): Promise<void>
   }
   host: {
@@ -117,15 +130,17 @@ export interface Api {
     stop(): Promise<void>
     kick(viewerId: string): Promise<void>
     send(viewerId: string, msg: HostToViewer): void
-    /** Mantem o announce UDP com a contagem certa de espectadores. */
+    broadcast(msg: HostToViewer): void
+    updateSource(sourceName: string, sourceKind: SourceKind): void
     setViewerCount(n: number): void
     onViewers(cb: (viewers: ConnectedViewer[]) => void): Unsubscribe
     onMessage(cb: (viewerId: string, msg: ViewerToHost) => void): Unsubscribe
+    onChat(cb: (msg: ChatMessage) => void): Unsubscribe
+    onReaction(cb: (reaction: ReactionEvent) => void): Unsubscribe
   }
   discovery: {
     start(): Promise<void>
     stop(): Promise<void>
-    /** Dispara um QUERY imediato em vez de esperar o proximo announce. */
     refresh(): void
     onHosts(cb: (hosts: DiscoveredHost[]) => void): Unsubscribe
   }
@@ -136,12 +151,33 @@ export interface Api {
     onMessage(cb: (msg: HostToViewer) => void): Unsubscribe
     onClosed(cb: (info: ViewerClosedInfo) => void): Unsubscribe
   }
+  multistream: {
+    status(): Promise<MultistreamStatus>
+    start(
+      targets: MultistreamTarget[],
+      fps: number
+    ): Promise<{ ok: boolean; status?: MultistreamStatus; error?: string }>
+    pushChunk(orientation: CanvasOrientation, chunk: Uint8Array): void
+    stop(): Promise<MultistreamStatus>
+  }
+  recorder: {
+    status(): Promise<RecorderStatus>
+    start(): Promise<{ ok: boolean; status?: RecorderStatus; error?: string }>
+    stop(): Promise<RecorderStatus>
+    setReplayBuffer(enabled: boolean, seconds: number): Promise<RecorderStatus>
+    pushChunk(chunk: Uint8Array): void
+    saveReplay(): Promise<{
+      ok: boolean
+      path?: string
+      status?: RecorderStatus
+      error?: string
+    }>
+  }
   net: {
     interfaces(): Promise<NetInterface[]>
   }
   firewall: {
     status(): Promise<FirewallStatus>
-    /** Dispara o UAC e cria a regra de entrada. */
     authorize(): Promise<{ ok: boolean; error?: string }>
   }
   settings: {
@@ -150,7 +186,6 @@ export interface Api {
   }
 }
 
-/** Nomes de canal, para nao errar string solta nos dois lados. */
 export const CH = {
   appInfo: 'app:info',
   appMinimize: 'app:minimize',
@@ -158,6 +193,7 @@ export const CH = {
   appClose: 'app:close',
   appAlwaysOnTop: 'app:always-on-top',
   appMaximizeChanged: 'app:maximize-changed',
+  appHotkey: 'app:hotkey',
 
   sourcesList: 'sources:list',
   sourcesSelect: 'sources:select',
@@ -166,9 +202,13 @@ export const CH = {
   hostStop: 'host:stop',
   hostKick: 'host:kick',
   hostSend: 'host:send',
+  hostBroadcast: 'host:broadcast',
+  hostUpdateSource: 'host:update-source',
   hostSetViewerCount: 'host:set-viewer-count',
   hostViewers: 'host:viewers',
   hostMessage: 'host:message',
+  hostChat: 'host:chat',
+  hostReaction: 'host:reaction',
 
   discoveryStart: 'discovery:start',
   discoveryStop: 'discovery:stop',
@@ -180,6 +220,18 @@ export const CH = {
   viewerDisconnect: 'viewer:disconnect',
   viewerMessage: 'viewer:message',
   viewerClosed: 'viewer:closed',
+
+  multistreamStatus: 'multistream:status',
+  multistreamStart: 'multistream:start',
+  multistreamPushChunk: 'multistream:push-chunk',
+  multistreamStop: 'multistream:stop',
+
+  recorderStatus: 'recorder:status',
+  recorderStart: 'recorder:start',
+  recorderStop: 'recorder:stop',
+  recorderSetReplay: 'recorder:set-replay',
+  recorderPushChunk: 'recorder:push-chunk',
+  recorderSaveReplay: 'recorder:save-replay',
 
   netInterfaces: 'net:interfaces',
 

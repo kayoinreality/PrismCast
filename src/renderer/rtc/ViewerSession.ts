@@ -1,21 +1,28 @@
-import type { HostToViewer, ViewerToHost } from '@shared/protocol'
+import type {
+  ChatMessage,
+  HostToViewer,
+  ReactionEvent,
+  SourceKind,
+  ViewerToHost
+} from '@shared/protocol'
 import { StatsSampler, emptyStats, type StreamStats } from './stats'
 import { toCandidatePayload } from './ice'
 
 export type ViewerState = 'conectando' | 'recebendo' | 'instavel' | 'encerrado'
 
-/**
- * Lado receptor. Sempre responde — o host e quem faz a oferta —, entao nao ha
- * disputa de negociacao (glare) para resolver.
- */
 export class ViewerSession {
   private pc: RTCPeerConnection | null = null
+  private voicePc: RTCPeerConnection | null = null
+  private voiceStream: MediaStream | null = null
   private readonly sampler = new StatsSampler('receive')
   private pendingIce: RTCIceCandidateInit[] = []
   private state: ViewerState = 'conectando'
 
   onStream: ((stream: MediaStream) => void) | null = null
   onStateChange: ((state: ViewerState) => void) | null = null
+  onChat: ((chat: ChatMessage) => void) | null = null
+  onReaction: ((reaction: ReactionEvent) => void) | null = null
+  onSourceChanged: ((sourceName: string, sourceKind: SourceKind) => void) | null = null
 
   constructor(private readonly send: (msg: ViewerToHost) => void) {}
 
@@ -36,8 +43,6 @@ export class ViewerSession {
       this.send({ t: 'ice', candidate: toCandidatePayload(event.candidate) })
     }
 
-    // O host manda video e audio no mesmo MediaStream; `event.streams[0]` ja
-    // vem com os dois, o que preserva a sincronia A/V feita pelo Chromium.
     pc.ontrack = (event) => {
       const stream = event.streams[0]
       if (stream) this.onStream?.(stream)
@@ -87,6 +92,80 @@ export class ViewerSession {
       await pc.addIceCandidate(msg.candidate).catch((err) => {
         console.warn('[rtc] addIceCandidate falhou:', err)
       })
+      return
+    }
+
+    if (msg.t === 'chat') {
+      this.onChat?.(msg.message)
+      return
+    }
+
+    if (msg.t === 'reaction') {
+      this.onReaction?.(msg.reaction)
+      return
+    }
+
+    if (msg.t === 'source-changed') {
+      this.onSourceChanged?.(msg.sourceName, msg.sourceKind)
+      return
+    }
+
+    if (msg.t === 'voice-answer' && this.voicePc) {
+      await this.voicePc.setRemoteDescription({ type: 'answer', sdp: msg.desc.sdp }).catch(() => {})
+      return
+    }
+
+    if (msg.t === 'voice-ice' && this.voicePc?.remoteDescription) {
+      await this.voicePc.addIceCandidate(msg.candidate).catch(() => {})
+    }
+  }
+
+  async setPartyVoiceActive(active: boolean): Promise<boolean> {
+    this.stopPartyVoice()
+    if (!active) return false
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true },
+        video: false
+      })
+      this.voiceStream = stream
+      const voicePc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' })
+      this.voicePc = voicePc
+
+      voicePc.onicecandidate = (ev) => {
+        if (!ev.candidate) return
+        this.send({ t: 'voice-ice', candidate: toCandidatePayload(ev.candidate) })
+      }
+
+      const audioTrack = stream.getAudioTracks()[0]
+      if (audioTrack) {
+        voicePc.addTransceiver(audioTrack, { direction: 'sendonly', streams: [stream] })
+      }
+
+      const offer = await voicePc.createOffer()
+      await voicePc.setLocalDescription(offer)
+      this.send({ t: 'voice-offer', desc: { type: 'offer', sdp: offer.sdp ?? '' } })
+      return true
+    } catch (err) {
+      console.warn('[ViewerSession] Falha ao ativar Party Voice:', err)
+      this.stopPartyVoice()
+      return false
+    }
+  }
+
+  private stopPartyVoice(): void {
+    if (this.voiceStream) {
+      this.voiceStream.getTracks().forEach((t) => t.stop())
+      this.voiceStream = null
+    }
+    if (this.voicePc) {
+      try {
+        this.voicePc.close()
+      } catch {
+        /* ignore */
+      }
+      this.voicePc = null
     }
   }
 
@@ -100,6 +179,7 @@ export class ViewerSession {
   }
 
   close(): void {
+    this.stopPartyVoice()
     const pc = this.pc
     this.pc = null
     this.pendingIce = []

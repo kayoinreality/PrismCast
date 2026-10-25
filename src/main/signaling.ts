@@ -6,8 +6,10 @@ import {
   PIN_MAX_ATTEMPTS,
   PROTOCOL_VERSION,
   REJECT_MESSAGES,
+  type ChatMessage,
   type ConnectedViewer,
   type HostToViewer,
+  type ReactionEvent,
   type RejectReason,
   type SourceKind,
   type ViewerToHost
@@ -16,7 +18,6 @@ import type { ViewerConnectOptions, ViewerConnectResult, ViewerClosedInfo } from
 
 const HEARTBEAT_MS = 2000
 const HEARTBEAT_TIMEOUT_MS = 8000
-/** Um hello que nao chega neste prazo derruba a conexao (porta escaneada, etc). */
 const HELLO_TIMEOUT_MS = 5000
 
 function normalizeAddress(raw: string | undefined): string {
@@ -39,13 +40,6 @@ export interface HostSessionInfo {
   maxViewers: number
 }
 
-/**
- * Servidor de sinalizacao do host.
- *
- * Carrega apenas SDP e ICE — a midia vai direto por WebRTC e nunca passa por
- * aqui. Nao existe canal de entrada de teclado ou mouse, por decisao de projeto:
- * este app nao faz controle remoto.
- */
 export class SignalingServer {
   private wss: WebSocketServer | null = null
   private readonly viewers = new Map<string, ViewerSlot>()
@@ -55,6 +49,8 @@ export class SignalingServer {
 
   onViewers: ((viewers: ConnectedViewer[]) => void) | null = null
   onMessage: ((viewerId: string, msg: ViewerToHost) => void) | null = null
+  onChat: ((msg: ChatMessage) => void) | null = null
+  onReaction: ((reaction: ReactionEvent) => void) | null = null
 
   get viewerCount(): number {
     return this.viewers.size
@@ -80,7 +76,16 @@ export class SignalingServer {
   }
 
   updateSession(patch: Partial<HostSessionInfo>): void {
-    if (this.session) this.session = { ...this.session, ...patch }
+    if (this.session) {
+      this.session = { ...this.session, ...patch }
+      if (patch.sourceName && patch.sourceKind) {
+        this.broadcast({
+          t: 'source-changed',
+          sourceName: patch.sourceName,
+          sourceKind: patch.sourceKind
+        })
+      }
+    }
   }
 
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
@@ -132,7 +137,6 @@ export class SignalingServer {
 
         if (this.viewers.size >= session.maxViewers) return reject('sala-cheia')
 
-        // Acertou o codigo: zera o contador de tentativas deste IP.
         this.attempts.delete(address)
 
         viewerId = randomUUID()
@@ -159,6 +163,39 @@ export class SignalingServer {
         ws.close()
         return
       }
+
+      const slot = this.viewers.get(viewerId)
+      const senderName = slot?.info.name ?? 'Espectador'
+
+      if (msg.t === 'chat') {
+        const text = String(msg.text || '').trim().slice(0, 400)
+        if (!text) return
+        const chatMsg: ChatMessage = {
+          id: randomUUID(),
+          senderId: viewerId,
+          senderName,
+          role: 'viewer',
+          text,
+          timestamp: Date.now()
+        }
+        this.broadcast({ t: 'chat', message: chatMsg })
+        this.onChat?.(chatMsg)
+        return
+      }
+
+      if (msg.t === 'reaction') {
+        const emoji = String(msg.emoji || '🔥').slice(0, 8)
+        const reaction: ReactionEvent = {
+          id: randomUUID(),
+          senderName,
+          emoji,
+          timestamp: Date.now()
+        }
+        this.broadcast({ t: 'reaction', reaction })
+        this.onReaction?.(reaction)
+        return
+      }
+
       this.onMessage?.(viewerId, msg)
     })
 
@@ -194,7 +231,7 @@ export class SignalingServer {
       try {
         slot.ws.ping()
       } catch {
-        /* socket morrendo; o timeout acima resolve */
+        /* timeout resolve */
       }
     }
   }
@@ -229,7 +266,6 @@ export class SignalingServer {
       this.heartbeat = null
     }
     this.broadcast({ t: 'ended' })
-    // Da um instante para o 'ended' sair antes de derrubar os sockets.
     await new Promise((r) => setTimeout(r, 120))
     for (const slot of this.viewers.values()) slot.ws.terminate()
     this.viewers.clear()
@@ -243,10 +279,6 @@ export class SignalingServer {
   }
 }
 
-/**
- * Cliente de sinalizacao do espectador. E uma conexao de saida — por isso quem
- * so assiste nao precisa de nenhuma regra de firewall.
- */
 export class SignalingClient {
   private ws: WebSocket | null = null
   private closedInfo: ViewerClosedInfo | null = null
@@ -318,7 +350,6 @@ export class SignalingClient {
           return
         }
 
-        // Guarda o motivo antes do close, para separar expulsao de queda de rede.
         if (msg.t === 'kicked') {
           this.closedInfo = { reason: 'kicked', message: 'O host removeu você da transmissão.' }
         } else if (msg.t === 'ended') {

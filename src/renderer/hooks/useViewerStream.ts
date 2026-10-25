@@ -1,20 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { SourceKind } from '@shared/protocol'
+import type { ChatMessage, ReactionEvent, SourceKind } from '@shared/protocol'
 import type { ViewerClosedInfo, ViewerConnectResult } from '@shared/ipc'
 import { ViewerSession, type ViewerState } from '@/rtc/ViewerSession'
 import { emptyStats, type StreamStats } from '@/rtc/stats'
 
-/**
- * Para onde conectar.
- *
- * Deliberadamente menor que `DiscoveredHost`: alem do host achado na rede, o
- * usuario pode digitar um endereco a mao — necessario quando a descoberta por
- * broadcast nao chega, como costuma acontecer atraves de VPN.
- */
 export interface ConnectTarget {
   ip: string
   port: number
-  /** Nome so para exibir enquanto conecta; o definitivo vem no `welcome`. */
   name: string
 }
 
@@ -30,19 +22,17 @@ export interface ViewerStream {
   stats: StreamStats
   connection: ViewerConnection | null
   closed: ViewerClosedInfo | null
+  chatMessages: ChatMessage[]
+  reactions: ReactionEvent[]
+  partyVoiceActive: boolean
   connect(target: ConnectTarget, pin: string | null, name: string): Promise<ViewerConnectResult>
   disconnect(): void
   dismissClosed(): void
+  sendChat(text: string): void
+  sendReaction(emoji: string): void
+  togglePartyVoice(): Promise<boolean>
 }
 
-/**
- * Recepcao da transmissao.
- *
- * Assim como o lado do host, vive no App: o `offer` sai do outro lado no
- * instante seguinte ao `welcome`, entao a assinatura de `viewer.onMessage`
- * precisa ja estar de pe quando `connect` retorna — montar isso na tela do
- * player perderia a oferta.
- */
 export function useViewerStream(): ViewerStream {
   const sessionRef = useRef<ViewerSession | null>(null)
   const [stream, setStream] = useState<MediaStream | null>(null)
@@ -50,6 +40,9 @@ export function useViewerStream(): ViewerStream {
   const [stats, setStats] = useState<StreamStats>(emptyStats())
   const [connection, setConnection] = useState<ViewerConnection | null>(null)
   const [closed, setClosed] = useState<ViewerClosedInfo | null>(null)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [reactions, setReactions] = useState<ReactionEvent[]>([])
+  const [partyVoiceActive, setPartyVoiceActive] = useState(false)
 
   useEffect(() => {
     const offMessage = window.api.viewer.onMessage((msg) => {
@@ -61,6 +54,7 @@ export function useViewerStream(): ViewerStream {
       setStream(null)
       setState('encerrado')
       setConnection(null)
+      setPartyVoiceActive(false)
       setClosed(info)
     })
     return () => {
@@ -86,10 +80,26 @@ export function useViewerStream(): ViewerStream {
       sessionRef.current?.close()
       setClosed(null)
       setStats(emptyStats())
+      setChatMessages([])
+      setReactions([])
+      setPartyVoiceActive(false)
 
       const session = new ViewerSession((msg) => window.api.viewer.send(msg))
       session.onStream = setStream
       session.onStateChange = setState
+      session.onChat = (chat) => {
+        setChatMessages((prev) => [...prev.slice(-99), chat])
+      }
+      session.onReaction = (reaction) => {
+        setReactions((prev) => [...prev.slice(-24), reaction])
+        setTimeout(() => {
+          setReactions((prev) => prev.filter((r) => r.id !== reaction.id))
+        }, 3600)
+      }
+      session.onSourceChanged = (sourceName, sourceKind) => {
+        setConnection((prev) => (prev ? { ...prev, sourceName, sourceKind } : prev))
+      }
+
       sessionRef.current = session
       setState('conectando')
 
@@ -124,11 +134,47 @@ export function useViewerStream(): ViewerStream {
     setConnection(null)
     setState('encerrado')
     setStats(emptyStats())
-    // Saida a pedido do proprio usuario: nao ha aviso de desconexao a mostrar.
+    setChatMessages([])
+    setReactions([])
+    setPartyVoiceActive(false)
     setClosed(null)
   }, [])
 
   const dismissClosed = useCallback((): void => setClosed(null), [])
 
-  return { stream, state, stats, connection, closed, connect, disconnect, dismissClosed }
+  const sendChat = useCallback((text: string): void => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    window.api.viewer.send({ t: 'chat', text: trimmed })
+  }, [])
+
+  const sendReaction = useCallback((emoji: string): void => {
+    window.api.viewer.send({ t: 'reaction', emoji })
+  }, [])
+
+  const togglePartyVoice = useCallback(async (): Promise<boolean> => {
+    const session = sessionRef.current
+    if (!session) return false
+    const next = !partyVoiceActive
+    const ok = await session.setPartyVoiceActive(next)
+    setPartyVoiceActive(ok)
+    return ok
+  }, [partyVoiceActive])
+
+  return {
+    stream,
+    state,
+    stats,
+    connection,
+    closed,
+    chatMessages,
+    reactions,
+    partyVoiceActive,
+    connect,
+    disconnect,
+    dismissClosed,
+    sendChat,
+    sendReaction,
+    togglePartyVoice
+  }
 }

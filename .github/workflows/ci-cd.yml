@@ -1,51 +1,67 @@
-name: Validar e publicar o app
+name: PrismCast Studio CI/CD
 
 on:
   push:
-    branches: [master]
+    branches: [master, main]
     tags:
       - 'v*'
   pull_request:
-    branches: [master]
+    branches: [master, main]
+  workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  validate:
-    name: Validar
-    runs-on: ubuntu-latest
+  validate-and-test:
+    name: Validar & Testar (Rust + TypeScript)
+    runs-on: windows-latest
 
     steps:
       - name: Baixar o código
         uses: actions/checkout@v4
 
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de dependências do Rust
+        uses: Swatinem/rust-cache@v2
+
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
 
-      - name: Instalar dependências
+      - name: Instalar dependências Node
         run: npm ci
 
-      - name: Verificar tipos
+      - name: Rodar testes unitários em Rust
+        run: cargo test --verbose
+
+      - name: Verificar tipos TypeScript
         run: npm run typecheck
 
-      - name: Verificar build de produção
-        run: npm run build
+      - name: Compilar Rust em modo Release
+        run: cargo build --release
 
   release:
-    name: Gerar executável e publicar release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: validate
+    name: Gerar executável e publicar Release
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: validate-and-test
     runs-on: windows-latest
     permissions:
       contents: write
 
     steps:
-      - name: Baixar a versão marcada
+      - name: Baixar o código
         uses: actions/checkout@v4
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de dependências do Rust
+        uses: Swatinem/rust-cache@v2
 
       - name: Configurar Node.js
         uses: actions/setup-node@v4
@@ -53,21 +69,44 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Instalar dependências
+      - name: Instalar dependências Node
         run: npm ci
 
-      - name: Gerar executável portátil
+      - name: Gerar executável portátil Windows (Electron + Rust)
         run: npm run dist
+        env:
+          GH_TOKEN: ${{ github.token }}
 
-      - name: Criar release no GitHub
+      - name: Publicar artefato de compilação
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismCast-Studio-Windows
+          path: dist/*.exe
+          if-no-files-found: error
+
+      - name: Criar ou atualizar Release no GitHub
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = node -p "require('./package.json').version"
-          if ("v$version" -ne "${{ github.ref_name }}") {
-            throw "A tag ${{ github.ref_name }} não corresponde à versão v$version do package.json."
-          }
+          $tag = if ($env:GITHUB_REF -like "refs/tags/v*") { $env:GITHUB_REF_NAME } else { "v$version" }
           $artifact = Get-ChildItem -Path dist -Filter '*.exe' | Select-Object -First 1
-          if (-not $artifact) { throw 'O executável de distribuição não foi encontrado.' }
-          gh release create "${{ github.ref_name }}" $artifact.FullName --title "LAN ScreenShare ${{ github.ref_name }}" --generate-notes
+          if (-not $artifact) { throw 'O executável de distribuição não foi encontrado em dist/.' }
+          
+          Write-Host "Verificando se release $tag já existe..."
+          $exists = $false
+          try {
+            gh release view $tag 2>$null
+            if ($LASTEXITCODE -eq 0) { $exists = $true }
+          } catch {
+            $exists = $false
+          }
+          
+          if ($exists) {
+            Write-Host "Atualizando release existente $tag..."
+            gh release upload $tag $artifact.FullName --clobber
+          } else {
+            Write-Host "Criando nova release $tag..."
+            gh release create $tag $artifact.FullName --title "PrismCast Studio $tag" --generate-notes
+          }

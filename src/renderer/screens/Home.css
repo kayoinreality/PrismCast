@@ -6,27 +6,40 @@
 
 .home-inner {
   width: 100%;
-  max-width: 780px;
+  max-width: 840px;
   display: flex;
   flex-direction: column;
-  gap: var(--sp-6);
+  gap: var(--sp-5);
 }
 
 .home-head {
   text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.home-pills {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-1);
 }
 
 .home-title {
-  font-size: 30px;
-  font-weight: 660;
+  font-size: 32px;
+  font-weight: 700;
   letter-spacing: -0.025em;
   line-height: 1.15;
 }
 
 .home-sub {
   color: var(--text-muted);
-  margin-top: var(--sp-2);
-  font-size: 14.5px;
+  max-width: 660px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .home-cards {
@@ -47,7 +60,7 @@
   align-items: flex-start;
   gap: var(--sp-3);
   padding: var(--sp-5);
-  min-height: 232px;
+  min-height: 244px;
   text-align: left;
   border-radius: var(--r-xl);
   background: var(--surface);
@@ -97,7 +110,7 @@
 
 .home-card-title {
   font-size: 20px;
-  font-weight: 630;
+  font-weight: 650;
   letter-spacing: -0.015em;
 }
 
@@ -109,10 +122,22 @@
 
 .home-card-foot {
   margin-top: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
 }
 
 .home-note {
   text-align: center;
   color: var(--text-dim);
-  font-size: 12.5px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.home-note code {
+  font-family: var(--font-mono);
+  background: var(--surface);
+  padding: 2px 6px;
+  border-radius: var(--r-sm);
+  color: var(--text-muted);
 }

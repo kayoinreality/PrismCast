@@ -9,25 +9,30 @@ export type PeerState = 'conectando' | 'conectado' | 'instavel' | 'encerrado'
 interface PeerEntry {
   pc: RTCPeerConnection
   videoTransceiver: RTCRtpTransceiver | null
+  audioTransceiver: RTCRtpTransceiver | null
   sampler: StatsSampler
   /** ICE que chegou antes da resposta: addIceCandidate falha sem remoteDescription. */
   pendingIce: RTCIceCandidateInit[]
   state: PeerState
+  /** Conexao reversa opcional para Party Voice (retorno de voz do espectador). */
+  voicePc: RTCPeerConnection | null
+  voiceAudioEl: HTMLAudioElement | null
 }
 
 /**
- * Lado emissor: uma RTCPeerConnection por espectador (malha simples, ate 4).
+ * Lado emissor do PrismCast Studio: uma RTCPeerConnection por espectador (malha LAN).
  *
- * Todos recebem os mesmos tracks do MESMO MediaStream — e isso que faz o
- * Chromium sincronizar audio e video por RTCP em cada conexao.
- *
- * Nao existe canal de dados nem qualquer via de entrada: este app nao faz
- * controle remoto, entao o espectador nao tem como enviar nada alem de
- * sinalizacao.
+ * Suporta:
+ * - Troca de video/audio ao vivo via RTCRtpSender.replaceTrack sem renegociar
+ * - Mudanca de bitrate/fps/codec ao vivo
+ * - Retorno de voz opcional (Party Voice / GuestCam) dos espectadores na LAN
  */
 export class HostSession {
   private readonly peers = new Map<string, PeerEntry>()
   private settings: QualitySettings
+  private currentVideoTrack: MediaStreamTrack | null
+  private currentAudioTrack: MediaStreamTrack | null
+  private partyVoiceEnabled = false
 
   onStateChange: ((viewerId: string, state: PeerState) => void) | null = null
 
@@ -37,15 +42,40 @@ export class HostSession {
     private readonly send: (viewerId: string, msg: HostToViewer) => void
   ) {
     this.settings = settings
+    this.currentVideoTrack = stream.getVideoTracks()[0] ?? null
+    this.currentAudioTrack = stream.getAudioTracks()[0] ?? null
   }
 
   get peerCount(): number {
     return this.peers.size
   }
 
-  /** Ids com conexao WebRTC viva. E a lista contra a qual o roster e comparado. */
   peerIds(): string[] {
     return [...this.peers.keys()]
+  }
+
+  setPartyVoiceEnabled(enabled: boolean): void {
+    this.partyVoiceEnabled = enabled
+    if (!enabled) {
+      for (const entry of this.peers.values()) {
+        this.closeVoicePeer(entry)
+      }
+    }
+  }
+
+  private closeVoicePeer(entry: PeerEntry): void {
+    if (entry.voiceAudioEl) {
+      entry.voiceAudioEl.srcObject = null
+      entry.voiceAudioEl = null
+    }
+    if (entry.voicePc) {
+      try {
+        entry.voicePc.close()
+      } catch {
+        /* ignore */
+      }
+      entry.voicePc = null
+    }
   }
 
   private setState(viewerId: string, state: PeerState): void {
@@ -58,15 +88,17 @@ export class HostSession {
   async addViewer(viewerId: string): Promise<void> {
     this.removeViewer(viewerId)
 
-    // Sem iceServers: os dois lados estao na mesma LAN, candidatos host bastam.
     const pc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' })
 
     const entry: PeerEntry = {
       pc,
       videoTransceiver: null,
+      audioTransceiver: null,
       sampler: new StatsSampler('send'),
       pendingIce: [],
-      state: 'conectando'
+      state: 'conectando',
+      voicePc: null,
+      voiceAudioEl: null
     }
     this.peers.set(viewerId, entry)
 
@@ -92,12 +124,10 @@ export class HostSession {
       }
     }
 
-    const videoTrack = this.stream.getVideoTracks()[0]
-    const audioTrack = this.stream.getAudioTracks()[0]
+    const videoTrack = this.currentVideoTrack ?? this.stream.getVideoTracks()[0]
+    const audioTrack = this.currentAudioTrack ?? this.stream.getAudioTracks()[0]
 
     if (videoTrack) {
-      // sendEncodings no addTransceiver e a via confiavel de fixar bitrate e fps:
-      // mexer em getParameters antes do setLocalDescription costuma virar no-op.
       entry.videoTransceiver = pc.addTransceiver(videoTrack, {
         direction: 'sendonly',
         streams: [this.stream],
@@ -112,10 +142,48 @@ export class HostSession {
     }
 
     if (audioTrack) {
-      pc.addTransceiver(audioTrack, { direction: 'sendonly', streams: [this.stream] })
+      entry.audioTransceiver = pc.addTransceiver(audioTrack, {
+        direction: 'sendonly',
+        streams: [this.stream]
+      })
     }
 
     await this.negotiate(viewerId)
+  }
+
+  /**
+   * Substitui o track de video ao vivo em todos os espectadores conectados
+   * sem renegociar SDP e sem derrubar a chamada.
+   */
+  async replaceVideoTrack(newTrack: MediaStreamTrack): Promise<void> {
+    this.currentVideoTrack = newTrack
+    await Promise.all(
+      [...this.peers.values()].map(async (entry) => {
+        const sender = entry.videoTransceiver?.sender
+        if (sender) {
+          await sender.replaceTrack(newTrack).catch((err) => {
+            console.warn('[rtc] replaceTrack(video) falhou:', err)
+          })
+        }
+      })
+    )
+  }
+
+  /**
+   * Substitui o track de audio ao vivo em todos os espectadores conectados.
+   */
+  async replaceAudioTrack(newTrack: MediaStreamTrack | null): Promise<void> {
+    this.currentAudioTrack = newTrack
+    await Promise.all(
+      [...this.peers.values()].map(async (entry) => {
+        const sender = entry.audioTransceiver?.sender
+        if (sender) {
+          await sender.replaceTrack(newTrack).catch((err) => {
+            console.warn('[rtc] replaceTrack(audio) falhou:', err)
+          })
+        }
+      })
+    )
   }
 
   private async negotiate(viewerId: string): Promise<void> {
@@ -126,8 +194,6 @@ export class HostSession {
     const sdp = preferOpusStereo(offer.sdp ?? '')
     await entry.pc.setLocalDescription({ type: 'offer', sdp })
 
-    // degradationPreference nao cabe em sendEncodings; e o unico ajuste que
-    // precisa esperar o setLocalDescription.
     this.applyDegradation(entry)
 
     this.send(viewerId, { t: 'offer', desc: { type: 'offer', sdp } })
@@ -163,6 +229,37 @@ export class HostSession {
       await entry.pc.addIceCandidate(msg.candidate).catch((err) => {
         console.warn('[rtc] addIceCandidate falhou:', err)
       })
+      return
+    }
+
+    // Party Voice (espectador enviando microfone para o host)
+    if (msg.t === 'voice-offer' && this.partyVoiceEnabled) {
+      this.closeVoicePeer(entry)
+      const voicePc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' })
+      entry.voicePc = voicePc
+
+      voicePc.onicecandidate = (ev) => {
+        if (!ev.candidate) return
+        this.send(viewerId, { t: 'voice-ice', candidate: toCandidatePayload(ev.candidate) })
+      }
+      voicePc.ontrack = (ev) => {
+        const remoteStream = ev.streams[0] ?? new MediaStream([ev.track])
+        const audio = new Audio()
+        audio.srcObject = remoteStream
+        audio.autoplay = true
+        entry.voiceAudioEl = audio
+        void audio.play().catch(() => {})
+      }
+
+      await voicePc.setRemoteDescription({ type: 'offer', sdp: msg.desc.sdp })
+      const answer = await voicePc.createAnswer()
+      await voicePc.setLocalDescription(answer)
+      this.send(viewerId, { t: 'voice-answer', desc: { type: 'answer', sdp: answer.sdp ?? '' } })
+      return
+    }
+
+    if (msg.t === 'voice-ice' && entry.voicePc?.remoteDescription) {
+      await entry.voicePc.addIceCandidate(msg.candidate).catch(() => {})
     }
   }
 
@@ -170,6 +267,7 @@ export class HostSession {
     const entry = this.peers.get(viewerId)
     if (!entry) return
     this.peers.delete(viewerId)
+    this.closeVoicePeer(entry)
     entry.pc.onicecandidate = null
     entry.pc.onconnectionstatechange = null
     try {
@@ -179,17 +277,11 @@ export class HostSession {
     }
   }
 
-  /**
-   * Troca de qualidade ao vivo.
-   *
-   * Bitrate, fps e resolucao entram sem renegociar. Trocar o codec, nao: ele e
-   * decidido no SDP, entao exige uma nova oferta para cada espectador.
-   */
   async updateSettings(next: QualitySettings): Promise<void> {
     const codecChanged = next.codec !== this.settings.codec
     this.settings = next
 
-    const videoTrack = this.stream.getVideoTracks()[0]
+    const videoTrack = this.currentVideoTrack ?? this.stream.getVideoTracks()[0]
     if (videoTrack) {
       await videoTrack
         .applyConstraints({
@@ -221,7 +313,6 @@ export class HostSession {
     }
   }
 
-  /** Uma leitura por espectador; a UI agrega. */
   async readStats(): Promise<Map<string, StreamStats>> {
     const out = new Map<string, StreamStats>()
     await Promise.all(
