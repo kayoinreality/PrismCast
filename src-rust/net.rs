@@ -98,6 +98,67 @@ pub fn list_interfaces() -> Vec<NetInterface> {
                 }
             }
         }
+    } else if cfg!(target_os = "linux") {
+        if let Ok(output) = Command::new("ip")
+            .args(["-j", "-4", "addr", "show", "up"])
+            .output()
+        {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                if let Ok(serde_json::Value::Array(ifaces)) =
+                    serde_json::from_str::<serde_json::Value>(text.trim())
+                {
+                    for iface in ifaces {
+                        let name = iface
+                            .get("ifname")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("eth0")
+                            .to_string();
+                        if name == "lo" {
+                            continue;
+                        }
+                        if let Some(addr_info) =
+                            iface.get("addr_info").and_then(|v| v.as_array())
+                        {
+                            for info in addr_info {
+                                let addr_str = info
+                                    .get("local")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("")
+                                    .to_string();
+                                let prefix = info
+                                    .get("prefixlen")
+                                    .and_then(|v| v.as_u64())
+                                    .unwrap_or(24) as u32;
+                                if addr_str.is_empty()
+                                    || addr_str.starts_with("127.")
+                                    || addr_str.starts_with("169.254.")
+                                {
+                                    continue;
+                                }
+                                if let Ok(ipv4) = addr_str.parse::<Ipv4Addr>() {
+                                    let mask_u32 = if prefix == 0 {
+                                        0
+                                    } else {
+                                        !0u32 << (32 - prefix.min(32))
+                                    };
+                                    let mask = Ipv4Addr::from(mask_u32);
+                                    let broadcast = compute_broadcast(ipv4, mask);
+                                    let is_preferred =
+                                        preferred.as_deref() == Some(addr_str.as_str());
+                                    out.push(NetInterface {
+                                        name: name.clone(),
+                                        address: addr_str,
+                                        netmask: mask.to_string(),
+                                        broadcast: broadcast.to_string(),
+                                        is_preferred,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if out.is_empty() {

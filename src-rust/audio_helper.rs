@@ -1,7 +1,7 @@
 //! prismcast-audio — áudio de um aplicativo só (o "Captura de áudio de aplicativo" do OBS).
 //!
-//! Usa o loopback por processo do WASAPI (Windows 10 2004+): pega só o som que
-//! um programa e os filhos dele tocam, não o PC inteiro.
+//! - No Windows 10 2004+: usa o loopback por processo do WASAPI.
+//! - No Linux (PipeWire / PulseAudio): usa `pactl` + `parec --monitor-stream` e `/proc`.
 //!
 //!   prismcast-audio list
 //!       JSON com as janelas abertas (e programas tocando som) para o seletor.
@@ -47,16 +47,353 @@ fn usage() -> i32 {
 
 #[cfg(not(windows))]
 mod win {
+    use serde_json::{json, Value};
+    use std::collections::{BTreeMap, HashSet};
+    use std::fs;
+    use std::io::{Read, Write};
+    use std::process::{Command, Stdio};
+
+    struct SinkInput {
+        index: u32,
+        pid: u32,
+        binary: String,
+        app_name: String,
+    }
+
+    fn parse_pactl_sink_inputs() -> Vec<SinkInput> {
+        let mut out = Vec::new();
+        // Tenta primeiro JSON (`pactl -f json list sink-inputs`) disponível no PulseAudio 16+ / PipeWire
+        if let Ok(output) = Command::new("pactl")
+            .args(["-f", "json", "list", "sink-inputs"])
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(&output.stdout) {
+                    for item in items {
+                        let index = item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let props = item.get("properties");
+                        let pid = props
+                            .and_then(|p| p.get("application.process.id"))
+                            .and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(0);
+                        let binary = props
+                            .and_then(|p| p.get("application.process.binary"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let app_name = props
+                            .and_then(|p| p.get("application.name"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(&binary)
+                            .to_string();
+                        if index > 0 && (pid > 0 || !binary.is_empty()) {
+                            out.push(SinkInput {
+                                index,
+                                pid,
+                                binary,
+                                app_name,
+                            });
+                        }
+                    }
+                    return out;
+                }
+            }
+        }
+
+        // Fallback em texto (`pactl list sink-inputs`) para versões antigas do PulseAudio
+        if let Ok(output) = Command::new("pactl").args(["list", "sink-inputs"]).output() {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                let mut cur_idx = 0u32;
+                let mut cur_pid = 0u32;
+                let mut cur_bin = String::new();
+                let mut cur_name = String::new();
+
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed.strip_prefix("Sink Input #") {
+                        if cur_idx > 0 && (cur_pid > 0 || !cur_bin.is_empty()) {
+                            out.push(SinkInput {
+                                index: cur_idx,
+                                pid: cur_pid,
+                                binary: cur_bin.clone(),
+                                app_name: if cur_name.is_empty() {
+                                    cur_bin.clone()
+                                } else {
+                                    cur_name.clone()
+                                },
+                            });
+                        }
+                        cur_idx = rest.trim().parse::<u32>().unwrap_or(0);
+                        cur_pid = 0;
+                        cur_bin.clear();
+                        cur_name.clear();
+                    } else if let Some(val) = trimmed.strip_prefix("application.process.id = ") {
+                        cur_pid = val.trim_matches('"').parse::<u32>().unwrap_or(0);
+                    } else if let Some(val) = trimmed.strip_prefix("application.process.binary = ") {
+                        cur_bin = val.trim_matches('"').to_string();
+                    } else if let Some(val) = trimmed.strip_prefix("application.name = ") {
+                        cur_name = val.trim_matches('"').to_string();
+                    }
+                }
+                if cur_idx > 0 && (cur_pid > 0 || !cur_bin.is_empty()) {
+                    out.push(SinkInput {
+                        index: cur_idx,
+                        pid: cur_pid,
+                        binary: cur_bin.clone(),
+                        app_name: if cur_name.is_empty() { cur_bin } else { cur_name },
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Lê processos do usuário em `/proc` -> (exe, ppid, path)
+    fn proc_table() -> BTreeMap<u32, (String, u32, String)> {
+        let mut map = BTreeMap::new();
+        let Ok(entries) = fs::read_dir("/proc") else {
+            return map;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            let Ok(pid) = name.parse::<u32>() else {
+                continue;
+            };
+            let exe_link = fs::read_link(format!("/proc/{pid}/exe"))
+                .ok()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let comm = fs::read_to_string(format!("/proc/{pid}/comm"))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default();
+            let exe_name = if !exe_link.is_empty() {
+                exe_link
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&comm)
+                    .trim_end_matches(" (deleted)")
+                    .to_string()
+            } else {
+                comm
+            };
+            if exe_name.is_empty() {
+                continue;
+            }
+            let ppid = fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| {
+                    let after_comm = stat.rfind(')')?;
+                    let fields: Vec<&str> = stat[after_comm + 1..].split_whitespace().collect();
+                    fields.get(1)?.parse::<u32>().ok()
+                })
+                .unwrap_or(0);
+            map.insert(pid, (exe_name, ppid, exe_link));
+        }
+        map
+    }
+
     pub fn list() -> i32 {
-        println!("[]");
+        let me = std::process::id();
+        let sinks = parse_pactl_sink_inputs();
+        let procs = proc_table();
+
+        let mut seen = HashSet::new();
+        let mut items = Vec::new();
+
+        // 1. Aplicativos com fluxo de áudio ativo no PipeWire / PulseAudio
+        for s in &sinks {
+            if s.pid == me {
+                continue;
+            }
+            let exe = if !s.binary.is_empty() {
+                s.binary.rsplit('/').next().unwrap_or(&s.binary).to_string()
+            } else if let Some((e, _, _)) = procs.get(&s.pid) {
+                e.clone()
+            } else {
+                s.app_name.clone()
+            };
+            let lower = exe.to_lowercase();
+            if lower.is_empty()
+                || lower == "prismcast"
+                || lower == "prismcast-audio"
+                || seen.contains(&lower)
+            {
+                continue;
+            }
+            seen.insert(lower);
+            let path = procs
+                .get(&s.pid)
+                .map(|(_, _, p)| p.clone())
+                .unwrap_or_default();
+            let title = if s.app_name.is_empty() {
+                exe.clone()
+            } else {
+                s.app_name.clone()
+            };
+            items.push(json!({
+                "hwnd": s.index as isize,
+                "pid": s.pid,
+                "exe": exe,
+                "path": path,
+                "title": title,
+                "audio": true,
+            }));
+        }
+
+        // 2. Janelas X11 / XWayland abertas via `wmctrl -lp` (se disponível)
+        if let Ok(output) = Command::new("wmctrl").args(["-lp"]).output() {
+            if let Ok(text) = String::from_utf8(output.stdout) {
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() < 5 {
+                        continue;
+                    }
+                    let hwnd = isize::from_str_radix(parts[0].trim_start_matches("0x"), 16).unwrap_or(0);
+                    let Ok(pid) = parts[2].parse::<u32>() else {
+                        continue;
+                    };
+                    if pid == 0 || pid == me {
+                        continue;
+                    }
+                    let Some((exe, _, path)) = procs.get(&pid) else {
+                        continue;
+                    };
+                    let lower = exe.to_lowercase();
+                    if seen.contains(&lower)
+                        || lower == "prismcast"
+                        || lower == "prismcast-audio"
+                        || lower == "gnome-shell"
+                        || lower == "plasmashell"
+                    {
+                        continue;
+                    }
+                    seen.insert(lower);
+                    let title = parts[4..].join(" ");
+                    items.push(json!({
+                        "hwnd": hwnd,
+                        "pid": pid,
+                        "exe": exe,
+                        "path": path,
+                        "title": title,
+                        "audio": false,
+                    }));
+                }
+            }
+        }
+
+        println!("{}", Value::Array(items));
         0
     }
-    pub fn capture(_pid: u32) -> i32 {
-        eprintln!("unsupported");
-        1
+
+    pub fn find_root_pid(exe: &str) -> Option<u32> {
+        let want = exe.trim_end_matches(".exe").to_lowercase();
+        let sinks = parse_pactl_sink_inputs();
+        for s in &sinks {
+            let bin = s.binary.rsplit('/').next().unwrap_or(&s.binary).to_lowercase();
+            let name = s.app_name.to_lowercase();
+            if (bin == want || name == want) && s.pid > 0 {
+                return Some(s.pid);
+            }
+        }
+        let procs = proc_table();
+        procs
+            .iter()
+            .find(|(_, (e, _, _))| e.to_lowercase() == want)
+            .map(|(pid, _)| *pid)
     }
-    pub fn find_root_pid(_exe: &str) -> Option<u32> {
-        None
+
+    fn pid_in_tree(procs: &BTreeMap<u32, (String, u32, String)>, root: u32, mut candidate: u32) -> bool {
+        for _ in 0..32 {
+            if candidate == root {
+                return true;
+            }
+            match procs.get(&candidate) {
+                Some((_, ppid, _)) if *ppid > 1 && *ppid != candidate => candidate = *ppid,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    pub fn capture(pid: u32) -> i32 {
+        let procs = proc_table();
+        if !procs.contains_key(&pid) {
+            eprintln!("not-found {pid}");
+            return 2;
+        }
+        let target_exe = procs
+            .get(&pid)
+            .map(|(e, _, _)| e.to_lowercase())
+            .unwrap_or_default();
+
+        let sinks = parse_pactl_sink_inputs();
+        let sink = sinks.into_iter().find(|s| {
+            s.pid == pid
+                || pid_in_tree(&procs, pid, s.pid)
+                || (!target_exe.is_empty()
+                    && s.binary
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or(&s.binary)
+                        .eq_ignore_ascii_case(&target_exe))
+        });
+
+        let Some(sink_input) = sink else {
+            // Processo está aberto mas ainda não abriu stream de áudio no PipeWire/PulseAudio
+            eprintln!("not-found {pid}");
+            return 2;
+        };
+
+        let mut child = match Command::new("parec")
+            .args([
+                &format!("--monitor-stream={}", sink_input.index),
+                "--format=float32le",
+                "--rate=48000",
+                "--channels=2",
+                "--raw",
+                "--latency-msec=20",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("error falha ao iniciar parec (instale pulseaudio-utils / pipewire-pulse): {e}");
+                return 1;
+            }
+        };
+
+        let Some(mut stdout) = child.stdout.take() else {
+            eprintln!("error stdout indisponivel");
+            return 1;
+        };
+
+        eprintln!("ready {pid}");
+        let mut out = std::io::stdout().lock();
+        let mut buf = [0u8; 4096];
+        loop {
+            match stdout.read(&mut buf) {
+                Ok(0) => {
+                    let _ = child.kill();
+                    return 3;
+                }
+                Ok(n) => {
+                    if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
+                        let _ = child.kill();
+                        return 0;
+                    }
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    return 3;
+                }
+            }
+        }
     }
 }
 

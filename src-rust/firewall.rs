@@ -15,6 +15,9 @@ pub struct FirewallStatus {
 }
 
 pub fn build_command(exec_path: &str) -> String {
+    if cfg!(target_os = "linux") {
+        return "sudo ufw allow 41234/udp && sudo ufw allow 41235/tcp".to_string();
+    }
     format!(
         "netsh advfirewall firewall add rule name=\"{}\" dir=in action=allow program=\"{}\" enable=yes profile=any",
         RULE_NAME, exec_path

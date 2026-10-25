@@ -1,5 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import { CH } from '@shared/ipc'
@@ -7,9 +7,12 @@ import type { AudioApp, AudioChannelStatus } from '@shared/protocol'
 import { getMainWindow } from './window'
 
 /**
- * Áudio de aplicativo: um `prismcast-audio.exe capture` por canal, cada um
+ * Áudio de aplicativo: um `prismcast-audio capture` por canal, cada um
  * mandando PCM pelo stdout. O main só repassa os pedaços para a interface, que
  * toca no mixer (AudioWorklet).
+ *
+ * - No Windows: usa WASAPI process loopback (`prismcast-audio.exe`).
+ * - No Linux: usa PipeWire / PulseAudio (`prismcast-audio` via `pactl` + `parec`).
  *
  * Programa fechado não é erro: o canal fica "esperando" e tenta de novo, para
  * o jogo poder abrir depois do PrismCast.
@@ -20,9 +23,25 @@ const RETRY_MS = 3000
 const CHUNK_BYTES = 480 * 2 * 4 * 2
 
 export function helperPath(name: string): string | null {
-  const base = app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
-  const candidates = [join(base, 'target', 'release', name), join(base, 'target', 'debug', name)]
-  return candidates.find((p) => existsSync(p)) ?? null
+  const stem = name.replace(/\.exe$/i, '')
+  const binName = process.platform === 'win32' ? `${stem}.exe` : stem
+  const unpackedBase = app.getAppPath().replace(/app\.asar$/, 'app.asar.unpacked')
+  const candidates = [
+    join(process.resourcesPath ?? '', 'bin', binName),
+    join(unpackedBase, 'target', 'release', binName),
+    join(unpackedBase, 'target', 'debug', binName),
+    join(app.getAppPath(), 'target', 'release', binName),
+    join(app.getAppPath(), 'target', 'debug', binName)
+  ]
+  const found = candidates.find((p) => existsSync(p)) ?? null
+  if (found && process.platform !== 'win32') {
+    try {
+      chmodSync(found, 0o755)
+    } catch {
+      /* permissão já definida ou sistema somente-leitura (AppImage) */
+    }
+  }
+  return found
 }
 
 interface Running {
@@ -68,9 +87,9 @@ function flush(r: Running): void {
 }
 
 function start(r: Running): void {
-  const exe = helperPath('prismcast-audio.exe')
+  const exe = helperPath('prismcast-audio')
   if (!exe) {
-    setStatus(r, 'error', 'Falta o prismcast-audio.exe (rode npm run rust:build).')
+    setStatus(r, 'error', 'Falta o binário prismcast-audio (rode npm run rust:build).')
     return
   }
   const proc = spawn(exe, ['capture', '--exe', r.exe], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
@@ -139,7 +158,7 @@ export function syncAudioApps(channels: Array<{ id: string; exe: string }>): voi
 }
 
 export function listAudioApps(): Promise<AudioApp[]> {
-  const exe = helperPath('prismcast-audio.exe')
+  const exe = helperPath('prismcast-audio')
   if (!exe) return Promise.resolve([])
   return new Promise((resolve) => {
     execFile(exe, ['list'], { windowsHide: true, timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
@@ -170,7 +189,7 @@ export function listAudioApps(): Promise<AudioApp[]> {
 export async function appForWindow(captureId: string): Promise<AudioApp | null> {
   const hwnd = Number(/^window:(\d+):/.exec(captureId)?.[1])
   if (!hwnd) return null
-  const exe = helperPath('prismcast-audio.exe')
+  const exe = helperPath('prismcast-audio')
   if (!exe) return null
   const all = await new Promise<AudioApp[]>((resolve) => {
     execFile(exe, ['list'], { windowsHide: true, timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {

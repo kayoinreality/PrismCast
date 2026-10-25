@@ -12,6 +12,11 @@ import { helperPath } from './audio-apps'
  */
 app.commandLine.appendSwitch('disable-features', 'WebRtcHideLocalIpsWithMdns')
 
+// No Linux (Wayland / X11), habilita o portal PipeWire para captura de tela e janelas
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('enable-features', 'WebRTCPipeWireCapturer')
+}
+
 // Otimizações de decodificação e aceleração por GPU (baseado no Streamlabs OBS)
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('enable-zero-copy')
@@ -24,7 +29,7 @@ app.commandLine.appendSwitch('enable-hardware-overlays', 'single-fullscreen,unde
 let rustEngineProc: ChildProcess | null = null
 
 function startRustSidecarIfAvailable(): void {
-  const binPath = helperPath('prismcast.exe')
+  const binPath = helperPath('prismcast')
   if (!binPath) return
   try {
     rustEngineProc = spawn(binPath, [], {

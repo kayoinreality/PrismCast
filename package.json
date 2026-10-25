@@ -1,9 +1,10 @@
 {
   "name": "prismcast-studio",
-  "version": "2.3.0",
-  "description": "PrismCast Studio — Transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML (browser sources) e login real nas plataformas",
+  "version": "2.4.0",
+  "description": "PrismCast Studio — Transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML (browser sources) e login real nas plataformas (Windows & Linux)",
   "main": "./out/main/index.js",
-  "author": "kayor",
+  "author": "kayor <kayor@users.noreply.github.com>",
+  "homepage": "https://github.com/kayoinreality/PrismCast",
   "private": true,
   "scripts": {
     "dev": "electron-vite dev",
@@ -12,7 +13,9 @@
     "rust:test": "cargo test",
     "build": "npm run typecheck && cargo build --release && electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "npm run build && electron-builder --win --config electron-builder.yml"
+    "dist": "npm run build && electron-builder --win --config electron-builder.yml",
+    "dist:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "dist:linux": "npm run build && electron-builder --linux --config electron-builder.yml"
   },
   "dependencies": {
     "ws": "^8.21.3"

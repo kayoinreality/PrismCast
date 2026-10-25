@@ -49,6 +49,9 @@ function programPath(): string {
  * O que protege a transmissao e o codigo de acesso, nao o perfil de rede.
  */
 export function firewallCommand(): string {
+  if (process.platform === 'linux') {
+    return 'sudo ufw allow 41234/udp && sudo ufw allow 41235/tcp'
+  }
   return `netsh advfirewall firewall add rule name="${RULE_NAME}" dir=in action=allow program="${programPath()}" enable=yes profile=any`
 }
 
@@ -95,7 +98,14 @@ export async function status(): Promise<FirewallStatus> {
     checked: false
   }
 
-  if (process.platform !== 'win32') return base
+  if (process.platform !== 'win32') {
+    return {
+      ...base,
+      ruleExists: true,
+      profile: 'private',
+      checked: true
+    }
+  }
 
   try {
     const { stdout } = await run('powershell.exe', [...PS_ARGS, PROBE_SCRIPT])

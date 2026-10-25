@@ -199,7 +199,7 @@ fn detect_best_h264_encoder() -> String {
         return "libx264".to_string();
     };
     let text = String::from_utf8_lossy(&output.stdout);
-    for candidate in ["h264_nvenc", "h264_amf", "h264_qsv"] {
+    for candidate in ["h264_nvenc", "h264_amf", "h264_qsv", "h264_vaapi"] {
         if text.contains(candidate) {
             return candidate.to_string();
         }

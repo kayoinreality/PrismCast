@@ -5,22 +5,47 @@ directories:
   buildResources: build
 files:
   - out/**/*
-  - target/release/prismcast.exe
-  - target/release/prismcast-audio.exe
   - package.json
 asar: true
-# Executáveis não rodam de dentro do .asar: ficam em app.asar.unpacked.
-asarUnpack:
-  - target/release/*.exe
 compression: maximum
+
 win:
   target:
     - target: portable
       arch: [x64]
   icon: build/icon.ico
-  artifactName: PrismCast-Studio-${version}.${ext}
+  artifactName: PrismCast-Studio-${version}-windows-${arch}.${ext}
+  extraResources:
+    - from: target/release/prismcast.exe
+      to: bin/prismcast.exe
+    - from: target/release/prismcast-audio.exe
+      to: bin/prismcast-audio.exe
+
 portable:
   # Caminho de extracao fixo: sem isso o exe cai em %TEMP%\<uuid> diferente a cada
   # execucao e a regra de firewall (indexada por caminho) precisa ser recriada sempre.
   unpackDirName: prismcast-studio
-  artifactName: PrismCast-Studio-${version}.${ext}
+  artifactName: PrismCast-Studio-${version}-windows-${arch}.${ext}
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+    - target: rpm
+      arch: [x64]
+    - target: pacman
+      arch: [x64]
+    - target: tar.gz
+      arch: [x64]
+  icon: build/icon.png
+  category: AudioVideo
+  maintainer: kayor <kayor@users.noreply.github.com>
+  synopsis: PrismCast Studio — Transmissão LAN P2P, Dual Output (16:9 + 9:16) e Multistreaming
+  artifactName: PrismCast-Studio-${version}-linux-${arch}.${ext}
+  extraResources:
+    - from: target/release/prismcast
+      to: bin/prismcast
+    - from: target/release/prismcast-audio
+      to: bin/prismcast-audio

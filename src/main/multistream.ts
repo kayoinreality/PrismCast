@@ -138,10 +138,14 @@ export class MultistreamManager {
     this.stop()
     this.encoder = await detectEncoder()
     if (!ffmpegFound) {
+      const installCmd =
+        process.platform === 'linux'
+          ? 'sudo apt install ffmpeg / sudo pacman -S ffmpeg / sudo dnf install ffmpeg'
+          : 'winget install ffmpeg'
       return {
         ok: false,
         status: this.status(),
-        error: 'FFmpeg não encontrado. Instale (winget install ffmpeg) e reabra o app.'
+        error: `FFmpeg não encontrado. Instale (${installCmd}) e reabra o app.`
       }
     }
 

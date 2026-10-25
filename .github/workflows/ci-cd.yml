@@ -14,8 +14,12 @@ permissions:
 
 jobs:
   validate-and-test:
-    name: Validar & Testar (Rust + TypeScript)
-    runs-on: windows-latest
+    name: Validar & Testar (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
 
     steps:
       - name: Baixar o código
@@ -45,13 +49,11 @@ jobs:
       - name: Compilar Rust em modo Release
         run: cargo build --release
 
-  release:
-    name: Gerar executável e publicar Release
+  build-windows:
+    name: Build Windows (Portable .exe)
     if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
     needs: validate-and-test
     runs-on: windows-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Baixar o código
@@ -73,40 +75,108 @@ jobs:
         run: npm ci
 
       - name: Gerar executável portátil Windows (Electron + Rust)
-        run: npm run dist
+        run: npm run dist:win
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Publicar artefato de compilação
+      - name: Publicar artefato Windows
         uses: actions/upload-artifact@v4
         with:
           name: PrismCast-Studio-Windows
           path: dist/*.exe
           if-no-files-found: error
 
-      - name: Criar ou atualizar Release no GitHub
-        shell: pwsh
+  build-linux:
+    name: Build Linux (AppImage, deb, rpm, pacman, tar.gz)
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: validate-and-test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar ferramentas de empacotamento Linux (rpm, pacman/bsdtar, AppImage)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm libarchive-tools squashfs-tools libfuse2
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache de dependências do Rust
+        uses: Swatinem/rust-cache@v2
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependências Node
+        run: npm ci
+
+      - name: Gerar pacotes Linux (AppImage, .deb, .rpm, .pacman, .tar.gz)
+        run: npm run dist:linux
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publicar artefatos Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrismCast-Studio-Linux
+          path: |
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.rpm
+            dist/*.pacman
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish-release:
+    name: Publicar Release no GitHub (Windows + Linux)
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Baixar artefato Windows
+        uses: actions/download-artifact@v4
+        with:
+          name: PrismCast-Studio-Windows
+          path: release-assets
+
+      - name: Baixar artefatos Linux
+        uses: actions/download-artifact@v4
+        with:
+          name: PrismCast-Studio-Linux
+          path: release-assets
+
+      - name: Criar ou atualizar Release no GitHub com todos os pacotes
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $version = node -p "require('./package.json').version"
-          $tag = if ($env:GITHUB_REF -like "refs/tags/v*") { $env:GITHUB_REF_NAME } else { "v$version" }
-          $artifact = Get-ChildItem -Path dist -Filter '*.exe' | Select-Object -First 1
-          if (-not $artifact) { throw 'O executável de distribuição não foi encontrado em dist/.' }
-          
-          Write-Host "Verificando se release $tag já existe..."
-          $exists = $false
-          try {
-            gh release view $tag 2>$null
-            if ($LASTEXITCODE -eq 0) { $exists = $true }
-          } catch {
-            $exists = $false
-          }
-          
-          if ($exists) {
-            Write-Host "Atualizando release existente $tag..."
-            gh release upload $tag $artifact.FullName --clobber
-          } else {
-            Write-Host "Criando nova release $tag..."
-            gh release create $tag $artifact.FullName --title "PrismCast Studio $tag" --generate-notes
-          }
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG="v${VERSION}"
+          fi
+
+          echo "Artefatos prontos para publicação na release ${TAG}:"
+          ls -lh release-assets/
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Atualizando release existente ${TAG}..."
+            gh release upload "${TAG}" release-assets/* --clobber
+          else
+            echo "Criando nova release ${TAG}..."
+            gh release create "${TAG}" release-assets/* \
+              --title "PrismCast Studio ${TAG} (Windows & Linux)" \
+              --generate-notes
+          fi
