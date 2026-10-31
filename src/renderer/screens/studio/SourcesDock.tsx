@@ -137,6 +137,8 @@ export function SourcesDock({
   // Lista de cima para baixo = da frente para o fundo (como no OBS).
   const ordered = [...scene.items].reverse()
   const selected = scene.items.find((it) => it.id === selectedId)
+  const isTop = !selected || scene.items[scene.items.length - 1]?.id === selected.id
+  const isBottom = !selected || scene.items[0]?.id === selected.id
 
   return (
     <div className="dock">
@@ -221,14 +223,14 @@ export function SourcesDock({
         </IconButton>
         <IconButton
           label="Trazer para frente"
-          disabled={!selected}
+          disabled={isTop}
           onClick={() => selected && update({ scenes: moveItem(st, scene.id, selected.id, 1) })}
         >
           <IconUp size={16} />
         </IconButton>
         <IconButton
           label="Mandar para trás"
-          disabled={!selected}
+          disabled={isBottom}
           onClick={() => selected && update({ scenes: moveItem(st, scene.id, selected.id, -1) })}
         >
           <IconDown size={16} />

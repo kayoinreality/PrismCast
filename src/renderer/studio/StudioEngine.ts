@@ -70,6 +70,9 @@ export class StudioEngine {
   private systemAudioRequested = false
   private kit: WidgetKit | null = null
   private lastProgramId: string | null = null
+  private unlockAudio = (): void => {
+    void this.mixer.resume()
+  }
 
   state: EngineState = {
     live: false,
@@ -92,8 +95,10 @@ export class StudioEngine {
     this.outputs = new OutputManager(
       () => new MediaStream([this.compositor.programStream.getVideoTracks()[0], this.mixer.outputTrack]),
       () =>
-        new MediaStream([this.compositor.verticalStream.getVideoTracks()[0], this.mixer.outputTrack.clone()])
+        new MediaStream([this.compositor.verticalStream.getVideoTracks()[0], this.mixer.outputTrack])
     )
+    window.addEventListener('pointerdown', this.unlockAudio, { passive: true })
+    window.addEventListener('keydown', this.unlockAudio, { passive: true })
     this.captures.onChange = () => this.patch({ captureVersion: this.state.captureVersion + 1 })
     this.mixer.onStatus = () => this.patch({ audioVersion: this.state.audioVersion + 1 })
     this.captures.setFps(settings.studio.fps)
@@ -290,6 +295,8 @@ export class StudioEngine {
 
   async goLive(): Promise<string | null> {
     if (this.state.live || this.state.goingLive) return null
+    await this.mixer.resume()
+    this.mixer.retryAllProblematic()
     this.patch({ goingLive: true })
     try {
       const res = await window.api.multistream.start(this.settings.studio.fps)
@@ -322,6 +329,7 @@ export class StudioEngine {
       this.patch({ recorder: status })
       return null
     }
+    await this.mixer.resume()
     this.outputs.setRecording(true)
     const res = await window.api.recorder.start()
     if (!res.ok) {
@@ -366,10 +374,13 @@ export class StudioEngine {
 
   /** Vídeo + áudio do programa, para o compartilhamento na rede local. */
   lanStream(): MediaStream {
+    void this.mixer.resume()
     return new MediaStream([this.compositor.programStream.getVideoTracks()[0], this.mixer.outputTrack])
   }
 
   dispose(): void {
+    window.removeEventListener('pointerdown', this.unlockAudio)
+    window.removeEventListener('keydown', this.unlockAudio)
     window.clearInterval(this.statusTimer)
     this.outputs.dispose()
     this.compositor.dispose()

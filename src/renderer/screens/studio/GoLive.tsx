@@ -161,8 +161,7 @@ export function GoLiveModal({
     setInfo(settings.live)
     setEnabled(new Set(settings.destinations.filter((d) => d.enabled && d.hasKey).map((d) => d.id)))
     setCamera(settings.studio.cameraEnabled)
-    const opening = settings.scenes.scenes.find((s) => /come[cç]ando|starting/i.test(s.name))
-    setSceneId(opening?.id ?? settings.scenes.activeSceneId)
+    setSceneId(settings.scenes.activeSceneId)
     // Primeira vez: puxa o título que já está na Twitch.
     if (!settings.live.title) {
       void window.api.twitch.getChannelInfo().then((ch) => ch && setInfo((cur) => (cur.title ? cur : ch)))
@@ -180,16 +179,16 @@ export function GoLiveModal({
     }
     setBusy(true)
     const scenes = sceneId !== settings.scenes.activeSceneId ? selectScene({ ...settings.scenes, studioMode: false }, sceneId) : settings.scenes
-    update({
+    const newSettings = {
       live: info,
       destinations: settings.destinations.map((d) => ({ ...d, enabled: enabled.has(d.id) })),
       studio: { ...settings.studio, cameraEnabled: camera },
       scenes: { ...scenes, studioMode: settings.scenes.studioMode }
-    })
-    // A live lê os destinos ligados no main: grava já, sem esperar a escrita adiada.
-    await window.api.settings.set({
-      destinations: settings.destinations.map((d) => ({ ...d, enabled: enabled.has(d.id) }))
-    })
+    }
+    update(newSettings)
+    engine.apply({ ...settings, ...newSettings })
+    // A live lê destinos e cena no main: grava já, sem esperar a escrita adiada.
+    await window.api.settings.set(newSettings)
     const infoErr = await engine.pushLiveInfo(info)
     if (infoErr) toast(`Título não foi para a Twitch: ${infoErr}`, 'bad')
     const err = await engine.goLive()

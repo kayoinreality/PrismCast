@@ -90,7 +90,7 @@ export function ViewerPlayer({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') return
+      if ((e.target as HTMLElement)?.closest?.('input, textarea, select, [contenteditable]')) return
       if (e.key === 'f' || e.key === 'F') toggleFullscreen()
       else if (e.key === 'm' || e.key === 'M') setMuted((m) => !m)
       else if (e.key === 'Escape' && !document.fullscreenElement) onLeave()

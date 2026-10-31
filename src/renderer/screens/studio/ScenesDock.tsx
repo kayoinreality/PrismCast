@@ -22,7 +22,8 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
   const set = (next: typeof st): void => update({ scenes: next })
 
   const add = (): void => {
-    const next = createScene(st, `Cena ${st.scenes.length + 1}`)
+    const mic = settings.audioMixer.channels.find((c) => c.kind === 'mic')
+    const next = createScene(st, `Cena ${st.scenes.length + 1}`, mic?.id)
     set(next)
     setRenaming(next.scenes[next.scenes.length - 1].id)
     onSelectScene()
@@ -44,7 +45,9 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
       </div>
       <div className="dock-list">
         {st.scenes.map((sc, i) => {
-          const onAir = sc.id === st.activeSceneId
+          const isLive = Boolean(live)
+          const isProgram = sc.id === st.activeSceneId
+          const onAir = isLive && isProgram
           const inPreview = st.studioMode && sc.id === st.previewSceneId
           return (
             <div
@@ -78,7 +81,8 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
                 <span className="dock-name">{sc.name}</span>
               )}
               {onAir && <span className="tag tag-onair">no ar</span>}
-              {inPreview && !onAir && <span className="tag">prévia</span>}
+              {!onAir && isProgram && st.studioMode && <span className="tag">programa</span>}
+              {inPreview && !onAir && (!isProgram || !st.studioMode) && <span className="tag">prévia</span>}
             </div>
           )
         })}
@@ -90,10 +94,18 @@ export function ScenesDock({ onSelectScene }: { onSelectScene: () => void }): Re
         <IconButton label="Duplicar cena" onClick={() => current && set(duplicateScene(st, current.id))}>
           <IconCopy size={15} />
         </IconButton>
-        <IconButton label="Subir" onClick={() => current && set(moveScene(st, current.id, -1))}>
+        <IconButton
+          label="Subir"
+          disabled={!current || st.scenes[0]?.id === current.id}
+          onClick={() => current && set(moveScene(st, current.id, -1))}
+        >
           <IconUp size={16} />
         </IconButton>
-        <IconButton label="Descer" onClick={() => current && set(moveScene(st, current.id, 1))}>
+        <IconButton
+          label="Descer"
+          disabled={!current || st.scenes[st.scenes.length - 1]?.id === current.id}
+          onClick={() => current && set(moveScene(st, current.id, 1))}
+        >
           <IconDown size={16} />
         </IconButton>
         <div className="spacer" />

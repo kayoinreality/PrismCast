@@ -59,8 +59,9 @@ export function WidgetsScreen({ onDone }: { onDone: () => void }): React.JSX.Ele
 
   const createKitScenes = (): void => {
     if (!kit) return
+    const mic = settings.audioMixer.channels.find((c) => c.kind === 'mic')
     const existing = new Set(settings.scenes.scenes.map((s) => s.name.toLowerCase()))
-    const fresh = buildKitScenes(kit.widgets).filter((s) => !existing.has(s.name.toLowerCase()))
+    const fresh = buildKitScenes(kit.widgets, mic?.id).filter((s) => !existing.has(s.name.toLowerCase()))
     if (fresh.length === 0) {
       toast('As cenas do kit já existem. Renomeie ou apague para criar de novo.')
       return

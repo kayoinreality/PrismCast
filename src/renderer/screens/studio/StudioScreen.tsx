@@ -97,8 +97,8 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      const target = e.target as HTMLElement
-      if (target.closest('input, textarea, select, [contenteditable]')) return
+      const target = e.target as HTMLElement | null
+      if (target?.closest?.('input, textarea, select, [contenteditable]')) return
       if (document.querySelector('.modal-overlay')) return
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { AppSettings } from '@shared/ipc'
 import type { ChatPlatform, MultiChatStatus, TwitchCapabilities } from '@shared/protocol'
-import { Button, IconButton, TextInput, Toggle } from '@/components/ui'
+import { Button, IconButton, Slider, TextInput, Toggle } from '@/components/ui'
 import { IconChat, IconDown, IconPin, IconPopout, IconSend, IconSettings } from '@/components/Icons'
 import { chatFor, type ChatLine, type TwitchChat } from './TwitchChat'
 import { multiChat } from './MultiChat'
@@ -261,13 +261,11 @@ export function ChatPanel({
           )}
           <label className="chat-opt-row">
             <span>Tamanho da letra</span>
-            <input
-              type="range"
-              className="slider"
+            <Slider
               min={11}
               max={22}
               value={chatSettings.fontSize}
-              onChange={(e) => setChat({ fontSize: Number(e.target.value) })}
+              onChange={(v) => setChat({ fontSize: v })}
             />
           </label>
           <Toggle label="Mostrar horário" checked={chatSettings.showTimestamps} onChange={(v) => setChat({ showTimestamps: v })} />

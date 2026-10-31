@@ -52,8 +52,15 @@ function normalizeZ(scene: Scene): Scene {
   }
 }
 
-export function createScene(st: StudioScenesState, name: string): StudioScenesState {
-  const scene: Scene = { id: newId('scene'), name: name.trim() || `Cena ${st.scenes.length + 1}`, items: [], createdAt: Date.now() }
+export function createScene(st: StudioScenesState, name: string, defaultMicId?: string | null): StudioScenesState {
+  const items: SceneItem[] = []
+  if (defaultMicId) {
+    items.push({
+      ...makeItem('audio_input', 'Microfone', { audioChannelId: defaultMicId }),
+      locked: true
+    })
+  }
+  const scene: Scene = { id: newId('scene'), name: name.trim() || `Cena ${st.scenes.length + 1}`, items, createdAt: Date.now() }
   return {
     ...st,
     scenes: [...st.scenes, scene],
@@ -78,7 +85,11 @@ export function duplicateScene(st: StudioScenesState, id: string): StudioScenesS
   const idx = st.scenes.findIndex((s) => s.id === id)
   const scenes = [...st.scenes]
   scenes.splice(idx + 1, 0, copy)
-  return { ...st, scenes }
+  return {
+    ...st,
+    scenes,
+    ...(st.studioMode ? { previewSceneId: copy.id } : { activeSceneId: copy.id, previewSceneId: copy.id })
+  }
 }
 
 export function deleteScene(st: StudioScenesState, id: string): StudioScenesState {
@@ -262,7 +273,7 @@ export function kitItem(w: KitWidget, transform?: Partial<SourceTransform>): Sce
  * começando/volto já/encerrando, câmera encaixada na moldura do "só conversando"
  * e do overlay de gameplay.
  */
-export function buildKitScenes(widgets: KitWidget[]): Scene[] {
+export function buildKitScenes(widgets: KitWidget[], defaultMicId?: string | null): Scene[] {
   const find = (file: string): KitWidget | undefined => widgets.find((w) => w.file === file)
   const scenes: Scene[] = []
   const scene = (name: string, items: SceneItem[]): void => {
@@ -270,9 +281,20 @@ export function buildKitScenes(widgets: KitWidget[]): Scene[] {
   }
   const camera = (tf: Partial<SourceTransform>): SceneItem =>
     makeItem('camera_input', 'Câmera', { deviceId: 'default' }, tf, { x: 0, y: 0, width: 1, height: 0.34, zIndex: 0 })
+  const mic = defaultMicId
+    ? (): SceneItem => ({
+        ...makeItem('audio_input', 'Microfone', { audioChannelId: defaultMicId }),
+        locked: true
+      })
+    : null
 
   const comecando = find('comecando.html')
-  if (comecando) scene('Começando', [kitItem(comecando)])
+  if (comecando) {
+    scene('Começando', [
+      kitItem(comecando),
+      ...(mic ? [mic()] : [])
+    ])
+  }
 
   const gameplay = find('gameplay.html')
   if (gameplay) {
@@ -280,20 +302,30 @@ export function buildKitScenes(widgets: KitWidget[]): Scene[] {
     scene('Gameplay', [
       makeItem('screen_capture', 'Jogo / tela', {}),
       camera(px(32, 1080 - 32 - 270, 480, 270)),
-      kitItem(gameplay)
+      kitItem(gameplay),
+      ...(mic ? [mic()] : [])
     ])
   }
 
   const conversando = find('conversando.html')
   if (conversando) {
-    scene('Só conversando', [kitItem(conversando), camera(px(80, 140, 1240, 698))])
+    scene('Só conversando', [
+      kitItem(conversando),
+      camera(px(80, 140, 1240, 698)),
+      ...(mic ? [mic()] : [])
+    ])
   }
 
   const volto = find('volto-ja.html')
   if (volto) scene('Volto já', [kitItem(volto)])
 
   const encerrando = find('encerrando.html')
-  if (encerrando) scene('Encerrando', [kitItem(encerrando)])
+  if (encerrando) {
+    scene('Encerrando', [
+      kitItem(encerrando),
+      ...(mic ? [mic()] : [])
+    ])
+  }
 
   return scenes
 }

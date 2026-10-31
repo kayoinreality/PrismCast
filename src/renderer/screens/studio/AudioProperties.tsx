@@ -278,6 +278,11 @@ export function AudioPropertiesModal({
                     {d.label || 'Microfone'}
                   </option>
                 ))}
+                {ch.deviceId && ch.deviceId !== 'default' && !inputs.some((d) => d.deviceId === ch.deviceId) && (
+                  <option value={ch.deviceId} disabled>
+                    Dispositivo desconectado ({ch.deviceId.slice(0, 8)}…)
+                  </option>
+                )}
               </select>
             </Field>
           )}

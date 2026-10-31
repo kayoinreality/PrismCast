@@ -142,7 +142,7 @@ interface SliderProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'onCha
 }
 
 export function Slider({ value, min, max, step = 1, onChange, ...rest }: SliderProps): React.JSX.Element {
-  const pct = ((value - min) / (max - min)) * 100
+  const pct = max > min ? Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100)) : 0
   return (
     <input
       type="range"
