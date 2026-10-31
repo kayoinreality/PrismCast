@@ -114,6 +114,19 @@ export function defaultScenesState(): StudioScenesState {
         showOnHorizontal: true,
         showOnVertical: true,
         settings: {}
+      },
+      {
+        id: 'item-mic',
+        sourceId: 'mic',
+        name: 'Microfone',
+        type: 'audio_input',
+        visible: true,
+        locked: true,
+        transform: fullTransform(2),
+        verticalTransform: fullTransform(2),
+        showOnHorizontal: true,
+        showOnVertical: true,
+        settings: { audioChannelId: 'mic' }
       }
     ]
   }
@@ -286,10 +299,33 @@ function normalize(raw: unknown): AppSettings {
     input = { ...input, ...migrate(input, base), schemaVersion: SCHEMA_VERSION }
   }
   const typed = input as Partial<AppSettings>
-  const scenes =
+  const mixer = normalizeMixer(typed.audioMixer)
+  const micChannel = mixer.channels.find((c) => c.kind === 'mic')
+  const scenes: StudioScenesState =
     typed.scenes && Array.isArray(typed.scenes.scenes) && typed.scenes.scenes.length > 0
       ? typed.scenes
       : base.scenes
+
+  if (micChannel && !scenes.scenes.some((s: Scene) => s.items.some((it: SceneItem) => it.type === 'audio_input'))) {
+    for (const sc of scenes.scenes) {
+      if (!/volto|intervalo|pause|brb/i.test(sc.name) && !sc.items.some((it: SceneItem) => it.type === 'audio_input')) {
+        sc.items.push({
+          id: `item-mic-${sc.id}`,
+          sourceId: micChannel.id,
+          name: micChannel.name,
+          type: 'audio_input',
+          visible: true,
+          locked: true,
+          transform: fullTransform(sc.items.length + 1),
+          verticalTransform: fullTransform(sc.items.length + 1),
+          showOnHorizontal: true,
+          showOnVertical: true,
+          settings: { audioChannelId: micChannel.id }
+        })
+      }
+    }
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     hostName: typed.hostName ?? base.hostName,
@@ -299,7 +335,7 @@ function normalize(raw: unknown): AppSettings {
     requirePin: typed.requirePin ?? base.requirePin,
     preferredInterface: typed.preferredInterface ?? null,
     firewallPromptDismissed: typed.firewallPromptDismissed ?? false,
-    audioMixer: normalizeMixer(typed.audioMixer),
+    audioMixer: mixer,
     studio: { ...base.studio, ...(typed.studio ?? {}) },
     hotkeys: { ...base.hotkeys, ...(typed.hotkeys ?? {}) },
     destinations: normalizeDestinations(typed.destinations, base.destinations),

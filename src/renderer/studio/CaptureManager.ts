@@ -132,16 +132,36 @@ export class CaptureManager {
 
   openCamera(deviceId: string | undefined) {
     return async (): Promise<{ stream: MediaStream; label: string } | null> => {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {}),
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 }
-        },
-        audio: false
-      })
-      return { stream, label: stream.getVideoTracks()[0]?.label ?? 'Câmera' }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {}),
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 }
+          },
+          audio: false
+        })
+        return { stream, label: stream.getVideoTracks()[0]?.label ?? 'Câmera' }
+      } catch (err) {
+        if (deviceId && deviceId !== 'default') {
+          console.warn('[capture] camera com deviceId especifico falhou, tentando padrao:', err)
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({
+              video: {
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                frameRate: { ideal: 30 }
+              },
+              audio: false
+            })
+            return { stream, label: stream.getVideoTracks()[0]?.label ?? 'Câmera' }
+          } catch {
+            // falhou tambem na camera padrao
+          }
+        }
+        throw err
+      }
     }
   }
 

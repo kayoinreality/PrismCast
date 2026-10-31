@@ -251,22 +251,26 @@ export function MixerDock(): React.JSX.Element {
   const patch = (id: string, p: Partial<AudioChannel>): void =>
     setChannels(mixer.channels.map((c) => (c.id === id ? { ...c, ...p } : c)))
 
-  // Microfone é por cena: o mixer mostra se a cena aberta no editor liga cada um.
-  const scene = editingScene(settings.scenes)
-  const micsHere = sceneMics(scene, false)
+  // Microfone é por cena: o mixer mostra se a cena no ar (programa) liga cada um.
+  // No modo estúdio, a edição da prévia não esconde o fader do microfone que está ao vivo no ar.
+  const programScene = settings.scenes.scenes.find((s) => s.id === settings.scenes.activeSceneId) ?? settings.scenes.scenes[0]
+  const targetScene = settings.scenes.studioMode ? programScene : editingScene(settings.scenes)
+  const micsHere = sceneMics(targetScene, false)
+  const hasPerSceneMics = settings.scenes.scenes.some((s) => s.items.some((it) => it.type === 'audio_input'))
+  const isOffScene = (ch: AudioChannel): boolean => ch.kind === 'mic' && hasPerSceneMics && !micsHere.has(ch.id)
 
   const add = (ch: AudioChannel): void => {
-    // Microfone novo já entra na cena aberta; nas outras, o usuário adiciona.
-    const scenes = ch.kind === 'mic' && scene ? addItem(settings.scenes, scene.id, audioItem(ch)) : settings.scenes
+    // Microfone novo já entra na cena ativa; nas outras, o usuário adiciona.
+    const scenes = ch.kind === 'mic' && targetScene ? addItem(settings.scenes, targetScene.id, audioItem(ch)) : settings.scenes
     update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] }, scenes })
     setMenu(false)
     setEditing(ch.id)
   }
 
   const addToScene = (ch: AudioChannel): void => {
-    if (!scene) return
-    update({ scenes: addItem(settings.scenes, scene.id, audioItem(ch)) })
-    toast(`${ch.name} ligado na cena “${scene.name}”`, 'good')
+    if (!targetScene) return
+    update({ scenes: addItem(settings.scenes, targetScene.id, audioItem(ch)) })
+    toast(`${ch.name} ligado na cena “${targetScene.name}”`, 'good')
   }
 
   const hasDesktop = mixer.channels.some((c) => c.kind === 'desktop')
@@ -285,11 +289,11 @@ export function MixerDock(): React.JSX.Element {
           </button>
         )}
         {mixer.channels.map((ch) =>
-          ch.kind === 'mic' && !micsHere.has(ch.id) ? (
+          isOffScene(ch) ? (
             <OffSceneStrip
               key={ch.id}
               ch={ch}
-              sceneName={scene?.name ?? 'cena'}
+              sceneName={targetScene?.name ?? 'cena'}
               onAdd={() => addToScene(ch)}
               onOpen={() => setEditing(ch.id)}
             />

@@ -132,9 +132,21 @@ export function WidgetPickerModal({
       setError('Cole um endereço que comece com https://')
       return
     }
-    const [w, h] = size.split('x').map(Number)
+    const parts = size.split('x').map(Number)
+    const w = Number.isFinite(parts[0]) && parts[0] > 0 ? parts[0] : 1920
+    const h = Number.isFinite(parts[1]) && parts[1] > 0 ? parts[1] : 1080
     let label = name.trim()
-    if (!label) label = /streamelements\.com/i.test(u) ? 'StreamElements' : new URL(u).hostname || 'Widget'
+    if (!label) {
+      if (/streamelements\.com/i.test(u)) {
+        label = 'StreamElements'
+      } else {
+        try {
+          label = new URL(u).hostname || 'Widget'
+        } catch {
+          label = 'Widget'
+        }
+      }
+    }
     onPick({ name: label, url: u, width: w, height: h })
   }
 

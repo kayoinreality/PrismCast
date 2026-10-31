@@ -137,16 +137,16 @@ function StageEditor({
       if (drag.corner.includes('e')) w = snap(right + dx, [1, 0.5]) - x
       if (drag.corner.includes('s')) h = snap(bottom + dy, [1, 0.5]) - y
       if (drag.corner.includes('w')) {
-        x = snap(o.x + dx, [0, 0.5])
+        x = Math.min(right - 0.02, snap(o.x + dx, [0, 0.5]))
         w = right - x
       }
       if (drag.corner.includes('n')) {
-        y = snap(o.y + dy, [0, 0.5])
+        y = Math.min(bottom - 0.02, snap(o.y + dy, [0, 0.5]))
         h = bottom - y
       }
       if (!free) {
         // Mantém a proporção original (em pixels do canvas).
-        const ratio = o.height / o.width
+        const ratio = o.width > 0 ? o.height / o.width : 1
         h = w * ratio
         if (drag.corner.includes('n')) y = bottom - h
       }

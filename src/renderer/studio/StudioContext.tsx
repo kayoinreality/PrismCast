@@ -89,8 +89,8 @@ export function StudioProvider({
         scenes: {
           ...st,
           scenes,
-          activeSceneId: ids.has(st.activeSceneId) ? st.activeSceneId : scenes[0].id,
-          previewSceneId: ids.has(st.previewSceneId) ? st.previewSceneId : scenes[0].id
+          activeSceneId: ids.has(st.activeSceneId) ? st.activeSceneId : (scenes[0]?.id ?? ''),
+          previewSceneId: ids.has(st.previewSceneId) ? st.previewSceneId : (scenes[0]?.id ?? '')
         }
       })
     },

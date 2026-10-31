@@ -186,6 +186,7 @@ export class AudioMixerEngine {
   private systemStream: MediaStream | null = null
   private appStatus = new Map<string, AudioChannelStatus>()
   private disposed = false
+  private readonly onDeviceChange: () => void
   /** microfones ligados pela cena no ar / usados em alguma cena (os outros nem abrem) */
   private liveMics = new Set<string>()
   private usedMics = new Set<string>()
@@ -216,10 +217,33 @@ export class AudioMixerEngine {
       this.appStatus = new Map(list.map((s) => [s.id, s]))
       this.onStatus?.()
     })
+
+    this.onDeviceChange = () => {
+      if (this.disposed) return
+      for (const ch of this.config.channels) {
+        if (ch.kind === 'mic') {
+          const strip = this.strips.get(ch.id)
+          if (strip && strip.status.state !== 'ok') {
+            void this.openSource(ch, true)
+          }
+        }
+      }
+    }
+    navigator.mediaDevices?.addEventListener('devicechange', this.onDeviceChange)
   }
 
   get outputTrack(): MediaStreamTrack {
     return this.destination.stream.getAudioTracks()[0]
+  }
+
+  async resume(): Promise<void> {
+    if (this.ctx.state === 'suspended') {
+      try {
+        await this.ctx.resume()
+      } catch (err) {
+        console.warn('[mixer] falha ao retomar AudioContext:', err)
+      }
+    }
   }
 
   setSystemStream(stream: MediaStream | null): void {
@@ -240,11 +264,15 @@ export class AudioMixerEngine {
 
   /** O microfone está ligado na cena que está no ar. */
   micOnAir(id: string): boolean {
-    return this.liveMics.has(id)
+    return this.usedMics.size === 0 || this.liveMics.has(id)
   }
 
   private inScene(ch: AudioChannel): boolean {
-    return ch.kind !== 'mic' || this.liveMics.has(ch.id)
+    if (ch.kind !== 'mic') return true
+    // Se o usuário não configurou microfones em nenhuma cena (ex.: perfil novo ou legado),
+    // o microfone do mixer é global e vai para a live.
+    if (this.usedMics.size === 0) return true
+    return this.liveMics.has(ch.id)
   }
 
   status(id: string): AudioChannelStatus {
@@ -286,8 +314,8 @@ export class AudioMixerEngine {
       case 'desktop':
         return `desktop:${this.systemStream?.id ?? 'none'}`
       case 'mic':
-        // Fora de todas as cenas: nem abre (a luz do microfone do Windows fica apagada).
-        if (!this.usedMics.has(ch.id)) return 'mic:unused'
+        // Fora de todas as cenas: só desliga se houver microfones configurados em cenas
+        if (this.usedMics.size > 0 && !this.usedMics.has(ch.id)) return 'mic:unused'
         // O processamento do Chromium (ruído, eco, ganho automático) é escolhido ao abrir o microfone.
         return `mic:${ch.deviceId ?? 'default'}:${ch.filters.noiseSuppression}:${ch.filters.echoCancellation}:${ch.filters.autoGain}`
       case 'app':
@@ -345,7 +373,7 @@ export class AudioMixerEngine {
     const open = (deviceId: string | null): Promise<MediaStream> =>
       navigator.mediaDevices.getUserMedia({
         audio: {
-          ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+          ...(deviceId && deviceId !== 'default' ? { deviceId: { exact: deviceId } } : {}),
           echoCancellation: ch.filters.echoCancellation,
           noiseSuppression: ch.filters.noiseSuppression,
           autoGainControl: ch.filters.autoGain,
@@ -356,23 +384,44 @@ export class AudioMixerEngine {
     try {
       let stream: MediaStream
       let fallback = false
+      const specificDevice = ch.deviceId && ch.deviceId !== 'default' ? ch.deviceId : null
       try {
-        stream = await open(ch.deviceId)
+        stream = await open(specificDevice)
       } catch (err) {
-        // Microfone escolhido sumiu (USB em outra porta, headset desligado): usa o padrão em vez de ficar mudo.
-        const name = (err as DOMException).name
-        if (!ch.deviceId || (name !== 'NotFoundError' && name !== 'OverconstrainedError')) throw err
-        stream = await open(null)
-        fallback = true
+        // Se um microfone específico falhar (desconectado, mudou de porta), tenta o padrão do Windows
+        if (specificDevice) {
+          try {
+            stream = await open(null)
+            fallback = true
+          } catch {
+            // Se as restrições falharem, tenta áudio básico sem filtros que alguns drivers rejeitam
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+            fallback = true
+          }
+        } else {
+          // Fallback para microfone padrão com restrições rejeitadas pelo driver
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+          fallback = true
+        }
       }
       if (this.disposed || strip.sourceKey !== key || !this.strips.has(ch.id)) {
         stream.getTracks().forEach((t) => t.stop())
         return
       }
       strip.stream = stream
+      const track = stream.getAudioTracks()[0]
+      if (track) {
+        track.onended = () => {
+          if (!this.disposed && this.strips.get(ch.id) === strip) {
+            this.setStatus(strip, 'error', 'Microfone desconectado.')
+            setTimeout(() => this.retry(ch.id), 1500)
+          }
+        }
+      }
       strip.attach(this.ctx.createMediaStreamSource(stream))
-      this.setStatus(strip, 'ok', fallback ? 'O microfone escolhido não está conectado; usando o padrão do Windows.' : null)
+      this.setStatus(strip, 'ok', fallback ? 'Usando o microfone padrão do Windows.' : null)
     } catch (err) {
+      strip.sourceKey = ''
       const name = (err as DOMException).name
       this.setStatus(
         strip,
@@ -392,6 +441,19 @@ export class AudioMixerEngine {
     if (ch) void this.openSource(ch, true)
   }
 
+  /** Reabre microfones que falharam na inicialização ou estão esperando. */
+  retryAllProblematic(): void {
+    if (this.disposed) return
+    for (const ch of this.config.channels) {
+      if (ch.kind === 'mic') {
+        const strip = this.strips.get(ch.id)
+        if (strip && strip.status.state !== 'ok') {
+          void this.openSource(ch, true)
+        }
+      }
+    }
+  }
+
   readLevels(): AudioLevels {
     const out: AudioLevels = {}
     for (const [id, strip] of this.strips) out[id] = strip.level()
@@ -401,6 +463,7 @@ export class AudioMixerEngine {
   dispose(): void {
     if (this.disposed) return
     this.disposed = true
+    navigator.mediaDevices?.removeEventListener('devicechange', this.onDeviceChange)
     this.offPcm()
     this.offStatus()
     window.api.audio.sync([])
