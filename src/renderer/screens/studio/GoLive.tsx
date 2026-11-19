@@ -3,11 +3,19 @@ import { PLATFORM_INFO } from '@shared/ipc'
 import type { LiveInfo, TwitchCapabilities, TwitchCategory } from '@shared/protocol'
 import { Modal } from '@/components/Modal'
 import { Button, Field, TextInput, Toggle } from '@/components/ui'
-import { IconBroadcast, IconCamera, IconCameraOff, IconSearch } from '@/components/Icons'
-import { useStudio } from '@/studio/StudioContext'
-import { selectScene } from '@/studio/scenes'
+import {
+  IconAlert,
+  IconBroadcast,
+  IconCamera,
+  IconCameraOff,
+  IconCheck,
+  IconMicOff,
+  IconSearch
+} from '@/components/Icons'
+import { useEngineState, useStudio } from '@/studio/StudioContext'
+import { sceneMics, selectScene } from '@/studio/scenes'
 
-/** Busca de categoria da Twitch com lista de sugestões. */
+/** Busca de categoria da Twitch com lista de sugestões e proteção contra respostas fora de ordem. */
 export function CategoryPicker({
   value,
   onChange,
@@ -21,20 +29,42 @@ export function CategoryPicker({
   const [results, setResults] = useState<TwitchCategory[]>([])
   const [open, setOpen] = useState(false)
   const timer = useRef(0)
+  const blurTimer = useRef(0)
+  const reqIdRef = useRef(0)
+
   useEffect(() => setQuery(value.name), [value.name])
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(timer.current)
+      window.clearTimeout(blurTimer.current)
+      reqIdRef.current++
+    }
+  }, [])
 
   const search = (q: string): void => {
     setQuery(q)
     window.clearTimeout(timer.current)
+    const reqId = ++reqIdRef.current
     if (!enabled || q.trim().length < 2) {
       setResults([])
+      setOpen(false)
       return
     }
     timer.current = window.setTimeout(() => {
-      void window.api.twitch.searchCategories(q).then((r) => {
-        setResults(r)
-        setOpen(true)
-      })
+      void window.api.twitch
+        .searchCategories(q)
+        .then((r) => {
+          if (reqId !== reqIdRef.current) return
+          setResults(r)
+          setOpen(r.length > 0)
+        })
+        .catch(() => {
+          if (reqId === reqIdRef.current) {
+            setResults([])
+            setOpen(false)
+          }
+        })
     }, 280)
   }
 
@@ -48,7 +78,10 @@ export function CategoryPicker({
           disabled={!enabled}
           onChange={(e) => search(e.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
-          onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+          onBlur={() => {
+            window.clearTimeout(blurTimer.current)
+            blurTimer.current = window.setTimeout(() => setOpen(false), 150)
+          }}
         />
       </div>
       {open && results.length > 0 && (
@@ -64,7 +97,7 @@ export function CategoryPicker({
                 setOpen(false)
               }}
             >
-              <img src={c.boxArtUrl} alt="" />
+              {c.boxArtUrl && <img src={c.boxArtUrl} alt="" />}
               <span>{c.name}</span>
             </button>
           ))}
@@ -79,7 +112,16 @@ export function useTwitchCaps(): TwitchCapabilities | null {
   const [caps, setCaps] = useState<TwitchCapabilities | null>(null)
   const twitch = settings.destinations.find((d) => d.platform === 'twitch' && d.account)?.account
   useEffect(() => {
-    void window.api.twitch.capabilities().then(setCaps)
+    let alive = true
+    void window.api.twitch
+      .capabilities()
+      .then((c) => {
+        if (alive) setCaps(c)
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [twitch?.login, twitch?.scopes?.length])
   return caps
 }
@@ -130,14 +172,18 @@ export function LiveInfoFields({
           )}
         </span>
       )}
-      {canEdit && <span className="hint">Vai para a Twitch ao entrar ao vivo. YouTube e Kick usam o título do painel deles.</span>}
+      {canEdit && (
+        <span className="hint">
+          Vai para a Twitch ao entrar ao vivo. YouTube e Kick usam o título do painel deles.
+        </span>
+      )}
     </>
   )
 }
 
 /**
  * "Preparar a live": tudo que se decide antes de cada live numa tela só —
- * título, categoria, para onde vai hoje, com ou sem câmera, cena de abertura.
+ * título, categoria, para onde vai hoje, com ou sem câmera, cena de abertura e checklist de saúde.
  */
 export function GoLiveModal({
   open,
@@ -149,6 +195,7 @@ export function GoLiveModal({
   onOpenDestinations: () => void
 }): React.JSX.Element {
   const { engine, settings, update, toast } = useStudio()
+  const state = useEngineState()
   const caps = useTwitchCaps()
   const [info, setInfo] = useState<LiveInfo>(settings.live)
   const [enabled, setEnabled] = useState<Set<string>>(new Set())
@@ -159,18 +206,57 @@ export function GoLiveModal({
   useEffect(() => {
     if (!open) return
     setInfo(settings.live)
-    setEnabled(new Set(settings.destinations.filter((d) => d.enabled && d.hasKey).map((d) => d.id)))
+    setEnabled(
+      new Set(
+        settings.destinations
+          .filter((d) => d.enabled && d.hasKey && d.server.trim())
+          .map((d) => d.id)
+      )
+    )
     setCamera(settings.studio.cameraEnabled)
     setSceneId(settings.scenes.activeSceneId)
-    // Primeira vez: puxa o título que já está na Twitch.
     if (!settings.live.title) {
-      void window.api.twitch.getChannelInfo().then((ch) => ch && setInfo((cur) => (cur.title ? cur : ch)))
+      let alive = true
+      void window.api.twitch
+        .getChannelInfo()
+        .then((ch) => {
+          if (alive && ch) setInfo((cur) => (cur.title ? cur : ch))
+        })
+        .catch(() => {})
+      return () => {
+        alive = false
+      }
     }
+    return undefined
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
 
   const ready = settings.destinations.filter((d) => d.hasKey && d.server.trim())
   const notReady = settings.destinations.filter((d) => !(d.hasKey && d.server.trim()))
+
+  const chosenScene =
+    settings.scenes.scenes.find((s) => s.id === sceneId) ?? settings.scenes.scenes[0] ?? null
+  const visualItemsCount = (chosenScene?.items ?? []).filter(
+    (it) => it.visible && it.type !== 'audio_input' && (camera || it.type !== 'camera_input')
+  ).length
+
+  const mics = settings.audioMixer.channels.filter((c) => c.kind === 'mic')
+  const hasPerSceneMics = settings.scenes.scenes.some((s) => s.items.some((it) => it.type === 'audio_input'))
+  const activeMicIds = hasPerSceneMics ? sceneMics(chosenScene, true) : new Set(mics.map((m) => m.id))
+  const activeMics = mics.filter((m) => activeMicIds.has(m.id))
+  const allMicsMuted = activeMics.length > 0 && activeMics.every((m) => m.muted)
+  const micWithError = activeMics.find((m) => engine.audioStatus(m.id).state === 'error')
+  const ffmpegOk = state.multistream.ffmpegFound
+
+  const unmuteMics = (): void => {
+    update({
+      audioMixer: {
+        ...settings.audioMixer,
+        channels: settings.audioMixer.channels.map((c) => (c.kind === 'mic' ? { ...c, muted: false } : c))
+      }
+    })
+    toast('Microfone desmutado', 'good')
+  }
 
   const start = async (): Promise<void> => {
     if (enabled.size === 0) {
@@ -178,28 +264,37 @@ export function GoLiveModal({
       return
     }
     setBusy(true)
-    const scenes = sceneId !== settings.scenes.activeSceneId ? selectScene({ ...settings.scenes, studioMode: false }, sceneId) : settings.scenes
-    const newSettings = {
-      live: info,
-      destinations: settings.destinations.map((d) => ({ ...d, enabled: enabled.has(d.id) })),
-      studio: { ...settings.studio, cameraEnabled: camera },
-      scenes: { ...scenes, studioMode: settings.scenes.studioMode }
+    try {
+      const scenes =
+        sceneId !== settings.scenes.activeSceneId
+          ? selectScene({ ...settings.scenes, studioMode: false }, sceneId)
+          : settings.scenes
+      const newSettings = {
+        live: info,
+        destinations: settings.destinations.map((d) => ({ ...d, enabled: enabled.has(d.id) })),
+        studio: { ...settings.studio, cameraEnabled: camera },
+        scenes: { ...scenes, studioMode: settings.scenes.studioMode }
+      }
+      update(newSettings)
+      engine.apply({ ...settings, ...newSettings })
+      await window.api.settings.set(newSettings)
+      const infoErr = await engine.pushLiveInfo(info)
+      if (infoErr) toast(`Título não foi para a Twitch: ${infoErr}`, 'bad')
+      const err = await engine.goLive()
+      if (err) {
+        toast(err, 'bad')
+        return
+      }
+      const names = settings.destinations
+        .filter((d) => enabled.has(d.id))
+        .map((d) => d.account?.displayName ?? d.name)
+      toast(`Ao vivo em ${names.join(', ')}`, 'good')
+      onClose()
+    } catch (e) {
+      toast((e as Error).message || 'Não foi possível iniciar a transmissão.', 'bad')
+    } finally {
+      setBusy(false)
     }
-    update(newSettings)
-    engine.apply({ ...settings, ...newSettings })
-    // A live lê destinos e cena no main: grava já, sem esperar a escrita adiada.
-    await window.api.settings.set(newSettings)
-    const infoErr = await engine.pushLiveInfo(info)
-    if (infoErr) toast(`Título não foi para a Twitch: ${infoErr}`, 'bad')
-    const err = await engine.goLive()
-    setBusy(false)
-    if (err) {
-      toast(err, 'bad')
-      return
-    }
-    const names = settings.destinations.filter((d) => enabled.has(d.id)).map((d) => d.account?.displayName ?? d.name)
-    toast(`Ao vivo em ${names.join(', ')}`, 'good')
-    onClose()
   }
 
   return (
@@ -215,7 +310,13 @@ export function GoLiveModal({
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancelar
           </Button>
-          <Button variant="primary" icon={<IconBroadcast size={16} />} loading={busy} onClick={() => void start()}>
+          <Button
+            variant="primary"
+            icon={<IconBroadcast size={16} />}
+            loading={busy}
+            disabled={!ffmpegOk || enabled.size === 0}
+            onClick={() => void start()}
+          >
             Entrar ao vivo{enabled.size > 0 ? ` em ${enabled.size}` : ''}
           </Button>
         </>
@@ -290,6 +391,76 @@ export function GoLiveModal({
               onChange={setCamera}
             />
           </div>
+        </div>
+
+        <div className="golive-checklist">
+          {!ffmpegOk ? (
+            <div className="golive-check-row is-bad">
+              <span>
+                <IconAlert size={13} /> FFmpeg não encontrado no sistema
+              </span>
+              <button
+                className="link-btn"
+                onClick={() => {
+                  onClose()
+                  onOpenDestinations()
+                }}
+              >
+                Ver instruções
+              </button>
+            </div>
+          ) : (
+            <div className="golive-check-row is-ok">
+              <span>
+                <IconCheck size={13} /> Encoder pronto ({state.multistream.encoder || 'H.264'})
+              </span>
+              <span className="mono">{settings.studio.fps} fps</span>
+            </div>
+          )}
+
+          {visualItemsCount === 0 ? (
+            <div className="golive-check-row is-warn">
+              <span>
+                <IconAlert size={13} /> A cena “{chosenScene?.name ?? 'atual'}” está sem fontes visíveis (tela preta)
+              </span>
+            </div>
+          ) : (
+            <div className="golive-check-row is-ok">
+              <span>
+                <IconCheck size={13} /> Cena “{chosenScene?.name}” com {visualItemsCount}{' '}
+                {visualItemsCount === 1 ? 'fonte visível' : 'fontes visíveis'}
+              </span>
+            </div>
+          )}
+
+          {micWithError ? (
+            <div className="golive-check-row is-warn">
+              <span>
+                <IconAlert size={13} /> {micWithError.name}: {engine.audioStatus(micWithError.id).message ?? 'erro ao abrir'}
+              </span>
+            </div>
+          ) : allMicsMuted ? (
+            <div className="golive-check-row is-warn">
+              <span>
+                <IconMicOff size={13} /> Seu microfone está mudo nesta cena
+              </span>
+              <button className="link-btn" onClick={unmuteMics}>
+                Desmutar
+              </button>
+            </div>
+          ) : activeMics.length === 0 ? (
+            <div className="golive-check-row is-warn">
+              <span>
+                <IconMicOff size={13} /> Esta cena começa sem microfone (bom para “Começando”)
+              </span>
+            </div>
+          ) : (
+            <div className="golive-check-row is-ok">
+              <span>
+                <IconCheck size={13} /> Microfone pronto ({activeMics.map((m) => m.name).join(', ')})
+              </span>
+            </div>
+          )}
         </div>
       </div>
     </Modal>

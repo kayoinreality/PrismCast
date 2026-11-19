@@ -5,6 +5,16 @@ edition = "2021"
 authors = ["kayor"]
 description = "PrismCast Studio — Motor nativo em Rust para transmissão LAN P2P, Multistreaming (Twitch, YouTube, Kick, TikTok), Dual Output (16:9 + 9:16), Replay Buffer e Widgets"
 license = "MIT"
+build = "src-rust/build.rs"
+
+[features]
+default = []
+tauri-app = [
+    "dep:tauri",
+    "dep:tauri-build",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-opener",
+]
 
 [[bin]]
 name = "prismcast"
@@ -41,6 +51,12 @@ dirs = "6.0"
 hostname = "0.4"
 base64 = "0.22"
 keyring = "3.6"
+tauri = { version = "2", optional = true }
+tauri-plugin-dialog = { version = "2", optional = true }
+tauri-plugin-opener = { version = "2", optional = true }
+
+[build-dependencies]
+tauri-build = { version = "2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 wasapi = "0.26"

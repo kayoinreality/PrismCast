@@ -5,26 +5,35 @@ import { Modal } from '@/components/Modal'
 import { Button, Field, IconButton, Segmented, Slider, TextInput, Toggle } from '@/components/ui'
 import { IconApp, IconRefresh, IconSearch, IconVolume } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
+import { studioStore } from '@/studio/StudioStore'
 import { KindIcon, Meter, type useMeterLoop } from './MixerDock'
 
 const pct = (db: number): number => Math.max(0, Math.min(100, ((db - MIN_DB) / -MIN_DB) * 100))
 
-/** Nível de entrada (antes dos filtros) com a linha do limiar do noise gate. */
+/** Nível de entrada (antes dos filtros) com a linha do limiar do noise gate (throttled 33ms + gateDbRef). */
 function InputMeter({ id, gateDb }: { id: string; gateDb: number | null }): React.JSX.Element {
   const { engine } = useStudio()
   const fill = useRef<HTMLDivElement>(null)
   const open = useRef<HTMLDivElement>(null)
+  const gateDbRef = useRef(gateDb)
+  gateDbRef.current = gateDb
+
   useEffect(() => {
     let raf = 0
-    const loop = (): void => {
+    let last = 0
+    const loop = (t: number): void => {
       raf = requestAnimationFrame(loop)
-      const db = engine.readLevels()[id]?.inputDb ?? MIN_DB
+      if (t - last < 33) return
+      last = t
+      const db = studioStore.audioLevelsRef[id]?.inputDb ?? engine.readLevels()[id]?.inputDb ?? MIN_DB
       if (fill.current) fill.current.style.clipPath = `inset(0 ${100 - pct(db)}% 0 0)`
-      if (open.current) open.current.classList.toggle('is-open', gateDb === null || db >= gateDb)
+      const g = gateDbRef.current
+      if (open.current) open.current.classList.toggle('is-open', g === null || db >= g)
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-  }, [engine, id, gateDb])
+  }, [engine, id])
+
   return (
     <div className="input-meter">
       <div className="vu is-input">
@@ -64,7 +73,9 @@ function Num({
       <div className="num-slider-head">
         <span>{label}</span>
         <span className="mono">
-          {value > 0 && unit === 'dB' && label.includes('Ganho') ? '+' : ''}
+          {value > 0 && unit === 'dB' && (label.includes('Ganho') || label.includes('Graves') || label.includes('Médios') || label.includes('Agudos'))
+            ? '+'
+            : ''}
           {Number.isInteger(step) ? Math.round(value) : value.toFixed(1)} {unit}
         </span>
       </div>
@@ -88,7 +99,9 @@ function FilterCard({
 }): React.JSX.Element {
   return (
     <div className={`filter-card ${on ? 'is-on' : ''}`}>
-      {onToggle ? <Toggle label={title} hint={hint} checked={on} onChange={onToggle} /> : (
+      {onToggle ? (
+        <Toggle label={title} hint={hint} checked={on} onChange={onToggle} />
+      ) : (
         <div className="filter-title">
           <span className="toggle-label">{title}</span>
           <span className="toggle-hint">{hint}</span>
@@ -99,18 +112,61 @@ function FilterCard({
   )
 }
 
-function useInputs(): MediaDeviceInfo[] {
+function useInputs(enabled: boolean): MediaDeviceInfo[] {
   const [list, setList] = useState<MediaDeviceInfo[]>([])
   useEffect(() => {
+    if (!enabled || !navigator.mediaDevices) return
+    let alive = true
     const load = (): void => {
       void navigator.mediaDevices
         .enumerateDevices()
-        .then((d) => setList(d.filter((x) => x.kind === 'audioinput' && x.deviceId !== 'default' && x.deviceId !== 'communications')))
+        .then((d) => {
+          if (alive) {
+            setList(
+              d.filter(
+                (x) => x.kind === 'audioinput' && x.deviceId !== 'default' && x.deviceId !== 'communications'
+              )
+            )
+          }
+        })
+        .catch(() => {})
     }
     load()
     navigator.mediaDevices.addEventListener('devicechange', load)
-    return () => navigator.mediaDevices.removeEventListener('devicechange', load)
-  }, [])
+    return () => {
+      alive = false
+      navigator.mediaDevices.removeEventListener('devicechange', load)
+    }
+  }, [enabled])
+  return list
+}
+
+function useOutputs(enabled: boolean): MediaDeviceInfo[] {
+  const [list, setList] = useState<MediaDeviceInfo[]>([])
+  useEffect(() => {
+    if (!enabled || !navigator.mediaDevices) return
+    let alive = true
+    const load = (): void => {
+      void navigator.mediaDevices
+        .enumerateDevices()
+        .then((d) => {
+          if (alive) {
+            setList(
+              d.filter(
+                (x) => x.kind === 'audiooutput' && x.deviceId !== 'default' && x.deviceId !== 'communications'
+              )
+            )
+          }
+        })
+        .catch(() => {})
+    }
+    load()
+    navigator.mediaDevices.addEventListener('devicechange', load)
+    return () => {
+      alive = false
+      navigator.mediaDevices.removeEventListener('devicechange', load)
+    }
+  }, [enabled])
   return list
 }
 
@@ -126,17 +182,28 @@ export function AppPickerModal({
 }): React.JSX.Element {
   const [apps, setApps] = useState<AudioApp[] | null>(null)
   const [query, setQuery] = useState('')
+  const reqIdRef = useRef(0)
 
   const load = (): void => {
+    const reqId = ++reqIdRef.current
     setApps(null)
-    void window.api.audio.listApps().then((list) =>
-      setApps([...list].sort((a, b) => Number(b.audio) - Number(a.audio) || a.title.localeCompare(b.title)))
-    )
+    void window.api.audio
+      .listApps()
+      .then((list) => {
+        if (reqId !== reqIdRef.current) return
+        setApps([...list].sort((a, b) => Number(b.audio) - Number(a.audio) || a.title.localeCompare(b.title)))
+      })
+      .catch(() => {
+        if (reqId === reqIdRef.current) setApps([])
+      })
   }
+
   useEffect(() => {
     if (open) {
       setQuery('')
       load()
+    } else {
+      reqIdRef.current++
     }
   }, [open])
 
@@ -213,15 +280,22 @@ export function AudioPropertiesModal({
   onRemove: () => void
   onClose: () => void
 }): React.JSX.Element {
-  const { engine } = useStudio()
+  const { engine, settings, update } = useStudio()
   useEngineState()
-  const inputs = useInputs()
+  const mic = ch.kind === 'mic'
+  const inputs = useInputs(mic)
+  const outputs = useOutputs(ch.monitor !== 'off')
   const [pickingApp, setPickingApp] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
   const status = engine.audioStatus(ch.id)
   const f = ch.filters
-  const mic = ch.kind === 'mic'
   const setF = (p: Partial<AudioFilters>): void => onChange({ filters: { ...f, ...p } })
+
+  useEffect(() => {
+    setConfirmRemove(false)
+  }, [ch.id])
+
+  const micChannels = settings.audioMixer.channels.filter((c) => c.kind === 'mic')
 
   return (
     <Modal
@@ -234,9 +308,14 @@ export function AudioPropertiesModal({
       footer={
         <>
           {confirmRemove ? (
-            <Button variant="danger" onClick={onRemove}>
-              Remover “{ch.name}”?
-            </Button>
+            <div className="row" style={{ gap: 'var(--sp-2)' }}>
+              <Button variant="danger" onClick={onRemove}>
+                Remover “{ch.name}”?
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmRemove(false)}>
+                Cancelar
+              </Button>
+            </div>
           ) : (
             <Button variant="ghost" onClick={() => setConfirmRemove(true)}>
               Remover do mixer
@@ -303,6 +382,11 @@ export function AudioPropertiesModal({
               <span className="hint">Tudo que toca no dispositivo de som padrão do Windows.</span>
             </Field>
           )}
+          {ch.kind === 'party_voice' && (
+            <Field label="Fonte">
+              <span className="hint">Voz recebida dos espectadores conectados na Rede Local (LAN).</span>
+            </Field>
+          )}
         </div>
 
         {status.message && (
@@ -358,7 +442,51 @@ export function AudioPropertiesModal({
             on={f.highpassHz > 0}
             onToggle={(v) => setF({ highpassHz: v ? 85 : 0 })}
           >
-            <Num label="Corte" value={f.highpassHz || 85} min={40} max={300} unit="Hz" onChange={(v) => setF({ highpassHz: v })} />
+            <Num
+              label="Corte"
+              value={f.highpassHz || 85}
+              min={40}
+              max={300}
+              unit="Hz"
+              onChange={(v) => setF({ highpassHz: v })}
+            />
+          </FilterCard>
+
+          <FilterCard
+            title="Equalizador (EQ 3 bandas)"
+            hint="Modela o timbre da voz ou limpa frequências emboladas"
+            on={Boolean(f.eqEnabled)}
+            onToggle={(v) => setF({ eqEnabled: v })}
+          >
+            <div className="filter-grid">
+              <Num
+                label="Graves (100 Hz)"
+                value={f.eqLowDb ?? 0}
+                min={-12}
+                max={12}
+                step={0.5}
+                unit="dB"
+                onChange={(v) => setF({ eqLowDb: v })}
+              />
+              <Num
+                label="Médios (1 kHz)"
+                value={f.eqMidDb ?? 0}
+                min={-12}
+                max={12}
+                step={0.5}
+                unit="dB"
+                onChange={(v) => setF({ eqMidDb: v })}
+              />
+              <Num
+                label="Agudos (8 kHz)"
+                value={f.eqHighDb ?? 0}
+                min={-12}
+                max={12}
+                step={0.5}
+                unit="dB"
+                onChange={(v) => setF({ eqHighDb: v })}
+              />
+            </div>
           </FilterCard>
 
           <FilterCard
@@ -384,7 +512,9 @@ export function AudioPropertiesModal({
               unit="ms"
               onChange={(v) => setF({ gate: { ...f.gate, releaseMs: v } })}
             />
-            <span className="hint">A linha amarela no medidor de entrada é o limiar: fale normal e deixe a fala passar dela.</span>
+            <span className="hint">
+              A linha amarela no medidor de entrada é o limiar: fale normal e deixe a fala passar dela.
+            </span>
           </FilterCard>
 
           <FilterCard
@@ -394,16 +524,109 @@ export function AudioPropertiesModal({
             onToggle={(v) => setF({ compressor: { ...f.compressor, enabled: v } })}
           >
             <div className="filter-grid">
-              <Num label="Limiar" value={f.compressor.thresholdDb} min={-50} max={0} unit="dB" onChange={(v) => setF({ compressor: { ...f.compressor, thresholdDb: v } })} />
-              <Num label="Razão" value={f.compressor.ratio} min={1.5} max={20} step={0.5} unit=":1" onChange={(v) => setF({ compressor: { ...f.compressor, ratio: v } })} />
-              <Num label="Ataque" value={f.compressor.attackMs} min={1} max={100} unit="ms" onChange={(v) => setF({ compressor: { ...f.compressor, attackMs: v } })} />
-              <Num label="Liberação" value={f.compressor.releaseMs} min={20} max={1000} step={10} unit="ms" onChange={(v) => setF({ compressor: { ...f.compressor, releaseMs: v } })} />
-              <Num label="Ganho de saída" value={f.compressor.makeupDb} min={0} max={24} unit="dB" onChange={(v) => setF({ compressor: { ...f.compressor, makeupDb: v } })} />
+              <Num
+                label="Limiar"
+                value={f.compressor.thresholdDb}
+                min={-50}
+                max={0}
+                unit="dB"
+                onChange={(v) => setF({ compressor: { ...f.compressor, thresholdDb: v } })}
+              />
+              <Num
+                label="Razão"
+                value={f.compressor.ratio}
+                min={1.5}
+                max={20}
+                step={0.5}
+                unit=":1"
+                onChange={(v) => setF({ compressor: { ...f.compressor, ratio: v } })}
+              />
+              <Num
+                label="Ataque"
+                value={f.compressor.attackMs}
+                min={1}
+                max={100}
+                unit="ms"
+                onChange={(v) => setF({ compressor: { ...f.compressor, attackMs: v } })}
+              />
+              <Num
+                label="Liberação"
+                value={f.compressor.releaseMs}
+                min={20}
+                max={1000}
+                step={10}
+                unit="ms"
+                onChange={(v) => setF({ compressor: { ...f.compressor, releaseMs: v } })}
+              />
+              <Num
+                label="Ganho de saída"
+                value={f.compressor.makeupDb}
+                min={0}
+                max={24}
+                unit="dB"
+                onChange={(v) => setF({ compressor: { ...f.compressor, makeupDb: v } })}
+              />
             </div>
           </FilterCard>
 
-          <FilterCard title="Ganho" hint="Sobe ou desce a fonte antes do fader (mic baixo demais, jogo alto demais)" on>
-            <Num label="Ganho" value={f.gainDb} min={-30} max={30} unit="dB" onChange={(v) => setF({ gainDb: v })} />
+          {!mic && (
+            <FilterCard
+              title="Audio Ducking (abaixar quando falar)"
+              hint="Reduz automaticamente o volume do jogo/música enquanto você fala no microfone"
+              on={Boolean(f.duckingEnabled)}
+              onToggle={(v) =>
+                setF({
+                  duckingEnabled: v,
+                  duckingSourceId: f.duckingSourceId ?? micChannels[0]?.id ?? null,
+                  duckingAmountDb: f.duckingAmountDb ?? -12,
+                  duckingReleaseMs: f.duckingReleaseMs ?? 350
+                })
+              }
+            >
+              {micChannels.length > 1 && (
+                <Field label="Microfone que comanda">
+                  <select
+                    className="select"
+                    value={f.duckingSourceId ?? micChannels[0]?.id ?? ''}
+                    onChange={(e) => setF({ duckingSourceId: e.target.value || null })}
+                  >
+                    {micChannels.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              )}
+              <div className="filter-grid">
+                <Num
+                  label="Atenuação"
+                  value={f.duckingAmountDb ?? -12}
+                  min={-36}
+                  max={-2}
+                  step={1}
+                  unit="dB"
+                  onChange={(v) => setF({ duckingAmountDb: v })}
+                />
+                <Num
+                  label="Tempo de retorno"
+                  value={f.duckingReleaseMs ?? 350}
+                  min={100}
+                  max={2500}
+                  step={50}
+                  unit="ms"
+                  onChange={(v) => setF({ duckingReleaseMs: v })}
+                />
+              </div>
+            </FilterCard>
+          )}
+
+          <FilterCard
+            title="Ganho"
+            hint="Sobe ou desce a fonte antes do fader (mic baixo demais, jogo alto demais)"
+            on
+          >
+            <Num label="Ganho" value={f.gainDb} min={-24} max={24} unit="dB" onChange={(v) => setF({ gainDb: v })} />
           </FilterCard>
 
           <FilterCard
@@ -412,7 +635,15 @@ export function AudioPropertiesModal({
             on={f.limiter.enabled}
             onToggle={(v) => setF({ limiter: { ...f.limiter, enabled: v } })}
           >
-            <Num label="Teto" value={f.limiter.ceilingDb} min={-12} max={0} step={0.5} unit="dB" onChange={(v) => setF({ limiter: { ...f.limiter, ceilingDb: v } })} />
+            <Num
+              label="Teto"
+              value={f.limiter.ceilingDb}
+              min={-12}
+              max={0}
+              step={0.5}
+              unit="dB"
+              onChange={(v) => setF({ limiter: { ...f.limiter, ceilingDb: v } })}
+            />
           </FilterCard>
         </div>
 
@@ -424,6 +655,34 @@ export function AudioPropertiesModal({
           options={MONITOR_OPTIONS.map((o) => ({ value: o.value, label: o.label, hint: o.hint }))}
         />
         <span className="hint">{MONITOR_OPTIONS.find((o) => o.value === ch.monitor)?.hint}. Use fone para não dar eco.</span>
+
+        {ch.monitor !== 'off' && (
+          <Field
+            label="Saída de monitoramento (fone)"
+            hint="Escolha seu fone para não duplicar no Áudio do PC"
+          >
+            <select
+              className="select"
+              value={settings.audioMixer.monitorDeviceId ?? ''}
+              onChange={(e) =>
+                update({
+                  audioMixer: {
+                    ...settings.audioMixer,
+                    monitorDeviceId: e.target.value || null
+                  }
+                })
+              }
+            >
+              <option value="">Saída padrão do sistema</option>
+              {outputs.map((d) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || 'Saída de áudio'}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+
         <Num
           label="Atraso (para casar com a câmera)"
           value={ch.syncOffsetMs}

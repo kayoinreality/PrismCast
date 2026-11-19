@@ -1,0 +1,38 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "PrismCast Studio",
+  "version": "2.4.0",
+  "identifier": "com.kayor.prismcaststudio",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "./dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "PrismCast Studio",
+        "width": 1380,
+        "height": 860,
+        "minWidth": 1060,
+        "minHeight": 680,
+        "decorations": false,
+        "transparent": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' 'unsafe-inline' data: blob: https: wss: http://127.0.0.1:* ws://127.0.0.1:*; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:;"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "build/icon.png",
+      "build/icon.ico"
+    ]
+  }
+}

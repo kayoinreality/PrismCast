@@ -1,8 +1,11 @@
 import { Component, StrictMode, type ErrorInfo, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { ensureBridge } from './bridge'
 import { App, AppFallback } from './App'
 import { ChatWindow } from './chat/ChatWindow'
 import './styles/global.css'
+
+ensureBridge()
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null }
@@ -26,8 +29,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 const container = document.getElementById('root')
 if (!container) throw new Error('Elemento #root não encontrado.')
 
-// A mesma interface abre a janela separada do chat (#chat).
-const isChatWindow = window.location.hash === '#chat'
+// A mesma interface abre a janela separada do chat (?view=chat ou #chat).
+const isChatWindow =
+  new URLSearchParams(window.location.search).get('view') === 'chat' || window.location.hash === '#chat'
 if (isChatWindow) document.title = 'Chat · PrismCast'
 
 createRoot(container).render(

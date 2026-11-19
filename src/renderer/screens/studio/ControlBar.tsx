@@ -3,12 +3,14 @@ import { PLATFORM_INFO } from '@shared/ipc'
 import type { LiveInfo } from '@shared/protocol'
 import { Button, Field, IconButton, TextInput } from '@/components/ui'
 import {
+  IconAlert,
   IconBroadcast,
   IconCamera,
   IconCameraOff,
   IconDown,
   IconEdit,
   IconEyeOff,
+  IconMicOff,
   IconPlus,
   IconRecord,
   IconReplay,
@@ -16,18 +18,27 @@ import {
 } from '@/components/Icons'
 import { formatClock, useNow } from '@/components/LiveStatus'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
+import { useTelemetrySlice, studioStore } from '@/studio/StudioStore'
 import { GoLiveModal, LiveInfoFields, useTwitchCaps } from './GoLive'
 
-/** Fecha um popover ao clicar fora. */
+function formatHotkey(accel: string | undefined, fallback: string): string {
+  const raw = accel?.trim() || fallback
+  return raw.replace(/CommandOrControl/gi, 'Ctrl')
+}
+
+/** Fecha um popover ao clicar fora usando ref estável para o callback `close`. */
 function useOutside(open: boolean, close: () => void): React.RefObject<HTMLDivElement | null> {
   const ref = useRef<HTMLDivElement>(null)
+  const closeRef = useRef(close)
+  closeRef.current = close
+
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent): void => {
-      if (!ref.current?.contains(e.target as Node)) close()
+      if (!ref.current?.contains(e.target as Node)) closeRef.current()
     }
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') close()
+      if (e.key === 'Escape') closeRef.current()
     }
     window.addEventListener('mousedown', onDown)
     window.addEventListener('keydown', onKey)
@@ -35,7 +46,7 @@ function useOutside(open: boolean, close: () => void): React.RefObject<HTMLDivEl
       window.removeEventListener('mousedown', onDown)
       window.removeEventListener('keydown', onKey)
     }
-  }, [open, close])
+  }, [open])
   return ref
 }
 
@@ -52,24 +63,30 @@ function LiveTitle({ onOpenDestinations }: { onOpenDestinations: () => void }): 
 
   useEffect(() => {
     if (open) setDraft(settings.live)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
+  }, [open, settings.live])
 
   const save = async (): Promise<void> => {
     update({ live: draft })
     if (state.live) {
       setSaving(true)
-      const err = await engine.pushLiveInfo(draft)
-      setSaving(false)
-      if (err) toast(err, 'bad')
-      else if (caps?.canEditInfo) toast('Título atualizado na Twitch', 'good')
+      try {
+        const err = await engine.pushLiveInfo(draft)
+        if (err) toast(err, 'bad')
+        else if (caps?.canEditInfo) toast('Título atualizado na Twitch', 'good')
+      } finally {
+        setSaving(false)
+      }
     }
     setOpen(false)
   }
 
   return (
     <div className="cb-title-wrap" ref={ref}>
-      <button className={`cb-title ${live.title ? '' : 'is-empty'}`} onClick={() => setOpen((o) => !o)} title="Título e categoria da live">
+      <button
+        className={`cb-title ${live.title ? '' : 'is-empty'}`}
+        onClick={() => setOpen((o) => !o)}
+        title="Título e categoria da live"
+      >
         <span className="cb-title-text">{live.title || 'Dê um título para a live'}</span>
         <span className="cb-title-cat">
           {live.categoryName || 'sem categoria'}
@@ -101,13 +118,15 @@ function LiveTitle({ onOpenDestinations }: { onOpenDestinations: () => void }): 
   )
 }
 
-/** Tela de pausa com os textos editáveis ali mesmo (antes só em Ajustes). */
+/** Tela de pausa com os textos editáveis ali mesmo. */
 function PauseButton(): React.JSX.Element {
   const { settings, update } = useStudio()
   const studio = settings.studio
   const [open, setOpen] = useState(false)
   const ref = useOutside(open, () => setOpen(false))
   const set = (p: Partial<typeof studio>): void => update({ studio: { ...studio, ...p } })
+  const hk = formatHotkey(settings.hotkeys?.togglePrivacyShield, 'Ctrl+Shift+P')
+
   return (
     <div className="split-btn" ref={ref}>
       <Button
@@ -115,20 +134,31 @@ function PauseButton(): React.JSX.Element {
         variant={studio.privacyShieldActive ? 'danger' : 'ghost'}
         icon={<IconEyeOff size={15} />}
         onClick={() => set({ privacyShieldActive: !studio.privacyShieldActive })}
-        title="Cobre tudo na hora com uma tela de pausa (Ctrl+Shift+P)"
+        title={`Cobre tudo na hora com uma tela de pausa (${hk})`}
       >
         {studio.privacyShieldActive ? 'Pausa ativa' : 'Pausa'}
       </Button>
-      <IconButton label="Textos da tela de pausa" className="split-caret" active={open} onClick={() => setOpen((o) => !o)}>
+      <IconButton
+        label="Textos da tela de pausa"
+        className="split-caret"
+        active={open}
+        onClick={() => setOpen((o) => !o)}
+      >
         <IconDown size={13} />
       </IconButton>
       {open && (
         <div className="popover pause-pop">
           <Field label="Título da tela de pausa">
-            <TextInput value={studio.privacyShieldTitle} onChange={(e) => set({ privacyShieldTitle: e.target.value })} />
+            <TextInput
+              value={studio.privacyShieldTitle}
+              onChange={(e) => set({ privacyShieldTitle: e.target.value })}
+            />
           </Field>
           <Field label="Subtítulo">
-            <TextInput value={studio.privacyShieldSubtitle} onChange={(e) => set({ privacyShieldSubtitle: e.target.value })} />
+            <TextInput
+              value={studio.privacyShieldSubtitle}
+              onChange={(e) => set({ privacyShieldSubtitle: e.target.value })}
+            />
           </Field>
           <span className="hint">Para pausas longas, use a cena “Volto já” do kit.</span>
         </div>
@@ -140,10 +170,46 @@ function PauseButton(): React.JSX.Element {
 export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => void }): React.JSX.Element {
   const { engine, settings, update, toast } = useStudio()
   const state = useEngineState()
+  const telemetry = useTelemetrySlice()
   const [confirmStop, setConfirmStop] = useState(false)
   const [preparing, setPreparing] = useState(false)
+  const [togglingRec, setTogglingRec] = useState(false)
+  const [localMutedSpeaking, setLocalMutedSpeaking] = useState(false)
   const now = useNow(state.live)
   const studio = settings.studio
+
+  useEffect(() => {
+    if (!state.live) setConfirmStop(false)
+  }, [state.live])
+
+  // Detecta fala em microfone mudo via telemetria Rust ou níveis locais do mixer
+  useEffect(() => {
+    let speakSince = 0
+    const timer = window.setInterval(() => {
+      if (telemetry.micMutedSpeaking) {
+        setLocalMutedSpeaking(true)
+        return
+      }
+      const levels = engine.readLevels()
+      const refLevels = studioStore.audioLevelsRef
+      const mutedMics = settings.audioMixer.channels.filter((c) => c.kind === 'mic' && c.muted)
+      const speaking = mutedMics.some((c) => {
+        const refSample = refLevels[c.id]
+        if (refSample?.mutedSpeech) return true
+        const inputDb = refSample?.inputDb ?? levels[c.id]?.inputDb ?? -60
+        return inputDb > -35
+      })
+      const t = Date.now()
+      if (speaking) {
+        if (speakSince === 0) speakSince = t
+        if (t - speakSince >= 1100) setLocalMutedSpeaking(true)
+      } else {
+        speakSince = 0
+        setLocalMutedSpeaking(false)
+      }
+    }, 350)
+    return () => window.clearInterval(timer)
+  }, [engine, settings.audioMixer.channels, telemetry.micMutedSpeaking])
 
   const connected = settings.destinations.filter((d) => d.hasKey && d.server.trim())
 
@@ -153,16 +219,70 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
     toast('Live encerrada')
   }
 
-  /** Liga/desliga um destino só para esta live, sem abrir a página de Destinos. */
   const toggleDest = (id: string): void => {
-    update({ destinations: settings.destinations.map((d) => (d.id === id ? { ...d, enabled: !d.enabled } : d)) })
+    update({
+      destinations: settings.destinations.map((d) => (d.id === id ? { ...d, enabled: !d.enabled } : d))
+    })
   }
+
+  const unmuteAllMics = (): void => {
+    update({
+      audioMixer: {
+        ...settings.audioMixer,
+        channels: settings.audioMixer.channels.map((c) => (c.kind === 'mic' ? { ...c, muted: false } : c))
+      }
+    })
+    setLocalMutedSpeaking(false)
+    toast('Microfone ligado', 'good')
+  }
+
+  const encoderName = state.multistream.encoder && state.multistream.encoder !== '…'
+    ? state.multistream.encoder
+    : telemetry.encoder || 'libx264'
+  const isCpuEncoder = telemetry.cpuFallback || encoderName === 'libx264'
+  const realFps = telemetry.compositorFps > 0 ? Math.round(telemetry.compositorFps) : studio.fps
+  const bitrateKbps = telemetry.encodeBitrateKbps
+  const dropped = telemetry.droppedFrames
+  const bufferedSec = Math.round(
+    telemetry.replayBufferedSeconds > 0
+      ? telemetry.replayBufferedSeconds
+      : state.recorder.replayBufferedSeconds
+  )
+
+  const telemetryTone = !state.multistream.ffmpegFound || dropped > 30
+    ? 'is-bad'
+    : isCpuEncoder || (state.live && realFps < studio.fps * 0.85)
+      ? 'is-warn'
+      : ''
+
+  const camHk = formatHotkey(settings.hotkeys?.toggleCamera, 'Ctrl+Shift+C')
+  const replayHk = formatHotkey(settings.hotkeys?.saveReplayClip, 'Ctrl+Shift+S')
 
   return (
     <footer className="controlbar">
+      {(telemetry.micMutedSpeaking || localMutedSpeaking) && (
+        <div className="cb-mic-alert" role="status">
+          <IconMicOff size={14} />
+          <span>Seu microfone está mudo — ouvimos atividade na entrada</span>
+          <Button size="sm" variant="primary" onClick={unmuteAllMics}>
+            Desmutar
+          </Button>
+        </div>
+      )}
+
       <div className="cb-left">
         <LiveTitle onOpenDestinations={onOpenDestinations} />
         <div className="cb-destinations">
+          {!state.multistream.ffmpegFound && (
+            <button
+              className="cb-telemetry is-bad"
+              onClick={onOpenDestinations}
+              title="FFmpeg não encontrado — clique para ver como instalar ou configurar o caminho"
+            >
+              <IconAlert size={13} />
+              <span>FFmpeg não encontrado · configurar</span>
+            </button>
+          )}
           {connected.length === 0 ? (
             <button className="cb-dest is-empty" onClick={onOpenDestinations}>
               <IconPlus size={13} /> Conectar Twitch, YouTube…
@@ -170,7 +290,12 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
           ) : (
             connected.map((d) => {
               const st = state.multistream.destinations.find((s) => s.id === d.id)
-              const status = state.live && d.enabled ? (st?.state ?? 'connecting') : st?.state === 'error' ? 'error' : 'idle'
+              const status =
+                state.live && d.enabled
+                  ? (st?.state ?? 'connecting')
+                  : st?.state === 'error'
+                    ? 'error'
+                    : 'idle'
               return (
                 <button
                   key={d.id}
@@ -194,9 +319,27 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
               )
             })
           )}
-          <span className="cb-encoder dim mono" title="Encoder usado pelo FFmpeg">
-            {state.multistream.ffmpegFound ? state.multistream.encoder : 'sem FFmpeg'} · {studio.fps}fps
-          </span>
+
+          {state.multistream.ffmpegFound && (
+            <span
+              className={`cb-telemetry mono ${telemetryTone}`}
+              title={
+                isCpuEncoder
+                  ? `Codificando por software (${encoderName}) · ${realFps}/${studio.fps} fps · quadros perdidos: ${dropped}`
+                  : `Encoder de hardware (${encoderName}) · ${realFps}/${studio.fps} fps · quadros perdidos: ${dropped}`
+              }
+            >
+              <span className="cb-telemetry-dot" />
+              <span>{isCpuEncoder ? 'CPU (x264)' : encoderName}</span>
+              <span>· {realFps}/{studio.fps}fps</span>
+              {bitrateKbps > 0 && (
+                <span>
+                  · {bitrateKbps >= 1000 ? `${(bitrateKbps / 1000).toFixed(1)} Mb/s` : `${bitrateKbps} kb/s`}
+                </span>
+              )}
+              {dropped > 0 && <span>· {dropped} drops</span>}
+            </span>
+          )}
         </div>
       </div>
 
@@ -206,7 +349,7 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
           variant={studio.cameraEnabled ? 'ghost' : 'danger'}
           icon={studio.cameraEnabled ? <IconCamera size={15} /> : <IconCameraOff size={15} />}
           onClick={() => update({ studio: { ...studio, cameraEnabled: !studio.cameraEnabled } })}
-          title="Sem câmera hoje? Desliga a câmera e esconde as molduras dos overlays (Ctrl+Shift+C)"
+          title={`Sem câmera hoje? Desliga a câmera e esconde as molduras dos overlays (${camHk})`}
         >
           {studio.cameraEnabled ? 'Câmera' : 'Sem câmera'}
         </Button>
@@ -216,22 +359,33 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
           variant="ghost"
           icon={<IconReplay size={15} />}
           onClick={() => void engine.saveReplay().then((r) => toast(r.message, r.ok ? 'good' : 'bad'))}
-          title={`Salva os últimos ${studio.replayBufferSeconds}s (Ctrl+Shift+S)`}
+          title={`Salva os últimos ${studio.replayBufferSeconds}s (${replayHk})`}
         >
-          Replay
+          {bufferedSec > 0 && (state.live || state.recorder.recording) ? `Replay · ${bufferedSec}s` : 'Replay'}
         </Button>
         <Button
           size="sm"
           variant={state.recorder.recording ? 'danger' : 'subtle'}
           icon={<IconRecord size={15} />}
+          disabled={togglingRec}
           onClick={() => {
+            if (togglingRec) return
+            setTogglingRec(true)
             const wasRecording = state.recorder.recording
             const path = state.recorder.recordingPath
-            void engine.toggleRecording().then((err) => {
-              if (err) toast(err, 'bad')
-              else if (wasRecording)
-                toast('Gravação salva em Vídeos\\PrismCast', 'good', path ? { label: 'Abrir pasta', run: () => window.api.app.showInFolder(path) } : undefined)
-            })
+            void engine
+              .toggleRecording()
+              .then((err) => {
+                if (err) toast(err, 'bad')
+                else if (wasRecording) {
+                  toast(
+                    'Gravação salva',
+                    'good',
+                    path ? { label: 'Abrir pasta', run: () => window.api.app.showInFolder(path) } : undefined
+                  )
+                }
+              })
+              .finally(() => setTogglingRec(false))
           }}
         >
           {state.recorder.recording ? `Parar ${formatClock(state.recorder.recordingDurationSec)}` : 'Gravar'}

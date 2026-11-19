@@ -17,44 +17,59 @@ const DOCK_KEY = 'prismcast.dockHeight'
 
 function readDockHeight(): number {
   try {
-    return Number(localStorage.getItem(DOCK_KEY)) || 250
+    return Number(localStorage.getItem(DOCK_KEY)) || 230
   } catch {
-    return 250
+    return 230
   }
 }
 
-/** Puxador entre o palco e os docks: o tamanho fica salvo. */
+/** Puxador entre o palco e os docks: o tamanho fica salvo e usa `--dock-h`. */
 function useDockResize(): [number, (e: React.PointerEvent) => void] {
   const [height, setHeight] = useState(readDockHeight)
-  const start = useRef<{ y: number; h: number } | null>(null)
-  const onDown = (e: React.PointerEvent): void => {
-    start.current = { y: e.clientY, h: height }
-    const move = (ev: PointerEvent): void => {
-      if (!start.current) return
-      const max = Math.round(window.innerHeight * 0.6)
-      setHeight(Math.max(160, Math.min(max, start.current.h - (ev.clientY - start.current.y))))
+  const cleanupRef = useRef<(() => void) | null>(null)
+
+  useEffect(() => {
+    return () => {
+      cleanupRef.current?.()
     }
+  }, [])
+
+  const onDown = (e: React.PointerEvent): void => {
+    cleanupRef.current?.()
+    const startY = e.clientY
+    const startH = height
+
+    const move = (ev: PointerEvent): void => {
+      const max = Math.round(window.innerHeight * 0.55)
+      setHeight(Math.max(160, Math.min(max, startH - (ev.clientY - startY))))
+    }
+
     const up = (): void => {
-      start.current = null
       window.removeEventListener('pointermove', move)
       window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', up)
+      cleanupRef.current = null
       setHeight((h) => {
         try {
           localStorage.setItem(DOCK_KEY, String(h))
         } catch {
-          /* sem armazenamento: só não lembra */
+          /* sem armazenamento */
         }
         return h
       })
     }
+
+    cleanupRef.current = up
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', up)
   }
+
   return [height, onDown]
 }
 
 export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () => void }): React.JSX.Element {
-  const { settings, update, toast, undo, redo } = useStudio()
+  const { settings, update, toast, pushUndoSnapshot, undo, redo } = useStudio()
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [view, setView] = useState<StageView>('horizontal')
   const [side, setSide] = useState<'chat' | 'props'>('chat')
@@ -66,16 +81,32 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
   const selected = scene?.items.find((it) => it.id === selectedId) ?? null
   const vertical = settings.studio.dualOutputEnabled
 
+  // Limpa selectedId órfão caso a fonte tenha sido removida por Undo/Redo ou troca de cena.
+  useEffect(() => {
+    if (selectedId && !selected) {
+      setSelectedId(null)
+    }
+  }, [selectedId, selected])
+
   useEffect(() => {
     if (!vertical && view === 'vertical') setView('horizontal')
   }, [vertical, view])
 
-  // Selecionar uma fonte mostra as propriedades; tirar a seleção volta para o chat.
   useEffect(() => setSide(selectedId ? 'props' : 'chat'), [selectedId])
 
   useEffect(() => {
-    void window.api.chat.isPopoutOpen().then(setPopout)
-    return window.api.chat.onPopoutChange(setPopout)
+    let alive = true
+    void window.api.chat
+      .isPopoutOpen()
+      .then((open) => {
+        if (alive) setPopout(open)
+      })
+      .catch(() => {})
+    const off = window.api.chat.onPopoutChange(setPopout)
+    return () => {
+      alive = false
+      off()
+    }
   }, [])
 
   const setScenes = useCallback((next: StudioScenesState) => update({ scenes: next }), [update])
@@ -90,10 +121,11 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
 
   const removeSelected = useCallback(() => {
     if (!selected || !scene) return
+    pushUndoSnapshot()
     setScenes(removeItem(settings.scenes, scene.id, selected.id))
     setSelectedId(null)
     toast(`“${selected.name}” removida`, 'info', { label: 'Desfazer', run: () => undo() })
-  }, [selected, scene, settings.scenes, setScenes, toast, undo])
+  }, [selected, scene, settings.scenes, setScenes, toast, pushUndoSnapshot, undo])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -114,11 +146,10 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
       if (e.ctrlKey || e.metaKey || e.altKey) return
       if (e.key === 'Delete' && selected && !selected.locked) removeSelected()
       if (e.key === 'Escape') setSelectedId(null)
-      // 1–9 trocam de cena (na prévia, no modo estúdio), como os números da lista.
       if (/^[1-9]$/.test(e.key)) {
-        const target = settings.scenes.scenes[Number(e.key) - 1]
-        if (target) {
-          setScenes(selectScene(settings.scenes, target.id))
+        const targetScene = settings.scenes.scenes[Number(e.key) - 1]
+        if (targetScene) {
+          setScenes(selectScene(settings.scenes, targetScene.id))
           setSelectedId(null)
         }
       }
@@ -137,9 +168,13 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
           selectedId={selectedId}
           onSelect={setSelectedId}
           onPatchItem={patchItem}
+          onRequestRename={(id) => {
+            setSelectedId(id)
+            setSide('props')
+          }}
         />
         <div className="dock-split" onPointerDown={onSplitDown} title="Arraste para mudar o tamanho" />
-        <div className="docks" style={{ height: dockHeight }}>
+        <div className="docks" style={{ ['--dock-h' as string]: `${dockHeight}px` }}>
           <ScenesDock onSelectScene={() => setSelectedId(null)} />
           <SourcesDock scene={scene} selectedId={selectedId} onSelect={setSelectedId} />
           <MixerDock />
@@ -147,17 +182,36 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
       </section>
       <aside className="studio-side">
         <div className="side-tabs" role="tablist">
-          <button role="tab" aria-selected={side === 'chat'} className={side === 'chat' ? 'is-active' : ''} onClick={() => setSide('chat')}>
+          <button
+            role="tab"
+            aria-selected={side === 'chat'}
+            className={side === 'chat' ? 'is-active' : ''}
+            onClick={() => setSide('chat')}
+          >
             <IconChat size={14} /> Chat
           </button>
-          <button role="tab" aria-selected={side === 'props'} className={side === 'props' ? 'is-active' : ''} onClick={() => setSide('props')}>
+          <button
+            role="tab"
+            aria-selected={side === 'props'}
+            className={side === 'props' ? 'is-active' : ''}
+            onClick={() => setSide('props')}
+          >
             <IconSliders size={14} /> Propriedades
             {selected && <span className="side-tab-dot" />}
           </button>
         </div>
-        {side === 'props' ? (
-          <Inspector scene={scene} item={selected} view={view} onPatch={patchItem} onClose={() => setSelectedId(null)} />
-        ) : popout ? (
+
+        {side === 'props' && (
+          <Inspector
+            scene={scene}
+            item={selected}
+            view={view}
+            onPatch={patchItem}
+            onClose={() => setSelectedId(null)}
+          />
+        )}
+
+        {side === 'chat' && popout && (
           <div className="chat-empty">
             <IconChat size={26} />
             <span>O chat está aberto na janela separada.</span>
@@ -165,8 +219,20 @@ export function StudioScreen({ onOpenDestinations }: { onOpenDestinations: () =>
               Trazer de volta para cá
             </Button>
           </div>
-        ) : (
-          <ChatPanel settings={settings} update={update} variant="dock" onReloginTwitch={onOpenDestinations} />
+        )}
+
+        {/* Mantém o ChatPanel montado (oculto em Propriedades) para não perder o texto digitado. */}
+        {!popout && (
+          <div
+            style={{
+              display: side === 'chat' ? 'flex' : 'none',
+              flexDirection: 'column',
+              flex: 1,
+              minHeight: 0
+            }}
+          >
+            <ChatPanel settings={settings} update={update} variant="dock" onReloginTwitch={onOpenDestinations} />
+          </div>
         )}
       </aside>
       <ControlBar onOpenDestinations={onOpenDestinations} />

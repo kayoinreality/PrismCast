@@ -2,9 +2,28 @@ import { useEffect, useRef, useState } from 'react'
 import type { AudioChannel, Scene, SceneItem, SourceType } from '@shared/protocol'
 import { makeChannel } from '@shared/audio'
 import { IconButton } from '@/components/ui'
-import { IconCameraOff, IconDown, IconEye, IconEyeOff, IconLock, IconPlus, IconTrash, IconUp } from '@/components/Icons'
+import {
+  IconCameraOff,
+  IconDown,
+  IconEye,
+  IconEyeOff,
+  IconLock,
+  IconPlus,
+  IconTrash,
+  IconUp
+} from '@/components/Icons'
 import { useStudio } from '@/studio/StudioContext'
-import { addItem, audioItem, kitItem, makeItem, moveItem, removeItem, sceneMics, SOURCE_LABEL, updateItem } from '@/studio/scenes'
+import {
+  addItem,
+  audioItem,
+  kitItem,
+  makeItem,
+  moveItem,
+  removeItem,
+  sceneMics,
+  SOURCE_LABEL,
+  updateItem
+} from '@/studio/scenes'
 import { SourceIcon } from './sourceIcons'
 import { SourcePickerModal, WidgetPickerModal, type WidgetChoice } from './Pickers'
 import { hiddenWithoutCamera } from '@/studio/widgets'
@@ -19,6 +38,12 @@ const ADD_MENU: Array<{ type: SourceType; hint: string }> = [
   { type: 'color_source', hint: 'Fundo de cor sólida' }
 ]
 
+interface ContextMenuState {
+  itemId: string
+  x: number
+  y: number
+}
+
 export function SourcesDock({
   scene,
   selectedId,
@@ -28,14 +53,19 @@ export function SourcesDock({
   selectedId: string | null
   onSelect: (id: string | null) => void
 }): React.JSX.Element {
-  const { settings, update, toast, kit, undo } = useStudio()
+  const { settings, update, toast, kit, pushUndoSnapshot, undo } = useStudio()
   const st = settings.scenes
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
   const cameraOn = settings.studio.cameraEnabled
   const [picker, setPicker] = useState<'screen' | 'window' | null>(null)
   const [widgetPicker, setWidgetPicker] = useState(false)
+  const [dragId, setDragId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<{ id: string; pos: 'top' | 'bottom' } | null>(null)
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   useEffect(() => {
     if (!menu) return
@@ -46,11 +76,27 @@ export function SourcesDock({
     return () => window.removeEventListener('mousedown', close)
   }, [menu])
 
+  useEffect(() => {
+    if (!ctxMenu) return
+    const close = (): void => setCtxMenu(null)
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setCtxMenu(null)
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [ctxMenu])
+
   if (!scene) return <div className="dock" />
 
   const add = (item: SceneItem, atBottom = false): void => {
-    let next = addItem(st, scene.id, item)
-    if (atBottom) next = moveItem(next, scene.id, item.id, -scene.items.length)
+    const curScenes = settingsRef.current.scenes
+    const curScene = curScenes.scenes.find((s) => s.id === scene.id) ?? scene
+    let next = addItem(curScenes, curScene.id, item)
+    if (atBottom) next = moveItem(next, curScene.id, item.id, -curScene.items.length)
     update({ scenes: next })
     onSelect(item.id)
   }
@@ -59,12 +105,21 @@ export function SourcesDock({
   const inScene = sceneMics(scene, false)
   const micsToAdd = mics.filter((c) => !inScene.has(c.id))
 
-  /** Liga um microfone do mixer nesta cena (sem canal ainda, cria um no mixer). */
   const addMic = (ch: AudioChannel | null): void => {
     setMenu(false)
     const channel = ch ?? makeChannel('mic', { name: 'Microfone' })
-    const scenes = addItem(st, scene.id, audioItem(channel))
-    update(ch ? { scenes } : { scenes, audioMixer: { ...settings.audioMixer, channels: [...settings.audioMixer.channels, channel] } })
+    const scenes = addItem(settingsRef.current.scenes, scene.id, audioItem(channel))
+    update(
+      ch
+        ? { scenes }
+        : {
+            scenes,
+            audioMixer: {
+              ...settingsRef.current.audioMixer,
+              channels: [...settingsRef.current.audioMixer.channels, channel]
+            }
+          }
+    )
     toast(`${channel.name} ligado na cena “${scene.name}”`, 'good')
   }
 
@@ -82,29 +137,47 @@ export function SourcesDock({
         break
       case 'camera_input':
         add(
-          makeItem('camera_input', 'Câmera', { deviceId: 'default' }, { x: 0.7, y: 0.66, width: 0.28, height: 0.28 }, {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 0.32,
-            zIndex: 0
-          })
+          makeItem(
+            'camera_input',
+            'Câmera',
+            { deviceId: 'default' },
+            { x: 0.7, y: 0.66, width: 0.28, height: 0.28 },
+            {
+              x: 0,
+              y: 0,
+              width: 1,
+              height: 0.32,
+              zIndex: 0
+            }
+          )
         )
         break
       case 'image_source': {
         const path = await window.api.files.pickImage()
         if (!path) return
-        add(makeItem('image_source', path.split(/[\\/]/).pop() ?? 'Imagem', { path }, { x: 0.3, y: 0.3, width: 0.4, height: 0.4 }))
+        add(
+          makeItem(
+            'image_source',
+            path.split(/[\\/]/).pop() ?? 'Imagem',
+            { path },
+            { x: 0.3, y: 0.3, width: 0.4, height: 0.4 }
+          )
+        )
         break
       }
       case 'text_source':
         add(
-          makeItem('text_source', 'Texto', { text: 'Seu texto aqui', fontSize: 72, color: '#ffffff' }, {
-            x: 0.1,
-            y: 0.42,
-            width: 0.8,
-            height: 0.16
-          })
+          makeItem(
+            'text_source',
+            'Texto',
+            { text: 'Seu texto aqui', fontSize: 72, color: '#ffffff' },
+            {
+              x: 0.1,
+              y: 0.42,
+              width: 0.8,
+              height: 0.16
+            }
+          )
         )
         break
       case 'color_source':
@@ -134,11 +207,45 @@ export function SourcesDock({
   const patch = (it: SceneItem, p: Partial<SceneItem>): void =>
     update({ scenes: updateItem(st, scene.id, it.id, p) })
 
-  // Lista de cima para baixo = da frente para o fundo (como no OBS).
+  const removeSource = (it: SceneItem): void => {
+    pushUndoSnapshot()
+    update({ scenes: removeItem(st, scene.id, it.id) })
+    if (selectedId === it.id) onSelect(null)
+    toast(`“${it.name}” removida`, 'info', { label: 'Desfazer', run: () => undo() })
+  }
+
+  // Lista visual é invertida (topo da lista = maior zIndex = final do array `scene.items`).
   const ordered = [...scene.items].reverse()
   const selected = scene.items.find((it) => it.id === selectedId)
   const isTop = !selected || scene.items[scene.items.length - 1]?.id === selected.id
   const isBottom = !selected || scene.items[0]?.id === selected.id
+
+  const reorderVisual = (fromId: string, toId: string, pos: 'top' | 'bottom'): void => {
+    if (fromId === toId) return
+    const visual = [...ordered]
+    const fromIdx = visual.findIndex((it) => it.id === fromId)
+    if (fromIdx < 0) return
+    const [moved] = visual.splice(fromIdx, 1)
+    let insertIdx = visual.findIndex((it) => it.id === toId)
+    if (insertIdx < 0) return
+    if (pos === 'bottom') insertIdx += 1
+    visual.splice(insertIdx, 0, moved)
+
+    const nextItems = visual.reverse().map((it, idx) => ({
+      ...it,
+      transform: { ...it.transform, zIndex: idx },
+      verticalTransform: { ...it.verticalTransform, zIndex: it.verticalTransform.zIndex ?? idx }
+    }))
+    update({
+      scenes: {
+        ...st,
+        scenes: st.scenes.map((s) => (s.id === scene.id ? { ...s, items: nextItems } : s))
+      }
+    })
+  }
+
+  const ctxItem = ctxMenu ? scene.items.find((it) => it.id === ctxMenu.itemId) ?? null : null
+  const ctxIdx = ctxItem ? scene.items.findIndex((it) => it.id === ctxItem.id) : -1
 
   return (
     <div className="dock">
@@ -152,71 +259,191 @@ export function SourcesDock({
             <IconPlus size={15} /> Adicionar a primeira fonte
           </button>
         )}
-        {ordered.map((it) => (
-          <div
-            key={it.id}
-            className={`dock-row ${it.id === selectedId ? 'is-selected' : ''} ${it.visible ? '' : 'is-hidden'}`}
-            onClick={() => onSelect(it.id)}
-            onDoubleClick={() => setRenaming(it.id)}
-            title={`${SOURCE_LABEL[it.type]} · duplo clique renomeia`}
-          >
-            <span className="dock-icon">
-              <SourceIcon type={it.type} />
-            </span>
-            {renaming === it.id ? (
-              <input
-                className="dock-rename"
-                defaultValue={it.name}
-                autoFocus
-                onFocus={(e) => e.target.select()}
-                onClick={(e) => e.stopPropagation()}
-                onBlur={(e) => {
-                  if (e.target.value.trim()) patch(it, { name: e.target.value.trim() })
-                  setRenaming(null)
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
-                  if (e.key === 'Escape') setRenaming(null)
-                }}
-              />
-            ) : (
-              <span className="dock-name">{it.name}</span>
-            )}
-            {it.type === 'audio_input' && !mics.some((c) => c.id === it.settings.audioChannelId) && (
-              <span className="dock-flag" title="Este microfone saiu do mixer">
-                sem canal
+        {ordered.map((it) => {
+          const dragClass =
+            dropTarget?.id === it.id
+              ? dropTarget.pos === 'top'
+                ? 'drag-over-top'
+                : 'drag-over-bottom'
+              : ''
+
+          return (
+            <div
+              key={it.id}
+              draggable={renaming !== it.id}
+              className={`dock-row ${it.id === selectedId ? 'is-selected' : ''} ${it.visible ? '' : 'is-hidden'} ${dragClass}`}
+              onClick={() => onSelect(it.id)}
+              onDoubleClick={() => setRenaming(it.id)}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                onSelect(it.id)
+                const x = Math.min(window.innerWidth - 210, Math.max(8, e.clientX))
+                const y = Math.min(window.innerHeight - 230, Math.max(8, e.clientY))
+                setCtxMenu({ itemId: it.id, x, y })
+              }}
+              onDragStart={(e) => {
+                setDragId(it.id)
+                e.dataTransfer.effectAllowed = 'move'
+              }}
+              onDragOver={(e) => {
+                if (!dragId || dragId === it.id) return
+                e.preventDefault()
+                const r = e.currentTarget.getBoundingClientRect()
+                const pos = e.clientY - r.top < r.height / 2 ? 'top' : 'bottom'
+                setDropTarget({ id: it.id, pos })
+              }}
+              onDragLeave={() => {
+                if (dropTarget?.id === it.id) setDropTarget(null)
+              }}
+              onDrop={(e) => {
+                e.preventDefault()
+                if (dragId && dropTarget) {
+                  reorderVisual(dragId, it.id, dropTarget.pos)
+                }
+                setDragId(null)
+                setDropTarget(null)
+              }}
+              onDragEnd={() => {
+                setDragId(null)
+                setDropTarget(null)
+              }}
+              title={`${SOURCE_LABEL[it.type]} · arraste para reordenar · duplo clique renomeia`}
+            >
+              <span className="dock-icon">
+                <SourceIcon type={it.type} />
               </span>
-            )}
-            {!cameraOn && hiddenWithoutCamera(it, kit) && (
-              <span className="dock-flag" title="Câmera desligada: não aparece na live">
-                <IconCameraOff size={13} />
-              </span>
-            )}
-            {it.type !== 'audio_input' && (
+              {renaming === it.id ? (
+                <input
+                  className="dock-rename"
+                  defaultValue={it.name}
+                  autoFocus
+                  onFocus={(e) => e.target.select()}
+                  onClick={(e) => e.stopPropagation()}
+                  onBlur={(e) => {
+                    if (e.target.value.trim()) patch(it, { name: e.target.value.trim() })
+                    setRenaming(null)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') (e.target as HTMLInputElement).blur()
+                    if (e.key === 'Escape') setRenaming(null)
+                  }}
+                />
+              ) : (
+                <span className="dock-name">{it.name}</span>
+              )}
+              {it.type === 'audio_input' && !mics.some((c) => c.id === it.settings.audioChannelId) && (
+                <span className="dock-flag" title="Este microfone saiu do mixer">
+                  sem canal
+                </span>
+              )}
+              {!cameraOn && hiddenWithoutCamera(it, kit) && (
+                <span className="dock-flag" title="Câmera desligada: não aparece na live">
+                  <IconCameraOff size={13} />
+                </span>
+              )}
+              {it.type !== 'audio_input' && (
+                <button
+                  className={`dock-toggle is-lock ${it.locked ? 'is-on' : ''}`}
+                  title={it.locked ? 'Destravar' : 'Travar posição'}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    patch(it, { locked: !it.locked })
+                  }}
+                >
+                  <IconLock size={13} />
+                </button>
+              )}
               <button
-                className={`dock-toggle is-lock ${it.locked ? 'is-on' : ''}`}
-                title={it.locked ? 'Destravar' : 'Travar posição'}
+                className="dock-toggle is-on"
+                title={
+                  it.type === 'audio_input'
+                    ? it.visible
+                      ? 'Desligar nesta cena'
+                      : 'Ligar nesta cena'
+                    : it.visible
+                      ? 'Esconder'
+                      : 'Mostrar'
+                }
                 onClick={(e) => {
                   e.stopPropagation()
-                  patch(it, { locked: !it.locked })
+                  patch(it, { visible: !it.visible })
                 }}
               >
-                <IconLock size={13} />
+                {it.visible ? <IconEye size={14} /> : <IconEyeOff size={14} />}
               </button>
-            )}
+            </div>
+          )
+        })}
+      </div>
+
+      {ctxMenu && ctxItem && (
+        <div
+          className="studio-ctx-menu"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="studio-ctx-item"
+            disabled={ctxIdx >= scene.items.length - 1}
+            onClick={() => {
+              update({ scenes: moveItem(st, scene.id, ctxItem.id, 1) })
+              setCtxMenu(null)
+            }}
+          >
+            <span>Trazer para frente</span>
+          </button>
+          <button
+            className="studio-ctx-item"
+            disabled={ctxIdx <= 0}
+            onClick={() => {
+              update({ scenes: moveItem(st, scene.id, ctxItem.id, -1) })
+              setCtxMenu(null)
+            }}
+          >
+            <span>Mandar para trás</span>
+          </button>
+          <div className="studio-ctx-sep" />
+          <button
+            className="studio-ctx-item"
+            onClick={() => {
+              patch(ctxItem, { visible: !ctxItem.visible })
+              setCtxMenu(null)
+            }}
+          >
+            <span>{ctxItem.visible ? 'Esconder' : 'Mostrar'}</span>
+          </button>
+          {ctxItem.type !== 'audio_input' && (
             <button
-              className="dock-toggle is-on"
-              title={it.type === 'audio_input' ? (it.visible ? 'Desligar nesta cena' : 'Ligar nesta cena') : it.visible ? 'Esconder' : 'Mostrar'}
-              onClick={(e) => {
-                e.stopPropagation()
-                patch(it, { visible: !it.visible })
+              className="studio-ctx-item"
+              onClick={() => {
+                patch(ctxItem, { locked: !ctxItem.locked })
+                setCtxMenu(null)
               }}
             >
-              {it.visible ? <IconEye size={14} /> : <IconEyeOff size={14} />}
+              <span>{ctxItem.locked ? 'Destravar posição' : 'Travar posição'}</span>
             </button>
-          </div>
-        ))}
-      </div>
+          )}
+          <button
+            className="studio-ctx-item"
+            onClick={() => {
+              setRenaming(ctxItem.id)
+              setCtxMenu(null)
+            }}
+          >
+            <span>Renomear</span>
+          </button>
+          <button
+            className="studio-ctx-item is-danger"
+            onClick={() => {
+              removeSource(ctxItem)
+              setCtxMenu(null)
+            }}
+          >
+            <span>Remover fonte</span>
+          </button>
+        </div>
+      )}
+
       <div className="dock-tools" ref={menuRef}>
         <IconButton label="Adicionar fonte" active={menu} onClick={() => setMenu((m) => !m)}>
           <IconPlus size={16} />
@@ -240,12 +467,7 @@ export function SourcesDock({
           label="Remover fonte"
           variant="danger"
           disabled={!selected}
-          onClick={() => {
-            if (!selected) return
-            update({ scenes: removeItem(st, scene.id, selected.id) })
-            onSelect(null)
-            toast(`“${selected.name}” removida`, 'info', { label: 'Desfazer', run: () => undo() })
-          }}
+          onClick={() => selected && removeSource(selected)}
         >
           <IconTrash size={15} />
         </IconButton>

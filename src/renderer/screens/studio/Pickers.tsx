@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { DesktopSource } from '@shared/ipc'
 import type { KitWidget, SourceKind } from '@shared/protocol'
 import { Modal } from '@/components/Modal'
@@ -6,6 +6,15 @@ import { SourceGrid } from '@/components/SourceGrid'
 import { Button, Field, IconButton, Segmented, TextInput } from '@/components/ui'
 import { IconFolder, IconGlobe, IconMonitor, IconRefresh } from '@/components/Icons'
 import { useStudio } from '@/studio/StudioContext'
+
+function pathToFileUrl(rawPath: string): string {
+  const normalized = rawPath.replace(/\\/g, '/').replace(/^\/+/, '')
+  const segments = normalized.split('/').map((seg, i) => {
+    if (i === 0 && /^[a-zA-Z]:$/.test(seg)) return seg
+    return encodeURIComponent(seg)
+  })
+  return `file:///${segments.join('/')}`
+}
 
 /** Escolher tela ou janela para uma fonte de captura. */
 export function SourcePickerModal({
@@ -23,17 +32,29 @@ export function SourcePickerModal({
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState<SourceKind>(kind)
   const [selected, setSelected] = useState<DesktopSource | null>(null)
+  const reqIdRef = useRef(0)
 
   const load = (): void => {
+    const reqId = ++reqIdRef.current
     setLoading(true)
     void window.api.sources
       .list()
-      .then(setSources)
-      .finally(() => setLoading(false))
+      .then((list) => {
+        if (reqId === reqIdRef.current) setSources(list)
+      })
+      .catch(() => {
+        if (reqId === reqIdRef.current) setSources([])
+      })
+      .finally(() => {
+        if (reqId === reqIdRef.current) setLoading(false)
+      })
   }
 
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      reqIdRef.current++
+      return
+    }
     setTab(kind)
     setSelected(null)
     load()
@@ -46,7 +67,7 @@ export function SourcePickerModal({
       width={760}
       icon={<IconMonitor size={19} />}
       title={tab === 'screen' ? 'Escolha a tela' : 'Escolha a janela'}
-      description="O jogo ou programa precisa estar aberto para aparecer na lista."
+      description="O jogo ou programa precisa estar aberto para aparecer na lista. Duplo clique seleciona na hora."
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
@@ -85,6 +106,7 @@ export function SourcePickerModal({
             sources={sources.filter((s) => s.kind === tab)}
             selectedId={selected?.id ?? null}
             onSelect={setSelected}
+            onDoubleClick={onPick}
           />
         )}
       </div>
@@ -117,6 +139,7 @@ export function WidgetPickerModal({
   const [size, setSize] = useState('1920x1080')
   const [error, setError] = useState<string | null>(null)
 
+  // Reseta apenas quando o modal abre (não apaga o que o usuário digitou se `kit` recarregar em background).
   useEffect(() => {
     if (open) {
       setTab(kit ? 'kit' : 'url')
@@ -124,12 +147,13 @@ export function WidgetPickerModal({
       setName('')
       setError(null)
     }
-  }, [open, kit])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
 
   const submitUrl = (): void => {
     const u = url.trim()
     if (!/^https?:\/\//i.test(u) && !/^file:\/\//i.test(u)) {
-      setError('Cole um endereço que comece com https://')
+      setError('Cole um endereço que comece com https:// ou file://')
       return
     }
     const parts = size.split('x').map(Number)
@@ -151,11 +175,13 @@ export function WidgetPickerModal({
   }
 
   const pickFile = async (): Promise<void> => {
-    const path = await window.api.files.pickHtml()
+    const path = await window.api.files.pickHtml().catch(() => null)
     if (!path) return
-    const fileUrl = `file:///${path.replace(/\\/g, '/').replace(/^\/+/, '')}`
-    setUrl(encodeURI(fileUrl))
-    if (!name) setName(path.split(/[\\/]/).pop()?.replace(/\.html?$/i, '') ?? 'Widget')
+    setUrl(pathToFileUrl(path))
+    setError(null)
+    if (!name.trim()) {
+      setName(path.split(/[\\/]/).pop()?.replace(/\.html?$/i, '') ?? 'Widget')
+    }
   }
 
   return (

@@ -60,7 +60,7 @@ type EventCallback = (payload: unknown) => void
 
 /**
  * Cliente RPC WebSocket autenticado com suporte a frames binários (stream 0x01/0x02/0x03)
- * para fallback quando rodando fora do Tauri v2 / preload do Electron.
+ * para fallback quando rodando fora do Tauri v2 (ex.: Vite dev no navegador).
  */
 class RpcWsBridge {
   private ws: WebSocket | null = null
@@ -226,7 +226,7 @@ export function createRustBridgeApi(): Api {
       info: () => invokeBackend<AppInfo>('app_info'),
       minimize: () => void invokeBackend('app_minimize'),
       toggleMaximize: () => void invokeBackend('app_toggle_maximize'),
-      close: () => void invokeBackend('app_close'),
+      close: (force?: boolean) => void invokeBackend('app_close', { force: !!force }),
       setAlwaysOnTop: (value) => invokeBackend<boolean>('app_always_on_top', { value }),
       onMaximizeChange: (cb) => listenBackend<boolean>('app:maximize-changed', cb),
       onHotkey: (cb) => listenBackend<HotkeyAction>('hotkey:triggered', cb),
@@ -370,9 +370,8 @@ export function createRustBridgeApi(): Api {
 }
 
 /**
- * Garante que `window.api` exista antes de montar o React:
- * - No Electron preload já vem preenchido (no-op).
- * - No Tauri v2 ou browser dev conecta automaticamente ao motor Rust.
+ * Garante que `window.api` exista antes de montar o React, conectando ao motor Rust
+ * via Tauri v2 (`__TAURI_INTERNALS__`) ou RPC WebSocket local em dev.
  */
 export function ensureBridge(): Api {
   if (!window.api) {

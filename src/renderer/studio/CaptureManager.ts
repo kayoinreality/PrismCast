@@ -1,13 +1,5 @@
 import type { DesktopSource } from '@shared/ipc'
-
-/**
- * Capturas de tela, janela e câmera das fontes das cenas.
- *
- * Cada fonte tem a própria captura (uma janela de jogo e o monitor podem estar
- * na mesma cena). Fontes iguais em cenas diferentes compartilham a captura.
- * O handler de getDisplayMedia no main é "armado" para uma fonte por vez, por
- * isso as aquisições passam por uma fila.
- */
+import { ensureBridge } from '@/bridge'
 
 export type CaptureState = 'loading' | 'live' | 'missing' | 'error'
 
@@ -35,17 +27,25 @@ export class CaptureManager {
   private fps = 60
   private systemAudio: MediaStream | null = null
   private systemAudioPromise: Promise<MediaStream | null> | null = null
+  private disposed = false
   onChange: (() => void) | null = null
 
   setFps(fps: number): void {
     this.fps = fps
+    for (const [key, entry] of this.entries) {
+      if (key.startsWith('display:') && entry.stream) {
+        const track = entry.stream.getVideoTracks()[0]
+        if (track) {
+          void track.applyConstraints({ frameRate: { ideal: fps, max: fps } }).catch(() => {})
+        }
+      }
+    }
   }
 
   get(key: string): Capture | null {
     return this.entries.get(key) ?? null
   }
 
-  /** Chave estável de uma fonte: tela/janela pelo id+nome, câmera pelo device. */
   static displayKey(captureId: string | undefined, captureName: string | undefined): string {
     return `display:${captureId ?? 'primary'}:${captureName ?? ''}`
   }
@@ -65,8 +65,8 @@ export class CaptureManager {
     this.onChange?.()
   }
 
-  /** Garante que exatamente estas capturas estejam abertas. */
   sync(wanted: Map<string, () => Promise<{ stream: MediaStream; label: string } | null>>): void {
+    if (this.disposed) return
     for (const [key, entry] of this.entries) {
       if (!wanted.has(key)) {
         entry.stream?.getTracks().forEach((t) => t.stop())
@@ -78,10 +78,11 @@ export class CaptureManager {
       if (this.entries.has(key)) continue
       const entry: Entry = { key, video: makeVideo(), stream: null, state: 'loading', label: '' }
       this.entries.set(key, entry)
-      void this.serial(async () => {
+
+      const runOpen = async (): Promise<void> => {
         try {
           const res = await open()
-          if (this.entries.get(key) !== entry) {
+          if (this.disposed || this.entries.get(key) !== entry) {
             res?.stream.getTracks().forEach((t) => t.stop())
             return
           }
@@ -93,35 +94,45 @@ export class CaptureManager {
           await entry.video.play().catch(() => {})
           const track = res.stream.getVideoTracks()[0]
           track?.addEventListener('ended', () => {
-            if (this.entries.get(key) === entry) this.set(entry, { state: 'missing' })
+            if (!this.disposed && this.entries.get(key) === entry) {
+              this.set(entry, { state: 'missing' })
+            }
           })
           this.set(entry, { stream: res.stream, state: 'live', label: res.label })
         } catch (err) {
           console.warn('[capture] falhou:', key, err)
-          if (this.entries.get(key) === entry) this.set(entry, { state: 'error' })
+          if (!this.disposed && this.entries.get(key) === entry) {
+            this.set(entry, { state: 'error' })
+          }
         }
-      })
+      }
+
+      // Câmeras não usam sources.select() no main, portanto abrem fora da fila serial de display.
+      if (key.startsWith('camera:')) {
+        void runOpen()
+      } else {
+        void this.serial(runOpen)
+      }
     }
     this.onChange?.()
   }
 
-  /** Reabre uma captura (ex.: o jogo foi fechado e aberto de novo). */
   retry(key: string): void {
     const entry = this.entries.get(key)
     if (!entry) return
     this.entries.delete(key)
     entry.stream?.getTracks().forEach((t) => t.stop())
+    entry.video.srcObject = null
     this.onChange?.()
   }
 
-  // ------------------------------------------------------------ abridores
-
   openDisplay(captureId: string | undefined, captureName: string | undefined) {
     return async (): Promise<{ stream: MediaStream; label: string } | null> => {
-      const sources = await window.api.sources.list()
+      const api = ensureBridge()
+      const sources = await api.sources.list()
       const source = resolveSource(sources, captureId, captureName)
       if (!source) return null
-      await window.api.sources.select(source.id, false)
+      await api.sources.select(source.id, false)
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: { frameRate: { ideal: this.fps, max: this.fps } },
         audio: false
@@ -145,7 +156,6 @@ export class CaptureManager {
         return { stream, label: stream.getVideoTracks()[0]?.label ?? 'Câmera' }
       } catch (err) {
         if (deviceId && deviceId !== 'default') {
-          console.warn('[capture] camera com deviceId especifico falhou, tentando padrao:', err)
           try {
             const stream = await navigator.mediaDevices.getUserMedia({
               video: {
@@ -157,7 +167,7 @@ export class CaptureManager {
             })
             return { stream, label: stream.getVideoTracks()[0]?.label ?? 'Câmera' }
           } catch {
-            // falhou tambem na camera padrao
+            /* fallback falhou */
           }
         }
         throw err
@@ -165,17 +175,18 @@ export class CaptureManager {
     }
   }
 
-  /**
-   * Áudio do sistema (loopback WASAPI). O Chromium só entrega loopback junto com
-   * vídeo, então captura o monitor principal e descarta o vídeo na hora.
-   */
   acquireSystemAudio(): Promise<MediaStream | null> {
+    if (this.disposed) return Promise.resolve(null)
     this.systemAudioPromise ??= this.serial(async () => {
       try {
-        const sources = await window.api.sources.list()
+        const api = ensureBridge()
+        const sources = await api.sources.list()
         const screen = sources.find((s) => s.kind === 'screen')
-        if (!screen) return null
-        await window.api.sources.select(screen.id, true)
+        if (!screen) {
+          this.systemAudioPromise = null
+          return null
+        }
+        await api.sources.select(screen.id, true)
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: 1, width: 64, height: 36 },
           audio: true
@@ -184,7 +195,22 @@ export class CaptureManager {
           t.stop()
           stream.removeTrack(t)
         })
-        if (stream.getAudioTracks().length === 0) return null
+        if (this.disposed) {
+          stream.getTracks().forEach((t) => t.stop())
+          this.systemAudioPromise = null
+          return null
+        }
+        const audioTrack = stream.getAudioTracks()[0]
+        if (!audioTrack) {
+          this.systemAudioPromise = null
+          return null
+        }
+        audioTrack.addEventListener('ended', () => {
+          if (this.systemAudio === stream) {
+            this.systemAudio = null
+            this.systemAudioPromise = null
+          }
+        })
         this.systemAudio = stream
         return stream
       } catch (err) {
@@ -197,6 +223,7 @@ export class CaptureManager {
   }
 
   dispose(): void {
+    this.disposed = true
     for (const entry of this.entries.values()) {
       entry.stream?.getTracks().forEach((t) => t.stop())
       entry.video.srcObject = null
@@ -208,10 +235,6 @@ export class CaptureManager {
   }
 }
 
-/**
- * Ids de janela mudam a cada vez que o programa abre; o nome não. Tenta o id,
- * depois o nome exato, depois o nome sem o sufixo que muda (" - Arquivo X").
- */
 export function resolveSource(
   sources: DesktopSource[],
   captureId: string | undefined,

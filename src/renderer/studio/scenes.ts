@@ -28,8 +28,7 @@ export const SOURCE_LABEL: Record<SourceType, string> = {
   image_source: 'Imagem',
   color_source: 'Cor',
   text_source: 'Texto',
-  audio_input: 'Microfone',
-  audio_output: 'Áudio do sistema'
+  audio_input: 'Microfone'
 }
 
 /** A cena que o editor mexe: no modo estúdio é a prévia; fora dele, a que está no ar. */

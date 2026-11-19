@@ -25,7 +25,8 @@ export function defaultFilters(kind: AudioChannelKind): AudioFilters {
 const KIND_NAME: Record<AudioChannelKind, string> = {
   desktop: 'Áudio do PC',
   mic: 'Microfone',
-  app: 'Aplicativo'
+  app: 'Aplicativo',
+  party_voice: 'Party Voice'
 }
 
 export function makeChannel(

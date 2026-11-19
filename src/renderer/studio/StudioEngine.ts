@@ -7,13 +7,16 @@ import type {
   RecorderStatus,
   Scene,
   SceneItem,
+  TelemetryStats,
   WidgetKit
 } from '@shared/protocol'
+import { ensureBridge } from '@/bridge'
 import { AudioMixerEngine, type AudioLevels } from './AudioMixerEngine'
 import { BrowserSourceCanvases } from './BrowserSourceCanvases'
 import { CaptureManager, type Capture } from './CaptureManager'
 import { Compositor } from './Compositor'
 import { OutputManager } from './OutputManager'
+import { studioStore } from './StudioStore'
 import { effectiveUrl, hiddenWithoutCamera, restartsOnShow } from './widgets'
 import { sceneMics } from './scenes'
 
@@ -23,9 +26,8 @@ export interface EngineState {
   goingLive: boolean
   multistream: MultistreamStatus
   recorder: RecorderStatus
-  /** muda quando alguma captura muda de estado (para o editor se atualizar) */
+  telemetry: TelemetryStats
   captureVersion: number
-  /** muda quando uma fonte de áudio abre, cai ou fica esperando o programa */
   audioVersion: number
 }
 
@@ -36,6 +38,18 @@ const IDLE_RECORDER: RecorderStatus = {
   replayBufferActive: true,
   replayBufferedSeconds: 0,
   replaySavedPath: null
+}
+
+const IDLE_TELEMETRY: TelemetryStats = {
+  compositorFps: 60,
+  targetFps: 60,
+  renderMsP95: 0,
+  droppedFrames: 0,
+  encodeBitrateKbps: 0,
+  encoder: 'libx264',
+  cpuFallback: false,
+  micMutedSpeaking: false,
+  replayBufferedSeconds: 0
 }
 
 export function browserSourceId(item: SceneItem, url = item.settings.url ?? ''): string {
@@ -51,10 +65,6 @@ export function captureKeyOf(item: SceneItem): string | null {
   return null
 }
 
-/**
- * Motor do estúdio. Vive uma vez por janela, acima das telas, para trocar de
- * aba não derrubar a live nem reabrir capturas.
- */
 export class StudioEngine {
   readonly captures = new CaptureManager()
   readonly browsers = new BrowserSourceCanvases()
@@ -66,12 +76,20 @@ export class StudioEngine {
   private settings: AppSettings
   private listeners = new Set<() => void>()
   private statusTimer: number
+  private transitionKeepAliveTimer: number | null = null
   private lastBrowserSpecs = ''
   private systemAudioRequested = false
   private kit: WidgetKit | null = null
   private lastProgramId: string | null = null
+  private liveVertical = false
+  private liveOpGen = 0
+  private lastStatusSignature = ''
+
   private unlockAudio = (): void => {
     void this.mixer.resume()
+  }
+  private onBeforeUnload = (): void => {
+    this.dispose()
   }
 
   state: EngineState = {
@@ -80,11 +98,13 @@ export class StudioEngine {
     goingLive: false,
     multistream: { active: false, encoder: '…', ffmpegFound: true, destinations: [] },
     recorder: IDLE_RECORDER,
+    telemetry: IDLE_TELEMETRY,
     captureVersion: 0,
     audioVersion: 0
   }
 
   constructor(settings: AppSettings) {
+    ensureBridge()
     this.settings = settings
     this.mixer = new AudioMixerEngine(settings.audioMixer)
     this.compositor = new Compositor(
@@ -99,15 +119,14 @@ export class StudioEngine {
     )
     window.addEventListener('pointerdown', this.unlockAudio, { passive: true })
     window.addEventListener('keydown', this.unlockAudio, { passive: true })
+    window.addEventListener('beforeunload', this.onBeforeUnload)
     this.captures.onChange = () => this.patch({ captureVersion: this.state.captureVersion + 1 })
     this.mixer.onStatus = () => this.patch({ audioVersion: this.state.audioVersion + 1 })
     this.captures.setFps(settings.studio.fps)
     this.statusTimer = window.setInterval(() => void this.pollStatus(), 1000)
-    void window.api.recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
+    void ensureBridge().recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
     this.apply(settings)
   }
-
-  // --------------------------------------------------------------- estado
 
   subscribe = (cb: () => void): (() => void) => {
     this.listeners.add(cb)
@@ -137,16 +156,14 @@ export class StudioEngine {
     this.syncMedia()
   }
 
-  /** Id da janela do widget como ele está no ar (com a câmera ligada ou não). */
   browserIdOf(item: SceneItem): string {
     return browserSourceId(item, effectiveUrl(item, this.kit, this.settings.studio.cameraEnabled))
   }
 
   reloadBrowserSource(item: SceneItem): void {
-    window.api.browserSources.reload(this.browserIdOf(item))
+    ensureBridge().browserSources.reload(this.browserIdOf(item))
   }
 
-  /** Recarrega todos os widgets do kit (depois de editar os textos dele). */
   reloadKitWidgets(): void {
     const st = this.settings.scenes
     for (const scene of st.scenes) {
@@ -170,8 +187,6 @@ export class StudioEngine {
     return this.kit
   }
 
-  // ---------------------------------------------------------- preferências
-
   private programScene(): Scene | null {
     const st = this.settings.scenes
     return st.scenes.find((s) => s.id === st.activeSceneId) ?? st.scenes[0] ?? null
@@ -187,14 +202,42 @@ export class StudioEngine {
     const prev = this.settings
     this.settings = settings
     if (prev.studio.fps !== settings.studio.fps) this.captures.setFps(settings.studio.fps)
-    this.compositor.setStudio(settings.studio)
+    if (prev.studio.replayBufferSeconds !== settings.studio.replayBufferSeconds) {
+      void ensureBridge().recorder.setReplayBuffer(
+        this.state.recorder.replayBufferActive,
+        settings.studio.replayBufferSeconds
+      )
+    }
+
+    // Preserva o canvas 9:16 ativo enquanto uma live vertical estiver no ar, mesmo
+    // que `studio.dualOutputEnabled` esteja desligado na prévia do editor.
+    this.compositor.setStudio({
+      ...settings.studio,
+      dualOutputEnabled: settings.studio.dualOutputEnabled || (this.state.live && this.liveVertical)
+    })
+
+    const prevProgId = prev.scenes.activeSceneId
     this.compositor.setScenes(this.programScene(), this.previewScene(), {
       type: settings.scenes.transitionType,
       ms: settings.scenes.transitionDurationMs
     })
+
+    if (
+      prevProgId !== settings.scenes.activeSceneId &&
+      settings.scenes.transitionType !== 'cut' &&
+      this.compositor.getOutgoingScene()
+    ) {
+      if (this.transitionKeepAliveTimer !== null) window.clearTimeout(this.transitionKeepAliveTimer)
+      this.transitionKeepAliveTimer = window.setTimeout(() => {
+        this.transitionKeepAliveTimer = null
+        this.syncMedia()
+      }, settings.scenes.transitionDurationMs + 100)
+    }
+
     const used = new Set(settings.scenes.scenes.flatMap((s) => [...sceneMics(s, false)]))
     this.mixer.setSceneMics(sceneMics(this.programScene()), used)
     void this.mixer.applyConfig(settings.audioMixer)
+
     const wantsDesktop = settings.audioMixer.channels.some((c) => c.kind === 'desktop')
     if (wantsDesktop && !this.systemAudioRequested) {
       this.systemAudioRequested = true
@@ -207,10 +250,6 @@ export class StudioEngine {
     this.restartOnShow()
   }
 
-  /**
-   * Cena que acabou de entrar no ar: contagem regressiva e cronômetro
-   * recomeçam (a página fica viva fora do ar para o chat não perder mensagens).
-   */
   private restartOnShow(): void {
     const program = this.programScene()
     const id = program?.id ?? null
@@ -223,45 +262,64 @@ export class StudioEngine {
     }
   }
 
-  /** Abre só o que a cena no ar e a cena em prévia usam. */
   private syncMedia(): void {
-    const scenes = [this.programScene(), this.previewScene()].filter((s): s is Scene => s !== null)
+    const scenes = [
+      this.programScene(),
+      this.previewScene(),
+      this.compositor.getOutgoingScene()
+    ].filter((s): s is Scene => s !== null)
     const items = scenes.flatMap((s) => s.items)
 
     const wanted = new Map<string, () => Promise<{ stream: MediaStream; label: string } | null>>()
     const specs = new Map<string, BrowserSourceSpec>()
+    const activeImages = new Set<string>()
+
     for (const item of items) {
       const s = item.settings
       if (item.type === 'screen_capture' || item.type === 'window_capture') {
         wanted.set(captureKeyOf(item)!, this.captures.openDisplay(s.captureId, s.captureName))
       } else if (item.type === 'camera_input') {
-        // Câmera desligada no estúdio: nem abre (a luz da webcam fica apagada).
-        if (this.settings.studio.cameraEnabled) wanted.set(captureKeyOf(item)!, this.captures.openCamera(s.deviceId))
+        if (this.settings.studio.cameraEnabled) {
+          wanted.set(captureKeyOf(item)!, this.captures.openCamera(s.deviceId))
+        }
       } else if (item.type === 'browser_source' && s.url) {
         if (!this.settings.studio.cameraEnabled && hiddenWithoutCamera(item, this.kit)) continue
         const url = effectiveUrl(item, this.kit, this.settings.studio.cameraEnabled)
         const id = browserSourceId(item, url)
         specs.set(id, { id, url, width: s.width ?? 1920, height: s.height ?? 1080, fps: s.fps ?? 30 })
-      } else if (item.type === 'image_source' && s.path && !this.images.has(s.path)) {
-        this.loadImage(s.path)
+      } else if (item.type === 'image_source' && s.path) {
+        activeImages.add(s.path)
+        if (!this.images.has(s.path)) this.loadImage(s.path)
       }
     }
+
     this.captures.sync(wanted)
+    this.browsers.prune(new Set(specs.keys()))
+
+    // Libera imagens que não pertencem mais às cenas ativas/prévia
+    for (const path of this.images.keys()) {
+      if (!activeImages.has(path)) {
+        this.images.delete(path)
+      }
+    }
 
     const list = [...specs.values()]
     const key = JSON.stringify(list)
     if (key !== this.lastBrowserSpecs) {
       this.lastBrowserSpecs = key
-      window.api.browserSources.sync(list)
+      ensureBridge().browserSources.sync(list)
     }
   }
 
   private loadImage(path: string): void {
     const img = new Image()
     this.images.set(path, img)
-    void window.api.files.readImage(path).then((url) => {
-      if (url) img.src = url
-    })
+    void ensureBridge()
+      .files.readImage(path)
+      .then((url) => {
+        if (url && this.images.get(path) === img) img.src = url
+      })
+      .catch(() => {})
   }
 
   private resolve(item: SceneItem): CanvasImageSource | null {
@@ -283,55 +341,73 @@ export class StudioEngine {
     }
   }
 
-  // -------------------------------------------------------- live e gravação
-
-  /** Manda título e categoria para a Twitch (se houver login com essa permissão). */
   async pushLiveInfo(info: LiveInfo): Promise<string | null> {
-    const caps = await window.api.twitch.capabilities()
+    const api = ensureBridge()
+    const caps = await api.twitch.capabilities()
     if (!caps.linked || !caps.canEditInfo) return null
-    const res = await window.api.twitch.updateChannelInfo(info)
+    const res = await api.twitch.updateChannelInfo(info)
     return res.ok ? null : res.error
   }
 
   async goLive(): Promise<string | null> {
     if (this.state.live || this.state.goingLive) return null
+    const op = ++this.liveOpGen
     await this.mixer.resume()
     this.mixer.retryAllProblematic()
     this.patch({ goingLive: true })
     try {
-      const res = await window.api.multistream.start(this.settings.studio.fps)
+      const res = await ensureBridge().multistream.start(this.settings.studio.fps)
+      if (op !== this.liveOpGen) {
+        // Cancelado por stopLive() enquanto o start ainda rodava
+        if (res.ok) await ensureBridge().multistream.stop()
+        return null
+      }
       this.patch({ multistream: res.status })
       if (!res.ok) return res.error ?? 'Não foi possível iniciar a transmissão.'
-      const vertical = this.settings.destinations.some((d) => d.enabled && d.orientation === 'vertical')
-      if (vertical && !this.settings.studio.dualOutputEnabled) {
-        // Destino vertical precisa do canvas 9:16 sendo desenhado.
-        this.compositor.setStudio({ ...this.settings.studio, dualOutputEnabled: true })
-      }
+
+      const startedIds = new Set(
+        res.status.destinations
+          .filter((d) => d.state === 'connecting' || d.state === 'live')
+          .map((d) => d.id)
+      )
+      const vertical = this.settings.destinations.some(
+        (d) => d.enabled && d.orientation === 'vertical' && (startedIds.size === 0 || startedIds.has(d.id))
+      )
+      this.liveVertical = vertical
+      this.compositor.setStudio({
+        ...this.settings.studio,
+        dualOutputEnabled: this.settings.studio.dualOutputEnabled || vertical
+      })
       this.outputs.setStreaming(true, vertical)
       this.patch({ live: true, liveStartedAt: Date.now() })
       return null
     } finally {
-      this.patch({ goingLive: false })
+      if (op === this.liveOpGen) {
+        this.patch({ goingLive: false })
+      }
     }
   }
 
   async stopLive(): Promise<void> {
+    this.liveOpGen++
+    this.liveVertical = false
     this.outputs.setStreaming(false, false)
-    const status = await window.api.multistream.stop()
+    const status = await ensureBridge().multistream.stop()
     this.compositor.setStudio(this.settings.studio)
-    this.patch({ live: false, liveStartedAt: null, multistream: status })
+    this.patch({ live: false, goingLive: false, liveStartedAt: null, multistream: status })
   }
 
   async toggleRecording(): Promise<string | null> {
+    const api = ensureBridge()
     if (this.state.recorder.recording) {
-      const status = await window.api.recorder.stop()
+      const status = await api.recorder.stop()
       this.outputs.setRecording(false)
       this.patch({ recorder: status })
       return null
     }
     await this.mixer.resume()
     this.outputs.setRecording(true)
-    const res = await window.api.recorder.start()
+    const res = await api.recorder.start()
     if (!res.ok) {
       this.outputs.setRecording(false)
       return res.error ?? 'Não foi possível gravar.'
@@ -341,52 +417,95 @@ export class StudioEngine {
   }
 
   async saveReplay(): Promise<{ ok: boolean; message: string; path?: string }> {
-    const res = await window.api.recorder.saveReplay()
+    const res = await ensureBridge().recorder.saveReplay()
     if (res.ok && res.path) {
       return { ok: true, message: `Replay salvo: ${res.path.split(/[\\/]/).pop()}`, path: res.path }
     }
     return {
       ok: false,
-      message: this.state.live || this.state.recorder.recording
-        ? (res.error ?? 'Não deu para salvar o replay.')
-        : 'O replay só guarda os últimos segundos enquanto você está ao vivo ou gravando.'
+      message:
+        this.state.live || this.state.recorder.recording
+          ? (res.error ?? 'Não deu para salvar o replay.')
+          : 'O replay só guarda os últimos segundos enquanto você está ao vivo ou gravando.'
     }
   }
 
   private async pollStatus(): Promise<void> {
     try {
+      const api = ensureBridge()
       const [recorder, multistream] = await Promise.all([
-        window.api.recorder.status(),
-        window.api.multistream.status()
+        api.recorder.status(),
+        api.multistream.status()
       ])
-      const patch: Partial<EngineState> = { recorder, multistream }
-      // Todos os destinos caíram: a live acabou de fato, mesmo sem clicar em parar.
+      studioStore.setLiveStatus(multistream)
+      studioStore.setRecorderStatus(recorder)
+
+      const activeBitrate = this.settings.destinations
+        .filter((d) => d.enabled)
+        .reduce((acc, d) => acc + d.bitrateKbps, 0)
+      const micMutedSpeaking = Object.values(studioStore.audioLevelsRef).some((l) => l.mutedSpeech)
+      const telemetry = this.compositor.getTelemetry(
+        multistream.encoder || 'libx264',
+        multistream.active ? activeBitrate : 0,
+        micMutedSpeaking,
+        recorder.replayBufferedSeconds
+      )
+
+      let nextLive = this.state.live
+      let nextLiveStartedAt = this.state.liveStartedAt
       if (this.state.live && !multistream.active) {
+        this.liveVertical = false
         this.outputs.setStreaming(false, false)
-        patch.live = false
-        patch.liveStartedAt = null
+        this.compositor.setStudio(this.settings.studio)
+        nextLive = false
+        nextLiveStartedAt = null
       }
-      this.patch(patch)
+
+      // Só notifica assinantes React se algum valor relevante realmente mudou (elimina re-render 1Hz em idle).
+      const sig = JSON.stringify({
+        live: nextLive,
+        rec: recorder,
+        ms: multistream,
+        fps: Math.round(telemetry.compositorFps),
+        drop: telemetry.droppedFrames,
+        muteSpeak: telemetry.micMutedSpeaking
+      })
+      if (sig !== this.lastStatusSignature) {
+        this.lastStatusSignature = sig
+        this.patch({
+          live: nextLive,
+          liveStartedAt: nextLiveStartedAt,
+          recorder,
+          multistream,
+          telemetry
+        })
+      } else {
+        this.state.telemetry = telemetry
+      }
     } catch {
       /* janela fechando */
     }
   }
 
-  /** Vídeo + áudio do programa, para o compartilhamento na rede local. */
+  /** Clona tracks para que `HostSession` nunca altere constraints do track mestre do compositor. */
   lanStream(): MediaStream {
     void this.mixer.resume()
-    return new MediaStream([this.compositor.programStream.getVideoTracks()[0], this.mixer.outputTrack])
+    const vTrack = this.compositor.programStream.getVideoTracks()[0]
+    const aTrack = this.mixer.outputTrack
+    return new MediaStream([vTrack.clone(), aTrack.clone()])
   }
 
   dispose(): void {
     window.removeEventListener('pointerdown', this.unlockAudio)
     window.removeEventListener('keydown', this.unlockAudio)
+    window.removeEventListener('beforeunload', this.onBeforeUnload)
     window.clearInterval(this.statusTimer)
+    if (this.transitionKeepAliveTimer !== null) window.clearTimeout(this.transitionKeepAliveTimer)
     this.outputs.dispose()
     this.compositor.dispose()
     this.captures.dispose()
     this.browsers.dispose()
     this.mixer.dispose()
-    window.api.browserSources.sync([])
+    ensureBridge().browserSources.sync([])
   }
 }

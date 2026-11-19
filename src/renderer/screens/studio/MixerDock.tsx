@@ -12,9 +12,11 @@ import {
   IconPlus,
   IconSliders,
   IconVolume,
-  IconVolumeOff
+  IconVolumeOff,
+  IconWifi
 } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
+import { studioStore } from '@/studio/StudioStore'
 import { addItem, audioItem, editingScene, removeAudioChannelItems, sceneMics } from '@/studio/scenes'
 import { AppPickerModal, AudioPropertiesModal } from './AudioProperties'
 
@@ -38,8 +40,8 @@ interface MeterEls {
 }
 
 /**
- * Medidores atualizados direto no DOM, num laço só: 20 re-renders por segundo
- * do React por canal seriam desperdício.
+ * Medidores atualizados direto no DOM, num laço só (25 Hz), priorizando os
+ * samples nativos do motor Rust (`studioStore.audioLevelsRef`) com fallback local.
  */
 export function useMeterLoop(): (id: string, kind: 'fill' | 'peak', el: HTMLDivElement | null) => void {
   const { engine } = useStudio()
@@ -51,11 +53,11 @@ export function useMeterLoop(): (id: string, kind: 'fill' | 'peak', el: HTMLDivE
       raf = requestAnimationFrame(loop)
       if (t - last < 40) return
       last = t
-      const levels = engine.readLevels()
+      const rustLevels = studioStore.audioLevelsRef
+      const localLevels = engine.readLevels()
       for (const [key, m] of els.current) {
-        // "canal|lugar": o mesmo canal pode ter medidor no dock e na janela de filtros.
-        const lv = levels[key.split('|')[0]]
-        const db = lv ? lv.peakDb : MIN_DB
+        const chId = key.split('|')[0]
+        const db = rustLevels[chId]?.peakDb ?? localLevels[chId]?.peakDb ?? MIN_DB
         if (m.fill) m.fill.style.clipPath = `inset(0 ${(1 - meterPct(db)) * 100}% 0 0)`
         // Pico segura 1,2 s e depois cai devagar.
         if (db >= m.hold || t - m.holdAt > 1200) {
@@ -72,7 +74,7 @@ export function useMeterLoop(): (id: string, kind: 'fill' | 'peak', el: HTMLDivE
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [engine])
-  // Função estável: ref callback nova a cada render zeraria o pico segurado.
+
   const [register] = useState(() => (id: string, kind: 'fill' | 'peak', el: HTMLDivElement | null): void => {
     const m = els.current.get(id) ?? { fill: null, peak: null, hold: MIN_DB, holdAt: 0 }
     m[kind] = el
@@ -91,10 +93,23 @@ export function Meter({
   register: ReturnType<typeof useMeterLoop>
   muted?: boolean
 }): React.JSX.Element {
+  const fillRef = useRef<HTMLDivElement>(null)
+  const peakRef = useRef<HTMLDivElement>(null)
+
+  // Registra em useEffect (e não em inline ref callback) para não zerar o peak-hold a cada render!
+  useEffect(() => {
+    register(id, 'fill', fillRef.current)
+    register(id, 'peak', peakRef.current)
+    return () => {
+      register(id, 'fill', null)
+      register(id, 'peak', null)
+    }
+  }, [id, register])
+
   return (
     <div className={`vu ${muted ? 'is-muted' : ''}`}>
-      <div className="vu-fill" ref={(el) => register(id, 'fill', el)} />
-      <div className="vu-peak" ref={(el) => register(id, 'peak', el)} />
+      <div className="vu-fill" ref={fillRef} />
+      <div className="vu-peak" ref={peakRef} />
       <div className="vu-ticks" aria-hidden="true">
         {[-48, -36, -24, -12, -6].map((db) => (
           <i key={db} style={{ left: `${meterPct(db) * 100}%` }} />
@@ -107,6 +122,7 @@ export function Meter({
 export function KindIcon({ kind, size = 15 }: { kind: AudioChannelKind; size?: number }): React.JSX.Element {
   if (kind === 'mic') return <IconMic size={size} />
   if (kind === 'app') return <IconApp size={size} />
+  if (kind === 'party_voice') return <IconWifi size={size} />
   return <IconMonitor size={size} />
 }
 
@@ -182,7 +198,10 @@ function Strip({
           {ch.name}
         </span>
         {ch.monitor !== 'off' && (
-          <span className="strip-flag" title={ch.monitor === 'monitor-only' ? 'Só no fone (não vai para a live)' : 'Você ouve no fone'}>
+          <span
+            className="strip-flag"
+            title={ch.monitor === 'monitor-only' ? 'Só no fone (não vai para a live)' : 'Você ouve no fone'}
+          >
             <IconHeadphones size={12} />
           </span>
         )}
@@ -217,7 +236,6 @@ function Strip({
           style={{ ['--fill' as string]: `${dbToFader(ch.volumeDb) * 100}%` }}
           onChange={(e) => {
             const db = faderToDb(Number(e.target.value))
-            // Encaixa em 0 dB: é onde quase todo mundo quer voltar.
             onChange({ volumeDb: Math.abs(db) < 0.6 ? 0 : Math.round(db * 10) / 10 })
           }}
           onDoubleClick={() => onChange({ volumeDb: 0 })}
@@ -237,6 +255,8 @@ export function MixerDock(): React.JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
   const [pickingApp, setPickingApp] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
 
   useEffect(() => {
     if (!menu) return
@@ -251,18 +271,24 @@ export function MixerDock(): React.JSX.Element {
   const patch = (id: string, p: Partial<AudioChannel>): void =>
     setChannels(mixer.channels.map((c) => (c.id === id ? { ...c, ...p } : c)))
 
-  // Microfone é por cena: o mixer mostra se a cena no ar (programa) liga cada um.
-  // No modo estúdio, a edição da prévia não esconde o fader do microfone que está ao vivo no ar.
-  const programScene = settings.scenes.scenes.find((s) => s.id === settings.scenes.activeSceneId) ?? settings.scenes.scenes[0]
+  const programScene =
+    settings.scenes.scenes.find((s) => s.id === settings.scenes.activeSceneId) ?? settings.scenes.scenes[0]
   const targetScene = settings.scenes.studioMode ? programScene : editingScene(settings.scenes)
   const micsHere = sceneMics(targetScene, false)
   const hasPerSceneMics = settings.scenes.scenes.some((s) => s.items.some((it) => it.type === 'audio_input'))
   const isOffScene = (ch: AudioChannel): boolean => ch.kind === 'mic' && hasPerSceneMics && !micsHere.has(ch.id)
 
   const add = (ch: AudioChannel): void => {
-    // Microfone novo já entra na cena ativa; nas outras, o usuário adiciona.
-    const scenes = ch.kind === 'mic' && targetScene ? addItem(settings.scenes, targetScene.id, audioItem(ch)) : settings.scenes
-    update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] }, scenes })
+    const scenes =
+      ch.kind === 'mic' && targetScene ? addItem(settings.scenes, targetScene.id, audioItem(ch)) : settings.scenes
+    update({
+      audioMixer: {
+        ...mixer,
+        channels: [...mixer.channels, ch],
+        ...(ch.kind === 'party_voice' ? { partyVoiceEnabled: true } : {})
+      },
+      scenes
+    })
     setMenu(false)
     setEditing(ch.id)
   }
@@ -274,6 +300,7 @@ export function MixerDock(): React.JSX.Element {
   }
 
   const hasDesktop = mixer.channels.some((c) => c.kind === 'desktop')
+  const hasPartyVoice = mixer.channels.some((c) => c.kind === 'party_voice')
   const editingCh = mixer.channels.find((c) => c.id === editing) ?? null
 
   return (
@@ -298,7 +325,13 @@ export function MixerDock(): React.JSX.Element {
               onOpen={() => setEditing(ch.id)}
             />
           ) : (
-            <Strip key={ch.id} ch={ch} register={register} onChange={(p) => patch(ch.id, p)} onOpen={() => setEditing(ch.id)} />
+            <Strip
+              key={ch.id}
+              ch={ch}
+              register={register}
+              onChange={(p) => patch(ch.id, p)}
+              onOpen={() => setEditing(ch.id)}
+            />
           )
         )}
       </div>
@@ -306,10 +339,14 @@ export function MixerDock(): React.JSX.Element {
         <IconButton label="Adicionar fonte de áudio" active={menu} onClick={() => setMenu((m) => !m)}>
           <IconPlus size={16} />
         </IconButton>
-        <span className="dock-tools-hint">Mic, áudio de um programa, PC</span>
+        <span className="dock-tools-hint">Mic, programa, PC, Party Voice</span>
         {menu && (
           <div className="add-menu" role="menu">
-            <button className="add-menu-item" role="menuitem" onClick={() => add(makeChannel('mic', { name: 'Microfone' }))}>
+            <button
+              className="add-menu-item"
+              role="menuitem"
+              onClick={() => add(makeChannel('mic', { name: 'Microfone' }))}
+            >
               <IconMic size={16} />
               <span className="add-menu-text">
                 <span>Microfone / entrada</span>
@@ -343,6 +380,19 @@ export function MixerDock(): React.JSX.Element {
                 </span>
               </button>
             )}
+            {!hasPartyVoice && (
+              <button
+                className="add-menu-item"
+                role="menuitem"
+                onClick={() => add(makeChannel('party_voice', { id: 'party_voice', name: 'Party Voice (LAN)' }))}
+              >
+                <IconWifi size={16} />
+                <span className="add-menu-text">
+                  <span>Party Voice (Rede local)</span>
+                  <small>Retorno de voz dos espectadores conectados na LAN</small>
+                </span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -352,7 +402,9 @@ export function MixerDock(): React.JSX.Element {
         onClose={() => setPickingApp(false)}
         onPick={(app) => {
           setPickingApp(false)
-          if (mixer.channels.some((c) => c.kind === 'app' && c.appExe?.toLowerCase() === app.exe.toLowerCase())) {
+          if (
+            mixer.channels.some((c) => c.kind === 'app' && c.appExe?.toLowerCase() === app.exe.toLowerCase())
+          ) {
             toast(`${app.title} já está no mixer`)
             return
           }
@@ -370,8 +422,8 @@ export function MixerDock(): React.JSX.Element {
           onRemove={() => {
             const removed = editingCh
             const index = mixer.channels.findIndex((c) => c.id === removed.id)
-            setEditing(null)
             const scenesBefore = settings.scenes
+            setEditing(null)
             update({
               audioMixer: { ...mixer, channels: mixer.channels.filter((c) => c.id !== removed.id) },
               scenes: removeAudioChannelItems(settings.scenes, removed.id)
@@ -379,9 +431,10 @@ export function MixerDock(): React.JSX.Element {
             toast(`“${removed.name}” removido do mixer`, 'info', {
               label: 'Desfazer',
               run: () => {
-                const list = [...settings.audioMixer.channels.filter((c) => c.id !== removed.id)]
-                list.splice(index, 0, removed)
-                update({ audioMixer: { ...settings.audioMixer, channels: list }, scenes: scenesBefore })
+                const curMixer = settingsRef.current.audioMixer
+                const list = [...curMixer.channels.filter((c) => c.id !== removed.id)]
+                list.splice(Math.min(index, list.length), 0, removed)
+                update({ audioMixer: { ...curMixer, channels: list }, scenes: scenesBefore })
               }
             })
           }}

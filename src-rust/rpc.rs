@@ -27,9 +27,9 @@ use crate::multichat::MultiChatHub;
 use crate::multistream::MultistreamEngine;
 use crate::net;
 use crate::protocol::{
-    AppSettings, CanvasOrientation, Destination, HostToViewer, KitConfig, LiveInfo, MultiChatEvent,
-    PlatformId, SourceKind, TelemetryStats, TransitionType, TwitchLoginState, ViewerToHost,
-    MAX_VIEWERS, RUST_RPC_PORT, SIGNALING_PORT,
+    AppSettings, CanvasOrientation, Destination, HostToViewer, HotkeyBindings, KitConfig, LiveInfo,
+    MultiChatEvent, PlatformId, SourceKind, TelemetryStats, TransitionType, TwitchLoginState,
+    ViewerToHost, MAX_VIEWERS, RUST_RPC_PORT, SIGNALING_PORT,
 };
 use crate::recorder::{remux_to_mp4, RecorderEngine};
 use crate::rtc_host::{apply_codec_preference, prefer_opus_stereo, RtcHostState};
@@ -239,7 +239,7 @@ impl AppEngine {
             let hk = HotkeyManager::spawn(initial.hotkeys.clone(), move |action| {
                 let _ = evt_hk.send(RpcEvent {
                     event: "hotkey:triggered".to_string(),
-                    payload: json!({ "action": action.as_str() }),
+                    payload: Value::String(action.as_str().to_string()),
                 });
             });
             *engine.hotkeys.lock().unwrap_or_else(|e| e.into_inner()) = Some(hk);
@@ -257,6 +257,7 @@ impl AppEngine {
                         Ok(ev) => {
                             if let Some(eng) = eng_chat.upgrade() {
                                 eng.emit_serializable("chat:event", &ev);
+                                eng.emit_serializable("multichat:event", &ev);
                             } else {
                                 break;
                             }
@@ -400,6 +401,29 @@ impl AppEngine {
     }
 
     pub async fn handle_binary(&self, frame: &[u8]) {
+        // Suporta o cabeçalho de 8 bytes do bridge.ts: [0x50, 0x43, kind, channel, len_le32, ...payload]
+        if frame.len() >= 8 && frame[0] == 0x50 && frame[1] == 0x43 {
+            let kind = frame[2];
+            let channel = frame[3];
+            let payload = &frame[8..];
+            match kind {
+                1 => {
+                    let orient = if channel == 1 {
+                        CanvasOrientation::Vertical
+                    } else {
+                        CanvasOrientation::Horizontal
+                    };
+                    self.multistream.lock().await.push_chunk(orient, payload);
+                }
+                2 => {
+                    let mut rec = self.recorder.lock().unwrap_or_else(|e| e.into_inner());
+                    rec.push_media_chunk(payload);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let Some((&tag, payload)) = frame.split_first() else {
             return;
         };
@@ -442,7 +466,7 @@ impl AppEngine {
 
     pub async fn handle_command(self: &Arc<Self>, method: &str, params: Value) -> Value {
         match method {
-            "app.info" => {
+            "app.info" | "app_info" => {
                 let host = hostname::get()
                     .ok()
                     .and_then(|h| h.into_string().ok())
@@ -456,17 +480,25 @@ impl AppEngine {
                     "name": "PrismCast Studio",
                     "version": env!("CARGO_PKG_VERSION"),
                     "hostname": host,
+                    "isPackaged": !cfg!(debug_assertions),
                     "engine": "rust-native",
                     "hardwareEncoder": encoder,
                     "ffmpegFound": ffmpeg_found,
                 })
             }
+            "app_minimize" | "app_toggle_maximize" | "app_close" | "app_always_on_top"
+            | "app_open_external" | "app_show_in_folder" | "chat_open_popout"
+            | "chat_close_popout" => json!({ "ok": true }),
+            "chat_is_popout_open" => Value::Bool(false),
 
             // ------------------------------------------------ Settings & Sistema
-            "settings.get" => serde_json::to_value(self.store.snapshot()).unwrap_or(Value::Null),
-            "settings.set" => {
+            "settings.get" | "settings_get" => {
+                serde_json::to_value(self.store.snapshot()).unwrap_or(Value::Null)
+            }
+            "settings.set" | "settings_set" => {
+                let patch = params.get("patch").cloned().unwrap_or(params);
                 let prev = self.store.snapshot();
-                let next = self.store.apply_patch(params);
+                let next = self.store.apply_patch(patch);
 
                 if next.preferred_interface != prev.preferred_interface {
                     self.discovery
@@ -570,8 +602,12 @@ impl AppEngine {
                 self.emit("settings:changed", val.clone());
                 val
             }
-            "hotkeys.conflicts" => {
-                let bindings = self.store.snapshot().hotkeys;
+            "hotkeys.conflicts" | "hotkeys_conflicts" => {
+                let bindings: HotkeyBindings = params
+                    .get("bindings")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .or_else(|| serde_json::from_value(params).ok())
+                    .unwrap_or_else(|| self.store.snapshot().hotkeys);
                 let conflicts: Vec<Value> = detect_conflicts(&bindings)
                     .into_iter()
                     .map(|c| {
@@ -583,13 +619,13 @@ impl AppEngine {
                     .collect();
                 json!(conflicts)
             }
-            "net.interfaces" => {
+            "net.interfaces" | "net_interfaces" => {
                 let list = tokio::task::spawn_blocking(net::list_interfaces)
                     .await
                     .unwrap_or_default();
                 serde_json::to_value(list).unwrap_or(json!([]))
             }
-            "net.refreshInterfaces" => {
+            "net.refreshInterfaces" | "net_refresh_interfaces" => {
                 let list = tokio::task::spawn_blocking(|| {
                     net::invalidate_cache();
                     net::list_interfaces()
@@ -598,14 +634,14 @@ impl AppEngine {
                 .unwrap_or_default();
                 serde_json::to_value(list).unwrap_or(json!([]))
             }
-            "firewall.status" => {
+            "firewall.status" | "firewall_status" => {
                 let st = tokio::task::spawn_blocking(firewall::check_status).await;
                 match st {
                     Ok(v) => serde_json::to_value(v).unwrap_or(Value::Null),
                     Err(_) => Value::Null,
                 }
             }
-            "firewall.authorize" => {
+            "firewall.authorize" | "firewall_authorize" => {
                 let res = tokio::task::spawn_blocking(firewall::authorize).await;
                 match res {
                     Ok(Ok(())) => json!({ "ok": true }),
@@ -615,7 +651,7 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ Kit de Widgets (sem JS/vm)
-            "kit.load" => {
+            "kit.load" | "kit_load" => {
                 let path = params.get("path").and_then(|v| v.as_str()).map(str::to_string);
                 let res = tokio::task::spawn_blocking(move || kit::load_kit(path.as_deref()))
                     .await
@@ -623,7 +659,36 @@ impl AppEngine {
                     .flatten();
                 serde_json::to_value(res).unwrap_or(Value::Null)
             }
-            "kit.readConfig" => {
+            "kit_pick_folder" | "files_pick_image" | "files_pick_html" => Value::Null,
+            "files_read_image" | "files.readImage" => {
+                let path = params.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if path.is_empty() {
+                    return Value::Null;
+                }
+                let p = PathBuf::from(path);
+                let Ok(bytes) = std::fs::read(&p) else {
+                    return Value::Null;
+                };
+                if bytes.len() > 24 * 1024 * 1024 {
+                    return Value::Null;
+                }
+                let ext = p
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("png")
+                    .to_ascii_lowercase();
+                let mime = match ext.as_str() {
+                    "jpg" | "jpeg" => "image/jpeg",
+                    "webp" => "image/webp",
+                    "gif" => "image/gif",
+                    "svg" => "image/svg+xml",
+                    _ => "image/png",
+                };
+                use base64::Engine as _;
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                Value::String(format!("data:{mime};base64,{b64}"))
+            }
+            "kit.readConfig" | "kit_read_config" => {
                 let path = params
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -635,7 +700,7 @@ impl AppEngine {
                     .flatten();
                 serde_json::to_value(res).unwrap_or(Value::Null)
             }
-            "kit.writeConfig" => {
+            "kit.writeConfig" | "kit_write_config" => {
                 let path = params
                     .get("path")
                     .and_then(|v| v.as_str())
@@ -653,7 +718,7 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ Destinos & Twitch OAuth/Helix
-            "destinations.setKey" => {
+            "destinations.setKey" | "dest_set_key" => {
                 let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let raw_key = params.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let settings = self.store.snapshot();
@@ -685,7 +750,7 @@ impl AppEngine {
                     }
                 }
             }
-            "destinations.unlink" => {
+            "destinations.unlink" | "dest_unlink" => {
                 let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let _ = self.store.set_secret(&stream_key_secret(id), None);
                 let _ = self.store.set_secret(&twitch_refresh_secret(id), None);
@@ -698,7 +763,7 @@ impl AppEngine {
                 self.emit_serializable("settings:changed", &next);
                 json!({ "ok": true })
             }
-            "destinations.twitchLogin" => {
+            "destinations.twitchLogin" | "dest_twitch_login" => {
                 let id = params
                     .get("id")
                     .and_then(|v| v.as_str())
@@ -736,12 +801,12 @@ impl AppEngine {
                 });
                 json!({ "ok": true })
             }
-            "destinations.twitchCancel" => {
+            "destinations.twitchCancel" | "dest_twitch_cancel" => {
                 self.twitch_login.cancel_device_login().await;
                 self.emit_serializable("dest:twitch-state", &TwitchLoginState::Idle);
                 json!({ "ok": true })
             }
-            "twitch.capabilities" => {
+            "twitch.capabilities" | "twitch_capabilities" => {
                 let settings = self.store.snapshot();
                 let caps = TwitchApi::capabilities(
                     self.linked_twitch(&settings)
@@ -750,7 +815,7 @@ impl AppEngine {
                 );
                 serde_json::to_value(caps).unwrap_or(Value::Null)
             }
-            "twitch.getChannelInfo" => {
+            "twitch.getChannelInfo" | "twitch_get_info" => {
                 let settings = self.store.snapshot();
                 let Some(dest) = self.linked_twitch(&settings) else {
                     return Value::Null;
@@ -766,7 +831,7 @@ impl AppEngine {
                     .flatten();
                 serde_json::to_value(info).unwrap_or(Value::Null)
             }
-            "twitch.updateChannelInfo" => {
+            "twitch.updateChannelInfo" | "twitch_update_info" => {
                 let settings = self.store.snapshot();
                 let Some(dest) = self.linked_twitch(&settings) else {
                     return json!({ "ok": false, "error": "Entre com a Twitch em Destinos.", "needsRelogin": true });
@@ -774,14 +839,15 @@ impl AppEngine {
                 let Some(acc) = dest.account.as_ref() else {
                     return json!({ "ok": false, "error": "Entre com a Twitch em Destinos.", "needsRelogin": true });
                 };
-                let info = serde_json::from_value::<LiveInfo>(params).unwrap_or_default();
+                let info_val = params.get("info").cloned().unwrap_or(params);
+                let info = serde_json::from_value::<LiveInfo>(info_val).unwrap_or_default();
                 let res = self
                     .twitch_api
                     .update_channel_info(&dest.id, acc, &info, &settings.twitch_client_id)
                     .await;
                 serde_json::to_value(res).unwrap_or(Value::Null)
             }
-            "twitch.searchCategories" => {
+            "twitch.searchCategories" | "twitch_search_categories" => {
                 let query = params.get("query").and_then(|v| v.as_str()).unwrap_or("");
                 let settings = self.store.snapshot();
                 let Some(dest) = self.linked_twitch(&settings) else {
@@ -793,7 +859,7 @@ impl AppEngine {
                     .await;
                 serde_json::to_value(cats).unwrap_or(json!([]))
             }
-            "twitch.sendChat" => {
+            "twitch.sendChat" | "twitch_send_chat" => {
                 let text = params.get("text").and_then(|v| v.as_str()).unwrap_or("");
                 let target_channel = params
                     .get("channel")
@@ -819,15 +885,15 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ Multichat
-            "chat.multichatStatus" => {
+            "chat.multichatStatus" | "multichat_status" => {
                 let st = self.multichat.status().await;
                 serde_json::to_value(st).unwrap_or(json!([]))
             }
-            "chat.multichatSnapshot" => {
+            "chat.multichatSnapshot" | "multichat_snapshot" => {
                 let msgs = self.multichat.snapshot_messages().await;
                 serde_json::to_value(msgs).unwrap_or(json!([]))
             }
-            "chat.reconnectMultichat" => {
+            "chat.reconnectMultichat" | "multichat_reconnect" => {
                 let settings = self.store.snapshot();
                 let linked_login = self
                     .linked_twitch(&settings)
@@ -840,13 +906,45 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ Áudio nativo
-            "audio.listApps" => {
+            "audio.listApps" | "audio_list_apps" => {
                 let apps = tokio::task::spawn_blocking(AudioMixerEngine::list_audio_apps)
                     .await
                     .unwrap_or_default();
                 serde_json::to_value(apps).unwrap_or(json!([]))
             }
-            "audio.listDevices" => {
+            "audio.appForWindow" | "audio_app_for_window" => {
+                let src_id = params
+                    .get("captureId")
+                    .or_else(|| params.get("sourceId"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let app = tokio::task::spawn_blocking(move || {
+                    let apps = AudioMixerEngine::list_audio_apps();
+                    apps.into_iter().find(|a| {
+                        src_id.contains(&a.pid.to_string())
+                            || (a.hwnd != 0 && src_id.contains(&a.hwnd.to_string()))
+                            || (!a.exe.is_empty()
+                                && src_id
+                                    .to_ascii_lowercase()
+                                    .contains(&a.exe.to_ascii_lowercase()))
+                    })
+                })
+                .await
+                .ok()
+                .flatten();
+                serde_json::to_value(app).unwrap_or(Value::Null)
+            }
+            "audio.sync" | "audio_sync" => {
+                let st = self
+                    .audio_mixer
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .statuses();
+                self.emit_serializable("audio:status", &st);
+                json!({ "ok": true })
+            }
+            "audio.listDevices" | "audio_list_devices" => {
                 let devs = tokio::task::spawn_blocking(AudioMixerEngine::list_devices)
                     .await
                     .unwrap_or_default();
@@ -863,7 +961,7 @@ impl AppEngine {
                     .collect();
                 json!(list)
             }
-            "audio.levels" => {
+            "audio.levels" | "audio_levels" => {
                 let levels = self
                     .audio_mixer
                     .lock()
@@ -871,7 +969,7 @@ impl AppEngine {
                     .read_levels();
                 serde_json::to_value(levels).unwrap_or(json!([]))
             }
-            "audio.statuses" => {
+            "audio.statuses" | "audio_statuses" => {
                 let st = self
                     .audio_mixer
                     .lock()
@@ -879,7 +977,7 @@ impl AppEngine {
                     .statuses();
                 serde_json::to_value(st).unwrap_or(json!([]))
             }
-            "audio.setSceneMics" => {
+            "audio.setSceneMics" | "audio_set_scene_mics" => {
                 let live: Vec<String> = params
                     .get("live")
                     .and_then(|v| serde_json::from_value(v.clone()).ok())
@@ -896,27 +994,28 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ LAN P2P Host / Discovery / Viewer
-            "host.start" => {
+            "host.start" | "host_start" => {
+                let opts = params.get("opts").unwrap_or(&params);
                 let settings = self.store.snapshot();
-                let source_name = params
+                let source_name = opts
                     .get("sourceName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Tela Principal")
                     .to_string();
-                let source_kind = match params.get("sourceKind").and_then(|v| v.as_str()) {
+                let source_kind = match opts.get("sourceKind").and_then(|v| v.as_str()) {
                     Some("window") => SourceKind::Window,
                     _ => SourceKind::Screen,
                 };
-                let host_name = params
+                let host_name = opts
                     .get("hostName")
                     .and_then(|v| v.as_str())
                     .unwrap_or(&settings.host_name)
                     .to_string();
-                let require_pin = params
+                let require_pin = opts
                     .get("requirePin")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(settings.require_pin);
-                let max_viewers = (params
+                let max_viewers = (opts
                     .get("maxViewers")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(MAX_VIEWERS as u64) as usize)
@@ -1013,12 +1112,12 @@ impl AppEngine {
                     "pin": pin,
                 })
             }
-            "host.stop" => {
+            "host.stop" | "host_stop" => {
                 self.discovery.lock().await.stop_announcing().await;
                 self.signaling.lock().await.stop().await;
                 json!({ "ok": true })
             }
-            "host.kick" => {
+            "host.kick" | "host_kick" => {
                 if let Some(vid) = params.get("viewerId").and_then(|v| v.as_str()) {
                     let remaining = self.signaling.lock().await.kick(vid);
                     if let Some(list) = remaining {
@@ -1030,7 +1129,7 @@ impl AppEngine {
                 }
                 json!({ "ok": true })
             }
-            "host.send" => {
+            "host.send" | "host_send" => {
                 if let (Some(vid), Some(msg_val)) = (
                     params.get("viewerId").and_then(|v| v.as_str()),
                     params.get("msg"),
@@ -1041,7 +1140,7 @@ impl AppEngine {
                 }
                 json!({ "ok": true })
             }
-            "host.broadcast" => {
+            "host.broadcast" | "host_broadcast" => {
                 if let Some(msg_val) = params.get("msg") {
                     if let Ok(msg) = serde_json::from_value::<HostToViewer>(msg_val.clone()) {
                         self.signaling.lock().await.broadcast(&msg);
@@ -1049,7 +1148,7 @@ impl AppEngine {
                 }
                 json!({ "ok": true })
             }
-            "host.updateSource" => {
+            "host.updateSource" | "host_update_source" => {
                 let source_name = params
                     .get("sourceName")
                     .and_then(|v| v.as_str())
@@ -1069,7 +1168,19 @@ impl AppEngine {
                     .patch_announce(None, Some(source_name), Some(source_kind));
                 json!({ "ok": true })
             }
-            "discovery.start" => {
+            "host.setViewerCount" | "host_set_viewer_count" => {
+                let count = params
+                    .get("n")
+                    .or_else(|| params.get("count"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as usize;
+                self.discovery
+                    .lock()
+                    .await
+                    .patch_announce(Some(count), None, None);
+                json!({ "ok": true })
+            }
+            "discovery.start" | "discovery_start" => {
                 let eng_hosts = self.clone();
                 let pref = self.store.snapshot().preferred_interface;
                 let mut disc = self.discovery.lock().await;
@@ -1085,27 +1196,28 @@ impl AppEngine {
                 }
                 json!({ "ok": true })
             }
-            "discovery.stop" => {
+            "discovery.stop" | "discovery_stop" => {
                 self.discovery.lock().await.stop_browsing().await;
                 json!({ "ok": true })
             }
-            "discovery.refresh" => {
+            "discovery.refresh" | "discovery_refresh" => {
                 self.discovery.lock().await.refresh().await;
                 json!({ "ok": true })
             }
-            "viewer.connect" => {
-                let ip = params
+            "viewer.connect" | "viewer_connect" => {
+                let opts = params.get("opts").unwrap_or(&params);
+                let ip = opts
                     .get("ip")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let port = params.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
-                let name = params
+                let port = opts.get("port").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+                let name = opts
                     .get("name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("Espectador")
                     .to_string();
-                let pin = params
+                let pin = opts
                     .get("pin")
                     .and_then(|v| v.as_str())
                     .map(str::to_string);
@@ -1164,30 +1276,31 @@ impl AppEngine {
                     }),
                 }
             }
-            "viewer.send" => {
-                if let Ok(msg) = serde_json::from_value::<ViewerToHost>(params) {
+            "viewer.send" | "viewer_send" => {
+                let msg_val = params.get("msg").cloned().unwrap_or(params);
+                if let Ok(msg) = serde_json::from_value::<ViewerToHost>(msg_val) {
                     self.viewer_client.lock().await.send(&msg);
                 }
                 json!({ "ok": true })
             }
-            "viewer.disconnect" => {
+            "viewer.disconnect" | "viewer_disconnect" => {
                 self.viewer_client.lock().await.disconnect();
                 json!({ "ok": true })
             }
 
             // ------------------------------------------------ Multistream
-            "multistream.status" => {
+            "multistream.status" | "multistream_status" => {
                 let st = self.multistream.lock().await.engine_status();
                 serde_json::to_value(st).unwrap_or(Value::Null)
             }
-            "multistream.probe" => {
+            "multistream.probe" | "multistream_probe" => {
                 let settings = self.store.snapshot();
                 let mut ms = self.multistream.lock().await;
                 ms.set_ffmpeg_path(settings.ffmpeg_path.clone());
                 let res = ms.refresh_probe().await;
                 json!({ "ffmpegFound": res.ffmpeg_found, "encoder": res.encoder })
             }
-            "multistream.start" => {
+            "multistream.start" | "multistream_start" => {
                 let settings = self.store.snapshot();
                 let fps = params
                     .get("fps")
@@ -1217,15 +1330,29 @@ impl AppEngine {
                     }
                 }
             }
-            "multistream.stop" => {
+            "multistream.pushChunk" | "multistream_push_chunk" => {
+                let orient = match params.get("orientation").and_then(|v| v.as_str()) {
+                    Some("vertical") => CanvasOrientation::Vertical,
+                    _ => CanvasOrientation::Horizontal,
+                };
+                if let Some(arr) = params.get("chunk").and_then(|v| v.as_array()) {
+                    let bytes: Vec<u8> = arr
+                        .iter()
+                        .filter_map(|x| x.as_u64().map(|n| n as u8))
+                        .collect();
+                    self.multistream.lock().await.push_chunk(orient, &bytes);
+                }
+                json!({ "ok": true })
+            }
+            "multistream.stop" | "multistream_stop" => {
                 let mut ms = self.multistream.lock().await;
                 let _ = ms.stop_async().await;
                 let status = ms.engine_status();
-                json!({ "ok": true, "status": status })
+                serde_json::to_value(status).unwrap_or(Value::Null)
             }
 
             // ------------------------------------------------ Recorder & Replay Buffer (sem deadlock!)
-            "recorder.status" => {
+            "recorder.status" | "recorder_status" => {
                 let st = self
                     .recorder
                     .lock()
@@ -1233,7 +1360,7 @@ impl AppEngine {
                     .status();
                 serde_json::to_value(st).unwrap_or(Value::Null)
             }
-            "recorder.start" => {
+            "recorder.start" | "recorder_start" => {
                 let res = self
                     .recorder
                     .lock()
@@ -1244,7 +1371,7 @@ impl AppEngine {
                     Err(error) => json!({ "ok": false, "error": error }),
                 }
             }
-            "recorder.stop" => {
+            "recorder.stop" | "recorder_stop" => {
                 let (status, finished_path) = self
                     .recorder
                     .lock()
@@ -1264,9 +1391,9 @@ impl AppEngine {
                         eng.emit_serializable("recorder:status", &st);
                     });
                 }
-                json!({ "ok": true, "status": status })
+                serde_json::to_value(status).unwrap_or(Value::Null)
             }
-            "recorder.setReplayBuffer" => {
+            "recorder.setReplayBuffer" | "recorder_set_replay" => {
                 let enabled = params
                     .get("enabled")
                     .and_then(|v| v.as_bool())
@@ -1280,16 +1407,27 @@ impl AppEngine {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .set_replay_buffer(enabled, seconds);
-                json!({ "ok": true, "status": status })
+                serde_json::to_value(status).unwrap_or(Value::Null)
             }
-            "recorder.resetStream" => {
+            "recorder.pushChunk" | "recorder_push_chunk" => {
+                if let Some(arr) = params.get("chunk").and_then(|v| v.as_array()) {
+                    let bytes: Vec<u8> = arr
+                        .iter()
+                        .filter_map(|x| x.as_u64().map(|n| n as u8))
+                        .collect();
+                    let mut rec = self.recorder.lock().unwrap_or_else(|e| e.into_inner());
+                    rec.push_media_chunk(&bytes);
+                }
+                json!({ "ok": true })
+            }
+            "recorder.resetStream" | "recorder_reset" => {
                 self.recorder
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .reset_stream();
                 json!({ "ok": true })
             }
-            "recorder.saveReplay" => {
+            "recorder.saveReplay" | "recorder_save_replay" => {
                 // CORREÇÃO CRÍTICA DO DEADLOCK: o MutexGuard é dropado antes do match/remux!
                 let save_res = {
                     let mut guard = self.recorder.lock().unwrap_or_else(|e| e.into_inner());
@@ -1315,13 +1453,15 @@ impl AppEngine {
             }
 
             // ------------------------------------------------ Captura, Compositor & RTC Host
-            "capture.list" | "sources.list" => {
+            "capture.list" | "sources.list" | "sources_list" => {
                 let list = tokio::task::spawn_blocking(capture::list_capture_sources)
                     .await
                     .unwrap_or_default();
                 serde_json::to_value(list).unwrap_or(json!([]))
             }
-            "capture.pushBrowserDirtyRect" => {
+            "sources.select" | "sources_select" => json!({ "ok": true }),
+            "bs_sync" | "bs_reload" | "bs_ack" => json!({ "ok": true }),
+            "capture.pushBrowserDirtyRect" | "capture_push_browser_dirty_rect" => {
                 let id = params.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let full_w = params.get("fullWidth").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let full_h = params.get("fullHeight").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
@@ -1360,7 +1500,7 @@ impl AppEngine {
                     Err(error) => json!({ "ok": false, "error": error }),
                 }
             }
-            "studio.setLiveVertical" => {
+            "studio.setLiveVertical" | "studio_set_live_vertical" => {
                 let active = params
                     .get("active")
                     .and_then(|v| v.as_bool())
@@ -1369,7 +1509,7 @@ impl AppEngine {
                 comp.set_live_vertical(active);
                 json!({ "ok": true, "verticalActive": comp.is_vertical_active() })
             }
-            "studio.setScenes" => {
+            "studio.setScenes" | "studio_set_scenes" => {
                 let settings = self.store.snapshot();
                 let prog_id = params
                     .get("activeSceneId")
@@ -1397,11 +1537,11 @@ impl AppEngine {
                     .set_scenes(prog, prev, transition, duration_ms, now_ms());
                 json!({ "ok": true })
             }
-            "studio.telemetry" | "telemetry.get" | "telemetry.stats" => {
+            "studio.telemetry" | "telemetry.get" | "telemetry.stats" | "telemetry_get" => {
                 let stats = self.collect_telemetry().await;
                 serde_json::to_value(stats).unwrap_or(Value::Null)
             }
-            "rtc.preferOpusStereo" => {
+            "rtc.preferOpusStereo" | "rtc_prefer_opus_stereo" => {
                 let sdp = params.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
                 let bitrate = params
                     .get("bitrateBps")
@@ -1409,12 +1549,12 @@ impl AppEngine {
                     .unwrap_or(192_000) as u32;
                 json!({ "sdp": prefer_opus_stereo(sdp, bitrate) })
             }
-            "rtc.applyCodecPreference" => {
+            "rtc.applyCodecPreference" | "rtc_apply_codec_preference" => {
                 let sdp = params.get("sdp").and_then(|v| v.as_str()).unwrap_or("");
                 let codec = params.get("codec").and_then(|v| v.as_str()).unwrap_or("auto");
                 json!({ "sdp": apply_codec_preference(sdp, codec) })
             }
-            "rtc.addPeer" => {
+            "rtc.addPeer" | "rtc_add_peer" => {
                 let vid = params.get("viewerId").and_then(|v| v.as_str()).unwrap_or("");
                 if !vid.is_empty() {
                     self.rtc_host
@@ -1424,7 +1564,7 @@ impl AppEngine {
                 }
                 json!({ "ok": true })
             }
-            "rtc.removePeer" => {
+            "rtc.removePeer" | "rtc_remove_peer" => {
                 let vid = params.get("viewerId").and_then(|v| v.as_str()).unwrap_or("");
                 self.rtc_host
                     .lock()
@@ -1432,7 +1572,7 @@ impl AppEngine {
                     .remove_peer(vid);
                 json!({ "ok": true })
             }
-            "rtc.onVoiceOffer" => {
+            "rtc.onVoiceOffer" | "rtc_on_voice_offer" => {
                 let vid = params.get("viewerId").and_then(|v| v.as_str()).unwrap_or("");
                 let drained = self
                     .rtc_host

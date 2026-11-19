@@ -31,3 +31,4 @@ pub mod rpc;
 pub mod rtc_host;
 pub mod signaling;
 pub mod store;
+pub mod tauri_app;

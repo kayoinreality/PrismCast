@@ -147,7 +147,7 @@ export interface Api {
     info(): Promise<AppInfo>
     minimize(): void
     toggleMaximize(): void
-    close(): void
+    close(force?: boolean): void
     setAlwaysOnTop(value: boolean): Promise<boolean>
     onMaximizeChange(cb: (maximized: boolean) => void): Unsubscribe
     onHotkey(cb: (action: HotkeyAction) => void): Unsubscribe

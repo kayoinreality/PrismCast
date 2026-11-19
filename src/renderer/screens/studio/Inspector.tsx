@@ -4,7 +4,7 @@ import { makeChannel } from '@shared/audio'
 import { Button, Field, IconButton, Slider, TextInput, Toggle } from '@/components/ui'
 import { IconCameraOff, IconClose, IconEdit, IconRefresh } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
-import { SOURCE_LABEL, widgetParams, widgetUrl } from '@/studio/scenes'
+import { clearTransformCrop, SOURCE_LABEL, widgetParams, widgetUrl } from '@/studio/scenes'
 import { CANVAS_H, CANVAS_V } from '@/studio/Compositor'
 import { SourceIcon } from './sourceIcons'
 import { SourcePickerModal } from './Pickers'
@@ -12,21 +12,51 @@ import { KitTextsModal } from '../KitTextsModal'
 import { kitWidgetOf, restartsOnShow } from '@/studio/widgets'
 import type { StageView } from './Stage'
 
-function useVideoInputs(): MediaDeviceInfo[] {
+function useVideoInputs(enabled: boolean): MediaDeviceInfo[] {
   const [list, setList] = useState<MediaDeviceInfo[]>([])
   useEffect(() => {
+    if (!enabled || !navigator.mediaDevices) return
+    let alive = true
     const load = (): void => {
-      void navigator.mediaDevices.enumerateDevices().then((d) => setList(d.filter((x) => x.kind === 'videoinput')))
+      void navigator.mediaDevices
+        .enumerateDevices()
+        .then((d) => {
+          if (alive) setList(d.filter((x) => x.kind === 'videoinput'))
+        })
+        .catch(() => {})
     }
     load()
     navigator.mediaDevices.addEventListener('devicechange', load)
-    return () => navigator.mediaDevices.removeEventListener('devicechange', load)
-  }, [])
+    return () => {
+      alive = false
+      navigator.mediaDevices.removeEventListener('devicechange', load)
+    }
+  }, [enabled])
   return list
 }
 
+function validHexColor(raw: string | undefined, fallback = '#000000'): string {
+  return raw && /^#[0-9a-fA-F]{6}$/.test(raw.trim()) ? raw.trim() : fallback
+}
+
+function formatAccel(raw: string | undefined, fallback: string): string[] {
+  return (raw?.trim() || fallback)
+    .replace(/CommandOrControl/gi, 'Ctrl')
+    .split('+')
+    .map((s) => s.trim())
+    .filter(Boolean)
+}
+
 /** Campo numérico em pixels do canvas (o usuário pensa em 1920x1080, não em 0..1). */
-function PxInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }): React.JSX.Element {
+function PxInput({
+  label,
+  value,
+  onChange
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}): React.JSX.Element {
   const [text, setText] = useState(String(Math.round(value)))
   useEffect(() => setText(String(Math.round(value))), [value])
   return (
@@ -38,7 +68,7 @@ function PxInput({ label, value, onChange }: { label: string; value: number; onC
         onChange={(e) => setText(e.target.value)}
         onBlur={() => {
           const n = Number(text)
-          if (Number.isFinite(n)) onChange(n)
+          if (text.trim() !== '' && Number.isFinite(n)) onChange(n)
           else setText(String(Math.round(value)))
         }}
         onKeyDown={(e) => {
@@ -49,7 +79,13 @@ function PxInput({ label, value, onChange }: { label: string; value: number; onC
   )
 }
 
-function CaptureSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
+function CaptureSection({
+  item,
+  onPatch
+}: {
+  item: SceneItem
+  onPatch: (p: Partial<SceneItem>) => void
+}): React.JSX.Element {
   const { engine, settings, update, toast } = useStudio()
   useEngineState()
   const [picking, setPicking] = useState(false)
@@ -59,32 +95,45 @@ function CaptureSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Parti
   const mixer = settings.audioMixer
   const audioCh = mixer.channels.find((c) => c.id === item.settings.audioChannelId) ?? null
 
-  /** "Capturar áudio" da captura de janela do OBS: vira um canal no mixer. */
   const toggleAudio = async (on: boolean): Promise<void> => {
     if (!on) {
-      if (audioCh) update({ audioMixer: { ...mixer, channels: mixer.channels.filter((c) => c.id !== audioCh.id) } })
+      if (audioCh) {
+        const usedElsewhere = settings.scenes.scenes.some((sc) =>
+          sc.items.some((it) => it.id !== item.id && it.settings.audioChannelId === audioCh.id)
+        )
+        if (!usedElsewhere) {
+          update({ audioMixer: { ...mixer, channels: mixer.channels.filter((c) => c.id !== audioCh.id) } })
+        }
+      }
       onPatch({ settings: { audioChannelId: undefined } })
       return
     }
     const id = item.settings.captureId
     if (!id?.startsWith('window:')) return
     setLinking(true)
-    const app = await window.api.audio.appForWindow(id)
-    setLinking(false)
-    if (!app) {
-      toast('Não achei o programa dessa janela. Ela está aberta?', 'bad')
-      return
+    try {
+      const app = await window.api.audio.appForWindow(id)
+      if (!app) {
+        toast('Não achei o programa dessa janela. Ela está aberta?', 'bad')
+        return
+      }
+      const existing = mixer.channels.find(
+        (c) => c.kind === 'app' && c.appExe?.toLowerCase() === app.exe.toLowerCase()
+      )
+      const ch = existing ?? makeChannel('app', { name: item.name.slice(0, 40), appExe: app.exe })
+      if (!existing) update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] } })
+      onPatch({ settings: { audioChannelId: ch.id } })
+      toast(
+        mixer.channels.some((c) => c.kind === 'desktop' && !c.muted)
+          ? `Áudio de ${app.exe} no mixer. Com “Áudio do PC” ligado ele sai em dobro: mute um dos dois.`
+          : `Áudio de ${app.exe} no mixer`,
+        'good'
+      )
+    } catch {
+      toast('Falha ao localizar o áudio desta janela.', 'bad')
+    } finally {
+      setLinking(false)
     }
-    const existing = mixer.channels.find((c) => c.kind === 'app' && c.appExe?.toLowerCase() === app.exe.toLowerCase())
-    const ch = existing ?? makeChannel('app', { name: item.name.slice(0, 40), appExe: app.exe })
-    if (!existing) update({ audioMixer: { ...mixer, channels: [...mixer.channels, ch] } })
-    onPatch({ settings: { audioChannelId: ch.id } })
-    toast(
-      mixer.channels.some((c) => c.kind === 'desktop' && !c.muted)
-        ? `Áudio de ${app.exe} no mixer. Com “Áudio do PC” ligado ele sai em dobro: mute um dos dois.`
-        : `Áudio de ${app.exe} no mixer`,
-      'good'
-    )
   }
 
   return (
@@ -153,7 +202,14 @@ function ParamControl({
   switch (param.type) {
     case 'toggle': {
       const on = value === undefined || value === '' ? param.defaultOn : value === param.on
-      return <Toggle label={param.label} hint={param.hint} checked={on} onChange={(v) => onChange(v ? param.on : param.off)} />
+      return (
+        <Toggle
+          label={param.label}
+          hint={param.hint}
+          checked={on}
+          onChange={(v) => onChange(v ? param.on : param.off)}
+        />
+      )
     }
     case 'select':
       return (
@@ -168,8 +224,10 @@ function ParamControl({
         </Field>
       )
     case 'number': {
-      const current = Number(text || param.placeholder) || 0
-      const clamp = (n: number): string => String(Math.max(param.min ?? 0, Math.min(param.max ?? 9999, n)))
+      const parsed = Number(text || param.placeholder)
+      const current = Number.isFinite(parsed) ? parsed : 0
+      const clamp = (n: number): string =>
+        String(Math.max(param.min ?? 0, Math.min(param.max ?? 9999, Number.isFinite(n) ? n : 0)))
       return (
         <Field label={param.label} hint={param.unit}>
           <div className="stepper">
@@ -181,7 +239,12 @@ function ParamControl({
               inputMode="numeric"
               placeholder={param.placeholder}
               onChange={(e) => setText(e.target.value.replace(/[^0-9.]/g, ''))}
-              onBlur={() => text !== (value ?? '') && onChange(text ? clamp(Number(text)) : '')}
+              onBlur={() => {
+                if (text !== (value ?? '')) {
+                  const n = Number(text)
+                  onChange(text && Number.isFinite(n) ? clamp(n) : '')
+                }
+              }}
               onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
             />
             <button aria-label="Mais" onClick={() => onChange(clamp(current + 1))}>
@@ -206,8 +269,13 @@ function ParamControl({
   }
 }
 
-/** Microfone na cena: escolhe qual canal do mixer esta cena liga. Volume e filtros ficam no mixer. */
-function MicSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
+function MicSection({
+  item,
+  onPatch
+}: {
+  item: SceneItem
+  onPatch: (p: Partial<SceneItem>) => void
+}): React.JSX.Element {
   const { settings } = useStudio()
   const mics = settings.audioMixer.channels.filter((c) => c.kind === 'mic')
   const current = mics.find((c) => c.id === item.settings.audioChannelId)
@@ -232,7 +300,11 @@ function MicSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<S
       </Field>
       <Toggle
         label="Ligado nesta cena"
-        hint={item.visible ? 'O som vai para a live enquanto esta cena estiver no ar' : 'Desligado: a cena fica sem este microfone'}
+        hint={
+          item.visible
+            ? 'O som vai para a live enquanto esta cena estiver no ar'
+            : 'Desligado: a cena fica sem este microfone'
+        }
         checked={item.visible}
         onChange={(v) => onPatch({ visible: v })}
       />
@@ -243,7 +315,13 @@ function MicSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<S
   )
 }
 
-function WidgetSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partial<SceneItem>) => void }): React.JSX.Element {
+function WidgetSection({
+  item,
+  onPatch
+}: {
+  item: SceneItem
+  onPatch: (p: Partial<SceneItem>) => void
+}): React.JSX.Element {
   const { kit, engine } = useStudio()
   const s = item.settings
   const known = kitWidgetOf(item, kit)
@@ -295,8 +373,16 @@ function WidgetSection({ item, onPatch }: { item: SceneItem; onPatch: (p: Partia
             />
           </Field>
           <div className="insp-row">
-            <PxInput label="Largura da página" value={s.width ?? 1920} onChange={(v) => onPatch({ settings: { width: Math.max(50, Math.min(3840, v)) } })} />
-            <PxInput label="Altura" value={s.height ?? 1080} onChange={(v) => onPatch({ settings: { height: Math.max(50, Math.min(2160, v)) } })} />
+            <PxInput
+              label="Largura da página"
+              value={s.width ?? 1920}
+              onChange={(v) => onPatch({ settings: { width: Math.max(50, Math.min(3840, v)) } })}
+            />
+            <PxInput
+              label="Altura"
+              value={s.height ?? 1080}
+              onChange={(v) => onPatch({ settings: { height: Math.max(50, Math.min(2160, v)) } })}
+            />
           </div>
         </>
       )}
@@ -318,37 +404,41 @@ export function Inspector({
   onPatch: (itemId: string, patch: Partial<SceneItem>) => void
   onClose: () => void
 }): React.JSX.Element {
-  const cams = useVideoInputs()
+  const isCam = item?.type === 'camera_input'
+  const cams = useVideoInputs(Boolean(isCam))
   const { settings } = useStudio()
   const cameraOn = settings.studio.cameraEnabled
+  const hk = settings.hotkeys
 
   if (!scene || !item) {
+    const renderKeys = (keys: string[]): React.JSX.Element => (
+      <>
+        {keys.map((k, idx) => (
+          <span key={idx}>
+            {idx > 0 && '+'}
+            <kbd>{k}</kbd>
+          </span>
+        ))}
+      </>
+    )
     return (
       <div className="inspector is-empty">
         <div className="insp-empty">
           <span className="insp-empty-title">Propriedades</span>
           <span className="hint">
-            Selecione uma fonte no palco ou na lista de fontes para ajustar posição, tamanho e opções.
+            Selecione uma fonte no palco ou na lista de fontes para ajustar posição, tamanho, recorte e opções.
           </span>
           <div className="insp-shortcuts">
-            <span>
-              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>P</kbd> Tela de pausa
-            </span>
-            <span>
-              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>C</kbd> Ligar / desligar câmera
-            </span>
+            <span>{renderKeys(formatAccel(hk?.togglePrivacyShield, 'Ctrl+Shift+P'))} Tela de pausa</span>
+            <span>{renderKeys(formatAccel(hk?.toggleCamera, 'Ctrl+Shift+C'))} Ligar / desligar câmera</span>
             <span>
               <kbd>1</kbd>…<kbd>9</kbd> Trocar de cena
             </span>
             <span>
               <kbd>Ctrl</kbd>+<kbd>Z</kbd> Desfazer
             </span>
-            <span>
-              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd> Salvar replay
-            </span>
-            <span>
-              <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>M</kbd> Mutar microfone
-            </span>
+            <span>{renderKeys(formatAccel(hk?.saveReplayClip, 'Ctrl+Shift+S'))} Salvar replay</span>
+            <span>{renderKeys(formatAccel(hk?.toggleMicMute, 'Ctrl+Shift+M'))} Mutar microfone</span>
           </div>
         </div>
       </div>
@@ -365,11 +455,23 @@ export function Inspector({
 
   const fill = (): void => setTf({ x: 0, y: 0, width: 1, height: 1 })
   const center = (): void => setTf({ x: (1 - tf.width) / 2, y: (1 - tf.height) / 2 })
-  /** Ajusta a altura para a proporção do conteúdo (16:9) mantendo a largura. */
   const band = (y: number, h: number): void => setTf({ x: 0, y, width: 1, height: h })
 
+  const cropTopPct = Math.round((tf.cropTop ?? 0) * 100)
+  const cropBottomPct = Math.round((tf.cropBottom ?? 0) * 100)
+  const cropLeftPct = Math.round((tf.cropLeft ?? 0) * 100)
+  const cropRightPct = Math.round((tf.cropRight ?? 0) * 100)
+  const hasCrop = cropTopPct > 0 || cropBottomPct > 0 || cropLeftPct > 0 || cropRightPct > 0
+  const opacityPct = Math.round((tf.opacity ?? 1) * 100)
+  const canCropOrFlip =
+    item.type === 'screen_capture' ||
+    item.type === 'window_capture' ||
+    item.type === 'camera_input' ||
+    item.type === 'image_source' ||
+    item.type === 'browser_source'
+
   return (
-    <div className="inspector">
+    <div className="inspector" key={item.id}>
       <div className="insp-head">
         <span className="insp-icon">
           <SourceIcon type={item.type} size={16} />
@@ -412,7 +514,17 @@ export function Inspector({
                   ))}
               </select>
             </Field>
-            <Toggle label="Cantos arredondados" checked={Boolean(item.settings.rounded)} onChange={(v) => setS({ rounded: v })} />
+            <Toggle
+              label="Espelhar horizontalmente"
+              hint="Inverte esquerda/direita como um espelho"
+              checked={Boolean(tf.flipX)}
+              onChange={(v) => setTf({ flipX: v })}
+            />
+            <Toggle
+              label="Cantos arredondados"
+              checked={Boolean(item.settings.rounded)}
+              onChange={(v) => setS({ rounded: v })}
+            />
           </div>
         )}
 
@@ -431,7 +543,11 @@ export function Inspector({
             >
               Trocar imagem
             </Button>
-            <Toggle label="Cantos arredondados" checked={Boolean(item.settings.rounded)} onChange={(v) => setS({ rounded: v })} />
+            <Toggle
+              label="Cantos arredondados"
+              checked={Boolean(item.settings.rounded)}
+              onChange={(v) => setS({ rounded: v })}
+            />
           </div>
         )}
 
@@ -439,8 +555,17 @@ export function Inspector({
           <div className="insp-section">
             <Field label="Cor">
               <div className="row" style={{ gap: 'var(--sp-2)' }}>
-                <input type="color" className="color-input" value={item.settings.color ?? '#000000'} onChange={(e) => setS({ color: e.target.value })} />
-                <TextInput value={item.settings.color ?? ''} onChange={(e) => setS({ color: e.target.value })} className="mono-input" />
+                <input
+                  type="color"
+                  className="color-input"
+                  value={validHexColor(item.settings.color, '#000000')}
+                  onChange={(e) => setS({ color: e.target.value })}
+                />
+                <TextInput
+                  value={item.settings.color ?? ''}
+                  onChange={(e) => setS({ color: e.target.value })}
+                  className="mono-input"
+                />
               </div>
             </Field>
           </div>
@@ -454,10 +579,20 @@ export function Inspector({
               <TextInput value={item.settings.text ?? ''} onChange={(e) => setS({ text: e.target.value })} />
             </Field>
             <Field label="Tamanho" hint={`${item.settings.fontSize ?? 48}px`}>
-              <Slider value={item.settings.fontSize ?? 48} min={16} max={200} onChange={(v) => setS({ fontSize: v })} />
+              <Slider
+                value={item.settings.fontSize ?? 48}
+                min={16}
+                max={200}
+                onChange={(v) => setS({ fontSize: v })}
+              />
             </Field>
             <Field label="Cor">
-              <input type="color" className="color-input" value={item.settings.color ?? '#ffffff'} onChange={(e) => setS({ color: e.target.value })} />
+              <input
+                type="color"
+                className="color-input"
+                value={validHexColor(item.settings.color, '#ffffff')}
+                onChange={(e) => setS({ color: e.target.value })}
+              />
             </Field>
           </div>
         )}
@@ -471,8 +606,16 @@ export function Inspector({
                 <PxInput label="Y" value={tf.y * canvas.height} onChange={(v) => setTf({ y: v / canvas.height })} />
               </div>
               <div className="insp-row">
-                <PxInput label="Largura" value={tf.width * canvas.width} onChange={(v) => setTf({ width: Math.max(10, v) / canvas.width })} />
-                <PxInput label="Altura" value={tf.height * canvas.height} onChange={(v) => setTf({ height: Math.max(10, v) / canvas.height })} />
+                <PxInput
+                  label="Largura"
+                  value={tf.width * canvas.width}
+                  onChange={(v) => setTf({ width: Math.max(10, v) / canvas.width })}
+                />
+                <PxInput
+                  label="Altura"
+                  value={tf.height * canvas.height}
+                  onChange={(v) => setTf({ height: Math.max(10, v) / canvas.height })}
+                />
               </div>
               <div className="insp-chips">
                 <button onClick={fill}>Tela cheia</button>
@@ -487,9 +630,70 @@ export function Inspector({
               </div>
             </div>
 
+            {canCropOrFlip && (
+              <div className="insp-section">
+                <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div className="insp-sub">Recorte (%) · Alt + arrastar no palco</div>
+                  {hasCrop && (
+                    <button className="link-btn" onClick={() => patch({ [tfKey]: clearTransformCrop(tf) })}>
+                      Zerar
+                    </button>
+                  )}
+                </div>
+                <div className="insp-row">
+                  <PxInput
+                    label="Topo %"
+                    value={cropTopPct}
+                    onChange={(v) => setTf({ cropTop: Math.max(0, Math.min(85, v)) / 100 })}
+                  />
+                  <PxInput
+                    label="Base %"
+                    value={cropBottomPct}
+                    onChange={(v) => setTf({ cropBottom: Math.max(0, Math.min(85, v)) / 100 })}
+                  />
+                </div>
+                <div className="insp-row">
+                  <PxInput
+                    label="Esq %"
+                    value={cropLeftPct}
+                    onChange={(v) => setTf({ cropLeft: Math.max(0, Math.min(85, v)) / 100 })}
+                  />
+                  <PxInput
+                    label="Dir %"
+                    value={cropRightPct}
+                    onChange={(v) => setTf({ cropRight: Math.max(0, Math.min(85, v)) / 100 })}
+                  />
+                </div>
+              </div>
+            )}
+
             <div className="insp-section">
-              <Toggle label="Aparece no 16:9" checked={item.showOnHorizontal} onChange={(v) => patch({ showOnHorizontal: v })} />
-              <Toggle label="Aparece no 9:16" checked={item.showOnVertical} onChange={(v) => patch({ showOnVertical: v })} />
+              <Field label="Opacidade" hint={`${opacityPct}%`}>
+                <Slider
+                  value={opacityPct}
+                  min={5}
+                  max={100}
+                  step={1}
+                  onChange={(v) => setTf({ opacity: v / 100 })}
+                />
+              </Field>
+              {canCropOrFlip && item.type !== 'camera_input' && (
+                <Toggle
+                  label="Espelhar horizontalmente"
+                  checked={Boolean(tf.flipX)}
+                  onChange={(v) => setTf({ flipX: v })}
+                />
+              )}
+              <Toggle
+                label="Aparece no 16:9"
+                checked={item.showOnHorizontal}
+                onChange={(v) => patch({ showOnHorizontal: v })}
+              />
+              <Toggle
+                label="Aparece no 9:16"
+                checked={item.showOnVertical}
+                onChange={(v) => patch({ showOnVertical: v })}
+              />
               <Toggle label="Travar posição" checked={item.locked} onChange={(v) => patch({ locked: v })} />
             </div>
           </>

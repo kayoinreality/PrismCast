@@ -56,6 +56,31 @@ async fn main() {
         });
     }
 
+    #[cfg(feature = "tauri-app")]
+    let headless = std::env::var("PRISMCAST_HEADLESS").as_deref() == Ok("1")
+        || std::env::args().any(|a| a == "--headless");
+
+    #[cfg(feature = "tauri-app")]
+    if !headless {
+        let eng_rpc = engine.clone();
+        let shutdown_rpc = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = run_rpc_server(
+                eng_rpc,
+                RpcServerConfig { port, token },
+                shutdown_rpc,
+            )
+            .await;
+        });
+
+        if let Err(err) = prismcast_core::tauri_app::run_tauri_app(engine.clone()) {
+            eprintln!("[prismcast-tauri] {err}");
+        }
+        shutdown.cancel();
+        engine.shutdown().await;
+        return;
+    }
+
     if let Err(err) = run_rpc_server(
         engine.clone(),
         RpcServerConfig { port, token },

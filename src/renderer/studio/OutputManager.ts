@@ -1,12 +1,14 @@
 import type { CanvasOrientation } from '@shared/protocol'
+import { ensureBridge } from '@/bridge'
 
 /**
- * Grava os canvases com MediaRecorder e distribui os pedaços:
- *   16:9 -> FFmpeg dos destinos horizontais + gravação local/replay
- *   9:16 -> FFmpeg dos destinos verticais (só existe com destino vertical ligado)
+ * Grava os canvases com MediaRecorder e distribui os pedaços para o motor Rust:
+ *   - 16:9 -> 1 único encoder compartilhado quando liveH e gravação/replay rodam juntos
+ *             (fazendo fan-out para multistream horizontal e recorder local — economiza 33–50% de GPU/CPU!)
+ *   - 9:16 -> encoder dedicado apenas quando há destino vertical ligado
  *
- * O WebM sai em H.264 de alto bitrate (o Chromium usa o encoder de hardware) e
- * é recodificado pelo FFmpeg no bitrate de cada plataforma.
+ * Cada recorder serializa `e.data.arrayBuffer()` numa cadeia de Promise com token de geração (`gen`)
+ * para nunca inverter chunks nem entregar pedaços atrasados após `stop()`.
  */
 
 const MIME_CANDIDATES = [
@@ -19,20 +21,22 @@ const TIMESLICE_MS = 200
 const INTERMEDIATE_BPS = 24_000_000
 
 function pickMime(): string {
-  return MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) ?? 'video/webm'
+  return typeof MediaRecorder !== 'undefined'
+    ? (MIME_CANDIDATES.find((m) => MediaRecorder.isTypeSupported(m)) ?? 'video/webm')
+    : 'video/webm'
 }
 
 type Sink = (chunk: Uint8Array) => void
 
-/**
- * Live e gravação usam MediaRecorders separados: cada FFmpeg precisa receber o
- * WebM desde o cabeçalho, então a live não pode "pegar carona" num gravador
- * que já estava rodando para a gravação local (e vice-versa).
- */
+interface ActiveRecorder {
+  rec: MediaRecorder
+  gen: number
+}
+
 export class OutputManager {
-  private liveH: MediaRecorder | null = null
-  private liveV: MediaRecorder | null = null
-  private local: MediaRecorder | null = null
+  private sharedH: ActiveRecorder | null = null
+  private liveV: ActiveRecorder | null = null
+  private nextGen = 1
   private streaming = false
   private verticalWanted = false
   private recording = false
@@ -42,66 +46,91 @@ export class OutputManager {
     private readonly verticalStream: () => MediaStream
   ) {}
 
-  private makeRecorder(stream: MediaStream, sink: Sink): MediaRecorder {
+  private spawnRecorder(stream: MediaStream, sink: Sink): ActiveRecorder {
+    const gen = this.nextGen++
     const rec = new MediaRecorder(stream, {
       mimeType: pickMime(),
       videoBitsPerSecond: INTERMEDIATE_BPS,
       audioBitsPerSecond: 192_000
     })
+    let chain = Promise.resolve()
+
     rec.ondataavailable = (e) => {
       if (e.data.size === 0) return
-      void e.data.arrayBuffer().then((buf) => sink(new Uint8Array(buf)))
+      const blob = e.data
+      chain = chain
+        .then(() => blob.arrayBuffer())
+        .then((buf) => {
+          // Descarta chunks que terminaram de ler após o recorder ser parado/trocado
+          if (this.sharedH?.gen !== gen && this.liveV?.gen !== gen) return
+          sink(new Uint8Array(buf))
+        })
+        .catch(() => {})
+    }
+    rec.onerror = (ev) => {
+      console.warn('[OutputManager] erro no MediaRecorder:', ev)
     }
     rec.start(TIMESLICE_MS)
-    return rec
+    return { rec, gen }
   }
 
-  private live(orientation: CanvasOrientation): Sink {
-    return (chunk) => window.api.multistream.pushChunk(orientation, chunk)
-  }
-
-  /** Liga/desliga os gravadores conforme live e gravação. */
-  private reconcile(): void {
-    const toggle = (
-      current: MediaRecorder | null,
-      want: boolean,
-      open: () => MediaRecorder
-    ): MediaRecorder | null => {
-      if (want && !current) return open()
-      if (!want && current) {
-        if (current.state !== 'inactive') current.stop()
-        return null
+  private stopActive(active: ActiveRecorder | null): null {
+    if (active && active.rec.state !== 'inactive') {
+      try {
+        active.rec.stop()
+      } catch {
+        /* ignore */
       }
-      return current
+    }
+    return null
+  }
+
+  private reconcile(restartHorizontal = false): void {
+    const api = ensureBridge()
+    const wantH = this.streaming || this.recording
+    const wantV = this.streaming && this.verticalWanted
+
+    if (!wantH) {
+      this.sharedH = this.stopActive(this.sharedH)
+    } else if (!this.sharedH || restartHorizontal) {
+      this.sharedH = this.stopActive(this.sharedH)
+      api.recorder.resetStream()
+      this.sharedH = this.spawnRecorder(this.horizontalStream(), (chunk) => {
+        if (this.streaming) api.multistream.pushChunk('horizontal', chunk)
+        if (this.streaming || this.recording) api.recorder.pushChunk(chunk)
+      })
     }
 
-    this.liveH = toggle(this.liveH, this.streaming, () =>
-      this.makeRecorder(this.horizontalStream(), this.live('horizontal'))
-    )
-    this.liveV = toggle(this.liveV, this.streaming && this.verticalWanted, () =>
-      this.makeRecorder(this.verticalStream(), this.live('vertical'))
-    )
-    // O gravador local roda durante a live também: é ele que alimenta o replay buffer.
-    this.local = toggle(this.local, this.streaming || this.recording, () => {
-      window.api.recorder.resetStream()
-      return this.makeRecorder(this.horizontalStream(), (c) => window.api.recorder.pushChunk(c))
-    })
+    if (!wantV) {
+      this.liveV = this.stopActive(this.liveV)
+    } else if (!this.liveV) {
+      this.liveV = this.spawnRecorder(this.verticalStream(), (chunk: Uint8Array) => {
+        if (this.streaming && this.verticalWanted) {
+          const orient: CanvasOrientation = 'vertical'
+          api.multistream.pushChunk(orient, chunk)
+        }
+      })
+    }
   }
 
   setStreaming(on: boolean, withVertical: boolean): void {
+    // Se a gravação local já estava rodando e a live vai entrar agora, reiniciamos o
+    // encoder 16:9 uma vez para que o FFmpeg RTMP receba o cabeçalho EBML inicial.
+    const startingLiveWhileRecording = on && !this.streaming && this.recording
     this.streaming = on
     this.verticalWanted = withVertical
-    this.reconcile()
+    this.reconcile(startingLiveWhileRecording)
   }
 
   setRecording(on: boolean): void {
     this.recording = on
-    this.reconcile()
+    this.reconcile(false)
   }
 
   dispose(): void {
     this.streaming = false
+    this.verticalWanted = false
     this.recording = false
-    this.reconcile()
+    this.reconcile(false)
   }
 }

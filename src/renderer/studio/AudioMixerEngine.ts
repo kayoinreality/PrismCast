@@ -18,6 +18,8 @@ export type AudioLevels = Record<string, ChannelLevel>
 export class AudioMixerEngine {
   private statuses = new Map<string, AudioChannelStatus>()
   private readonly offStatus: () => void
+  private dummyCtx: AudioContext | null = null
+  private dummyTrack: MediaStreamTrack | null = null
   onStatus: (() => void) | null = null
 
   constructor(initial: AudioMixerSettings) {
@@ -29,8 +31,12 @@ export class AudioMixerEngine {
     void this.applyConfig(initial)
   }
 
-  get outputTrack(): MediaStreamTrack | undefined {
-    return undefined
+  get outputTrack(): MediaStreamTrack {
+    if (!this.dummyTrack) {
+      this.dummyCtx = new AudioContext({ sampleRate: 48000 })
+      this.dummyTrack = this.dummyCtx.createMediaStreamDestination().stream.getAudioTracks()[0]
+    }
+    return this.dummyTrack
   }
 
   async resume(): Promise<void> {}
@@ -58,5 +64,9 @@ export class AudioMixerEngine {
 
   dispose(): void {
     this.offStatus()
+    this.dummyTrack?.stop()
+    void this.dummyCtx?.close().catch(() => {})
+    this.dummyTrack = null
+    this.dummyCtx = null
   }
 }

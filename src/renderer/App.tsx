@@ -117,18 +117,37 @@ function Shell(): React.JSX.Element {
     } finally {
       setClosingAll(false)
       setConfirmQuit(false)
-      ensureBridge().app.close()
+      ensureBridge().app.close(true)
     }
   }
 
-  // Listener de evento nativo `app:confirm-quit` vindo do main/Rust quando fechar janela pela barra do SO.
+  // Listener de evento nativo `app:confirm-quit` vindo do Tauri/Rust quando fechar janela pela barra do SO.
   useEffect(() => {
     const onConfirmQuitEvent = (): void => {
       if (isBusyLiveOrRec) setConfirmQuit(true)
-      else ensureBridge().app.close()
+      else ensureBridge().app.close(true)
     }
     window.addEventListener('app:confirm-quit', onConfirmQuitEvent)
-    return () => window.removeEventListener('app:confirm-quit', onConfirmQuitEvent)
+    let offBackend: (() => void) | undefined
+    const tauri = window.__TAURI_INTERNALS__
+    if (tauri) {
+      let active = true
+      const handlerId = tauri.transformCallback(() => {
+        if (active) onConfirmQuitEvent()
+      })
+      void tauri.invoke('plugin:event|listen', {
+        event: 'app:confirm-quit',
+        target: { kind: 'Any' },
+        handler: handlerId
+      })
+      offBackend = () => {
+        active = false
+      }
+    }
+    return () => {
+      window.removeEventListener('app:confirm-quit', onConfirmQuitEvent)
+      offBackend?.()
+    }
   }, [isBusyLiveOrRec])
 
   // Atalhos globais (funcionam com o jogo em foco) usando ref para não recriar o listener.

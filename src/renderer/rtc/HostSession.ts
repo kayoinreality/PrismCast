@@ -11,39 +11,34 @@ interface PeerEntry {
   videoTransceiver: RTCRtpTransceiver | null
   audioTransceiver: RTCRtpTransceiver | null
   sampler: StatsSampler
-  /** ICE que chegou antes da resposta: addIceCandidate falha sem remoteDescription. */
   pendingIce: RTCIceCandidateInit[]
+  pendingVoiceIce: RTCIceCandidateInit[]
   state: PeerState
-  /** Conexao reversa opcional para Party Voice (retorno de voz do espectador). */
   voicePc: RTCPeerConnection | null
   voiceAudioEl: HTMLAudioElement | null
+  iceRestartTimer: ReturnType<typeof setTimeout> | null
+  needsRenegotiate: boolean
 }
 
-/**
- * Lado emissor do PrismCast Studio: uma RTCPeerConnection por espectador (malha LAN).
- *
- * Suporta:
- * - Troca de video/audio ao vivo via RTCRtpSender.replaceTrack sem renegociar
- * - Mudanca de bitrate/fps/codec ao vivo
- * - Retorno de voz opcional (Party Voice / GuestCam) dos espectadores na LAN
- */
 export class HostSession {
   private readonly peers = new Map<string, PeerEntry>()
   private settings: QualitySettings
   private currentVideoTrack: MediaStreamTrack | null
   private currentAudioTrack: MediaStreamTrack | null
-  private partyVoiceEnabled = false
+  private partyVoiceEnabled: boolean
 
   onStateChange: ((viewerId: string, state: PeerState) => void) | null = null
 
   constructor(
     private readonly stream: MediaStream,
     settings: QualitySettings,
-    private readonly send: (viewerId: string, msg: HostToViewer) => void
+    private readonly send: (viewerId: string, msg: HostToViewer) => void,
+    initialPartyVoice = true
   ) {
     this.settings = settings
     this.currentVideoTrack = stream.getVideoTracks()[0] ?? null
     this.currentAudioTrack = stream.getAudioTracks()[0] ?? null
+    this.partyVoiceEnabled = initialPartyVoice
   }
 
   get peerCount(): number {
@@ -64,11 +59,19 @@ export class HostSession {
   }
 
   private closeVoicePeer(entry: PeerEntry): void {
+    entry.pendingVoiceIce = []
     if (entry.voiceAudioEl) {
+      try {
+        entry.voiceAudioEl.pause()
+      } catch {
+        /* ignore */
+      }
       entry.voiceAudioEl.srcObject = null
       entry.voiceAudioEl = null
     }
     if (entry.voicePc) {
+      entry.voicePc.onicecandidate = null
+      entry.voicePc.ontrack = null
       try {
         entry.voicePc.close()
       } catch {
@@ -85,6 +88,22 @@ export class HostSession {
     this.onStateChange?.(viewerId, state)
   }
 
+  private scheduleIceRestart(viewerId: string, entry: PeerEntry): void {
+    if (entry.iceRestartTimer) return
+    entry.iceRestartTimer = setTimeout(() => {
+      entry.iceRestartTimer = null
+      if (this.peers.get(viewerId) !== entry) return
+      if (entry.pc.connectionState === 'disconnected' || entry.pc.connectionState === 'failed') {
+        try {
+          entry.pc.restartIce()
+          void this.negotiate(viewerId)
+        } catch {
+          /* ignore */
+        }
+      }
+    }, 3000)
+  }
+
   async addViewer(viewerId: string): Promise<void> {
     this.removeViewer(viewerId)
 
@@ -96,9 +115,12 @@ export class HostSession {
       audioTransceiver: null,
       sampler: new StatsSampler('send'),
       pendingIce: [],
+      pendingVoiceIce: [],
       state: 'conectando',
       voicePc: null,
-      voiceAudioEl: null
+      voiceAudioEl: null,
+      iceRestartTimer: null,
+      needsRenegotiate: false
     }
     this.peers.set(viewerId, entry)
 
@@ -110,12 +132,20 @@ export class HostSession {
     pc.onconnectionstatechange = () => {
       switch (pc.connectionState) {
         case 'connected':
+          if (entry.iceRestartTimer) {
+            clearTimeout(entry.iceRestartTimer)
+            entry.iceRestartTimer = null
+          }
           this.setState(viewerId, 'conectado')
           break
         case 'disconnected':
           this.setState(viewerId, 'instavel')
+          this.scheduleIceRestart(viewerId, entry)
           break
         case 'failed':
+          this.setState(viewerId, 'instavel')
+          this.scheduleIceRestart(viewerId, entry)
+          break
         case 'closed':
           this.setState(viewerId, 'encerrado')
           break
@@ -134,27 +164,29 @@ export class HostSession {
         sendEncodings: [
           {
             maxBitrate: this.settings.maxBitrateKbps * 1000,
-            maxFramerate: this.settings.fps
+            maxFramerate: this.settings.fps,
+            scaleResolutionDownBy: this.computeScaleDown(videoTrack, this.settings.maxHeight)
           }
         ]
       })
       applyCodecPreference(entry.videoTransceiver, this.settings.codec)
     }
 
-    if (audioTrack) {
-      entry.audioTransceiver = pc.addTransceiver(audioTrack, {
-        direction: 'sendonly',
-        streams: [this.stream]
-      })
-    }
+    // Sempre cria transceiver de áudio para permitir replaceAudioTrack futuro sem renegociar SDP.
+    entry.audioTransceiver = pc.addTransceiver(audioTrack ?? 'audio', {
+      direction: 'sendonly',
+      streams: [this.stream]
+    })
 
     await this.negotiate(viewerId)
   }
 
-  /**
-   * Substitui o track de video ao vivo em todos os espectadores conectados
-   * sem renegociar SDP e sem derrubar a chamada.
-   */
+  private computeScaleDown(track: MediaStreamTrack | null, maxHeight: number | null): number {
+    if (!track || !maxHeight) return 1
+    const srcH = track.getSettings().height ?? 1080
+    return srcH > maxHeight ? Math.max(1, srcH / maxHeight) : 1
+  }
+
   async replaceVideoTrack(newTrack: MediaStreamTrack): Promise<void> {
     this.currentVideoTrack = newTrack
     await Promise.all(
@@ -169,9 +201,6 @@ export class HostSession {
     )
   }
 
-  /**
-   * Substitui o track de audio ao vivo em todos os espectadores conectados.
-   */
   async replaceAudioTrack(newTrack: MediaStreamTrack | null): Promise<void> {
     this.currentAudioTrack = newTrack
     await Promise.all(
@@ -189,8 +218,14 @@ export class HostSession {
   private async negotiate(viewerId: string): Promise<void> {
     const entry = this.peers.get(viewerId)
     if (!entry) return
+    if (entry.pc.signalingState !== 'stable') {
+      entry.needsRenegotiate = true
+      return
+    }
+    entry.needsRenegotiate = false
 
     const offer = await entry.pc.createOffer()
+    if (this.peers.get(viewerId) !== entry) return
     const sdp = preferOpusStereo(offer.sdp ?? '')
     await entry.pc.setLocalDescription({ type: 'offer', sdp })
 
@@ -218,6 +253,9 @@ export class HostSession {
       for (const candidate of entry.pendingIce.splice(0)) {
         await entry.pc.addIceCandidate(candidate).catch(() => {})
       }
+      if (entry.needsRenegotiate && entry.pc.signalingState === 'stable') {
+        void this.negotiate(viewerId)
+      }
       return
     }
 
@@ -232,14 +270,13 @@ export class HostSession {
       return
     }
 
-    // Party Voice (espectador enviando microfone para o host)
     if (msg.t === 'voice-offer' && this.partyVoiceEnabled) {
       this.closeVoicePeer(entry)
       const voicePc = new RTCPeerConnection({ iceServers: [], bundlePolicy: 'max-bundle' })
       entry.voicePc = voicePc
 
       voicePc.onicecandidate = (ev) => {
-        if (!ev.candidate) return
+        if (!ev.candidate || entry.voicePc !== voicePc) return
         this.send(viewerId, { t: 'voice-ice', candidate: toCandidatePayload(ev.candidate) })
       }
       voicePc.ontrack = (ev) => {
@@ -252,13 +289,21 @@ export class HostSession {
       }
 
       await voicePc.setRemoteDescription({ type: 'offer', sdp: msg.desc.sdp })
+      for (const cand of entry.pendingVoiceIce.splice(0)) {
+        await voicePc.addIceCandidate(cand).catch(() => {})
+      }
       const answer = await voicePc.createAnswer()
-      await voicePc.setLocalDescription(answer)
-      this.send(viewerId, { t: 'voice-answer', desc: { type: 'answer', sdp: answer.sdp ?? '' } })
+      const sdp = preferOpusStereo(answer.sdp ?? '')
+      await voicePc.setLocalDescription({ type: 'answer', sdp })
+      this.send(viewerId, { t: 'voice-answer', desc: { type: 'answer', sdp } })
       return
     }
 
-    if (msg.t === 'voice-ice' && entry.voicePc?.remoteDescription) {
+    if (msg.t === 'voice-ice') {
+      if (!entry.voicePc?.remoteDescription) {
+        entry.pendingVoiceIce.push(msg.candidate)
+        return
+      }
       await entry.voicePc.addIceCandidate(msg.candidate).catch(() => {})
     }
   }
@@ -267,6 +312,10 @@ export class HostSession {
     const entry = this.peers.get(viewerId)
     if (!entry) return
     this.peers.delete(viewerId)
+    if (entry.iceRestartTimer) {
+      clearTimeout(entry.iceRestartTimer)
+      entry.iceRestartTimer = null
+    }
     this.closeVoicePeer(entry)
     entry.pc.onicecandidate = null
     entry.pc.onconnectionstatechange = null
@@ -277,19 +326,15 @@ export class HostSession {
     }
   }
 
+  /**
+   * Atualiza bitrate, framerate, escala e codec via RTCRtpSender.setParameters
+   * sem chamar `videoTrack.applyConstraints()` (preservando o track do compositor/captura).
+   */
   async updateSettings(next: QualitySettings): Promise<void> {
     const codecChanged = next.codec !== this.settings.codec
     this.settings = next
-
-    const videoTrack = this.currentVideoTrack ?? this.stream.getVideoTracks()[0]
-    if (videoTrack) {
-      await videoTrack
-        .applyConstraints({
-          frameRate: { ideal: next.fps, max: next.fps },
-          ...(next.maxHeight ? { height: { max: next.maxHeight } } : {})
-        })
-        .catch((err) => console.warn('[rtc] applyConstraints falhou:', err))
-    }
+    const videoTrack = this.currentVideoTrack ?? this.stream.getVideoTracks()[0] ?? null
+    const scaleDown = this.computeScaleDown(videoTrack, next.maxHeight)
 
     for (const [viewerId, entry] of this.peers) {
       const sender = entry.videoTransceiver?.sender
@@ -298,6 +343,7 @@ export class HostSession {
         if (!params.encodings?.length) params.encodings = [{}]
         params.encodings[0].maxBitrate = next.maxBitrateKbps * 1000
         params.encodings[0].maxFramerate = next.fps
+        params.encodings[0].scaleResolutionDownBy = scaleDown
         params.degradationPreference = next.degradation
         await sender.setParameters(params).catch((err) => {
           console.warn('[rtc] setParameters falhou:', err)

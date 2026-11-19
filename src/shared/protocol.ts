@@ -151,7 +151,6 @@ export type SourceType =
   | 'text_source'
   /** microfone/entrada do mixer: só vai para a live nas cenas que têm esta fonte */
   | 'audio_input'
-  | 'audio_output'
 
 /** Configurações de cada tipo de fonte. Só os campos do tipo da fonte são usados. */
 export interface SourceSettings {
@@ -492,6 +491,8 @@ export interface MultiChatStatus {
   channel: string
   message: string | null
 }
+
+export type ChatSourceStatus = MultiChatStatus
 
 export type MultiChatEvent =
   | { t: 'messages'; messages: MultiChatMessage[] }
