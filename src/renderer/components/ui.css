@@ -288,6 +288,10 @@
   border-radius: var(--r-md);
   box-shadow: inset 0 0 0 1px var(--border);
 }
+.segmented.is-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
 .segment {
   padding: 0 var(--sp-4);
   height: 32px;

@@ -104,13 +104,15 @@ export function Toggle({
   onChange,
   label,
   hint,
-  disabled = false
+  disabled = false,
+  ariaLabel
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
   hint?: string
   disabled?: boolean
+  ariaLabel?: string
 }): React.JSX.Element {
   return (
     <label className={`toggle ${disabled ? 'is-disabled' : ''}`}>
@@ -122,6 +124,7 @@ export function Toggle({
         type="checkbox"
         checked={checked}
         disabled={disabled}
+        aria-label={ariaLabel || (label ? undefined : 'Alternar opção')}
         onChange={(e) => onChange(e.target.checked)}
       />
       <span className="toggle-track" aria-hidden="true">
@@ -141,19 +144,19 @@ interface SliderProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'onCha
   onChange: (v: number) => void
 }
 
-export function Slider({ value, min, max, step = 1, onChange, ...rest }: SliderProps): React.JSX.Element {
+export function Slider({ value, min, max, step = 1, onChange, className = '', style, ...rest }: SliderProps): React.JSX.Element {
   const pct = max > min ? Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100)) : 0
   return (
     <input
       type="range"
-      className="slider"
-      value={value}
       min={min}
       max={max}
       step={step}
+      value={value}
       onChange={(e) => onChange(Number(e.target.value))}
-      style={{ ['--fill' as string]: `${pct}%` }}
       {...rest}
+      className={`slider ${className}`}
+      style={{ ...style, ['--fill' as string]: `${pct}%` }}
     />
   )
 }
@@ -170,22 +173,26 @@ export function Segmented<T extends string>({
   options,
   value,
   onChange,
-  size = 'md'
+  size = 'md',
+  disabled = false
 }: {
   options: SegmentOption<T>[]
   value: T
   onChange: (v: T) => void
   size?: 'sm' | 'md'
+  disabled?: boolean
 }): React.JSX.Element {
   return (
-    <div className={`segmented segmented-${size}`} role="tablist">
+    <div className={`segmented segmented-${size} ${disabled ? 'is-disabled' : ''}`} role="tablist" aria-disabled={disabled}>
       {options.map((o) => (
         <button
           key={o.value}
+          type="button"
           role="tab"
           aria-selected={o.value === value}
+          disabled={disabled}
           className={`segment ${o.value === value ? 'is-active' : ''}`}
-          onClick={() => onChange(o.value)}
+          onClick={() => !disabled && onChange(o.value)}
           title={o.hint}
         >
           {o.label}

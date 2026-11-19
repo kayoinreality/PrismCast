@@ -64,13 +64,20 @@ mod win {
         let mut out = Vec::new();
         // Tenta primeiro JSON (`pactl -f json list sink-inputs`) disponível no PulseAudio 16+ / PipeWire
         if let Ok(output) = Command::new("pactl")
+            .env("LC_ALL", "C")
             .args(["-f", "json", "list", "sink-inputs"])
             .output()
         {
             if output.status.success() {
                 if let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(&output.stdout) {
                     for item in items {
-                        let index = item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                        let Some(index) = item
+                            .get("index")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32)
+                        else {
+                            continue;
+                        };
                         let props = item.get("properties");
                         let pid = props
                             .and_then(|p| p.get("application.process.id"))
@@ -87,7 +94,7 @@ mod win {
                             .and_then(|v| v.as_str())
                             .unwrap_or(&binary)
                             .to_string();
-                        if index > 0 && (pid > 0 || !binary.is_empty()) {
+                        if pid > 0 || !binary.is_empty() {
                             out.push(SinkInput {
                                 index,
                                 pid,
@@ -102,9 +109,13 @@ mod win {
         }
 
         // Fallback em texto (`pactl list sink-inputs`) para versões antigas do PulseAudio
-        if let Ok(output) = Command::new("pactl").args(["list", "sink-inputs"]).output() {
+        if let Ok(output) = Command::new("pactl")
+            .env("LC_ALL", "C")
+            .args(["list", "sink-inputs"])
+            .output()
+        {
             if let Ok(text) = String::from_utf8(output.stdout) {
-                let mut cur_idx = 0u32;
+                let mut cur_idx: Option<u32> = None;
                 let mut cur_pid = 0u32;
                 let mut cur_bin = String::new();
                 let mut cur_name = String::new();
@@ -112,19 +123,21 @@ mod win {
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if let Some(rest) = trimmed.strip_prefix("Sink Input #") {
-                        if cur_idx > 0 && (cur_pid > 0 || !cur_bin.is_empty()) {
-                            out.push(SinkInput {
-                                index: cur_idx,
-                                pid: cur_pid,
-                                binary: cur_bin.clone(),
-                                app_name: if cur_name.is_empty() {
-                                    cur_bin.clone()
-                                } else {
-                                    cur_name.clone()
-                                },
-                            });
+                        if let Some(idx) = cur_idx {
+                            if cur_pid > 0 || !cur_bin.is_empty() {
+                                out.push(SinkInput {
+                                    index: idx,
+                                    pid: cur_pid,
+                                    binary: cur_bin.clone(),
+                                    app_name: if cur_name.is_empty() {
+                                        cur_bin.clone()
+                                    } else {
+                                        cur_name.clone()
+                                    },
+                                });
+                            }
                         }
-                        cur_idx = rest.trim().parse::<u32>().unwrap_or(0);
+                        cur_idx = rest.trim().parse::<u32>().ok();
                         cur_pid = 0;
                         cur_bin.clear();
                         cur_name.clear();
@@ -136,13 +149,15 @@ mod win {
                         cur_name = val.trim_matches('"').to_string();
                     }
                 }
-                if cur_idx > 0 && (cur_pid > 0 || !cur_bin.is_empty()) {
-                    out.push(SinkInput {
-                        index: cur_idx,
-                        pid: cur_pid,
-                        binary: cur_bin.clone(),
-                        app_name: if cur_name.is_empty() { cur_bin } else { cur_name },
-                    });
+                if let Some(idx) = cur_idx {
+                    if cur_pid > 0 || !cur_bin.is_empty() {
+                        out.push(SinkInput {
+                            index: idx,
+                            pid: cur_pid,
+                            binary: cur_bin.clone(),
+                            app_name: if cur_name.is_empty() { cur_bin } else { cur_name },
+                        });
+                    }
                 }
             }
         }
@@ -368,30 +383,34 @@ mod win {
             }
         };
 
+        struct ChildGuard(std::process::Child);
+        impl Drop for ChildGuard {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+
         let Some(mut stdout) = child.stdout.take() else {
+            let _ = child.kill();
+            let _ = child.wait();
             eprintln!("error stdout indisponivel");
             return 1;
         };
+        let _guard = ChildGuard(child);
 
         eprintln!("ready {pid}");
         let mut out = std::io::stdout().lock();
         let mut buf = [0u8; 4096];
         loop {
             match stdout.read(&mut buf) {
-                Ok(0) => {
-                    let _ = child.kill();
-                    return 3;
-                }
+                Ok(0) => return 3,
                 Ok(n) => {
                     if out.write_all(&buf[..n]).and_then(|_| out.flush()).is_err() {
-                        let _ = child.kill();
                         return 0;
                     }
                 }
-                Err(_) => {
-                    let _ = child.kill();
-                    return 3;
-                }
+                Err(_) => return 3,
             }
         }
     }
@@ -596,7 +615,8 @@ mod win {
             let Some(path) = exe_path(w.pid) else { continue };
             let exe = file_name(&path);
             let lower = exe.to_lowercase();
-            if lower == "explorer.exe"
+            if seen_exe.contains(&lower)
+                || lower == "explorer.exe"
                 || lower == "textinputhost.exe"
                 || lower == "applicationframehost.exe"
                 || lower == "prismcast-audio.exe"
@@ -689,15 +709,26 @@ mod win {
                     return 3;
                 }
             }
+            let mut fatal_err: Option<String> = None;
             loop {
                 match capture.get_next_packet_size() {
                     Ok(Some(n)) if n > 0 => {
-                        if capture.read_from_device_to_deque(&mut queue).is_err() {
+                        if let Err(e) = capture.read_from_device_to_deque(&mut queue) {
+                            fatal_err = Some(e.to_string());
                             break;
                         }
                     }
-                    _ => break,
+                    Ok(_) => break,
+                    Err(e) => {
+                        fatal_err = Some(e.to_string());
+                        break;
+                    }
                 }
+            }
+            if let Some(err) = fatal_err {
+                eprintln!("error captura wasapi falhou: {err}");
+                let _ = client.stop_stream();
+                return 1;
             }
             if queue.is_empty() {
                 continue;

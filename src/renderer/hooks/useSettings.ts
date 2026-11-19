@@ -1,25 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AppSettings } from '@shared/ipc'
+import { ensureBridge } from '@/bridge'
 
 export interface SettingsResult {
   settings: AppSettings | null
   update(patch: Partial<AppSettings>): void
+  flush(): void
 }
 
 /** Espera este tempo parado antes de escrever no disco. */
-const FLUSH_DELAY_MS = 300
+const FLUSH_DELAY_MS = 250
 
 /**
- * Preferências persistidas.
+ * Preferências persistidas via backend autoritativo Rust.
  *
- * A escrita é otimista e adiada: o estado local muda na hora e o disco recebe
- * o acumulado depois que o usuário para de mexer. Sem isso, arrastar uma fonte
- * no palco dispara dezenas de gravações — um IPC e um write por movimento.
- *
- * A resposta do `set` é ignorada de propósito: ela poderia chegar depois de uma
- * mudança nova e fazer o controle voltar sozinho. Mudanças que nascem no main
- * (login da Twitch, chave salva) chegam por `onChanged` e são mescladas por
- * baixo do que ainda está pendente aqui.
+ * A escrita é otimista e coalescida com debounce curto para arraste contínuo no palco/slider,
+ * com `flush()` explícito antes de operações críticas (ex.: entrar ao vivo) e `pagehide`.
  */
 export function useSettings(): SettingsResult {
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -27,28 +23,44 @@ export function useSettings(): SettingsResult {
   const timer = useRef<number>(0)
 
   useEffect(() => {
-    void window.api.settings.get().then(setSettings)
-    return window.api.settings.onChanged((fromMain) => {
+    let alive = true
+    const api = ensureBridge()
+    void api.settings
+      .get()
+      .then((s) => {
+        if (alive) setSettings(s)
+      })
+      .catch((err) => {
+        console.warn('[settings] falha ao carregar preferências:', err)
+      })
+    const off = api.settings.onChanged((fromMain) => {
       setSettings({ ...fromMain, ...pending.current })
     })
+    return () => {
+      alive = false
+      off()
+    }
   }, [])
 
   const flush = useCallback((): void => {
+    window.clearTimeout(timer.current)
     const patch = pending.current
     pending.current = {}
-    if (Object.keys(patch).length > 0) void window.api.settings.set(patch)
+    if (Object.keys(patch).length > 0) {
+      void ensureBridge()
+        .settings.set(patch)
+        .catch((err) => {
+          console.warn('[settings] falha ao persistir preferências:', err)
+        })
+    }
   }, [])
 
-  // Fechar o app no meio de um ajuste nao pode perder a preferencia.
   useEffect(() => {
-    const onHide = (): void => {
-      window.clearTimeout(timer.current)
-      flush()
-    }
+    const onHide = (): void => flush()
     window.addEventListener('pagehide', onHide)
     return () => {
       window.removeEventListener('pagehide', onHide)
-      onHide()
+      flush()
     }
   }, [flush])
 
@@ -62,5 +74,5 @@ export function useSettings(): SettingsResult {
     [flush]
   )
 
-  return { settings, update }
+  return { settings, update, flush }
 }

@@ -5,10 +5,24 @@ import './Titlebar.css'
 /**
  * Barra de titulo propria do PrismCast Studio (a janela e `frame: false`).
  */
-export function Titlebar({ center }: { center?: ReactNode }): React.JSX.Element {
+export function Titlebar({
+  center,
+  onRequestClose
+}: {
+  center?: ReactNode
+  onRequestClose?: () => void
+}): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
 
-  useEffect(() => window.api.app.onMaximizeChange(setMaximized), [])
+  useEffect(() => {
+    const appApi = window.api.app as typeof window.api.app & {
+      isMaximized?: () => Promise<boolean>
+    }
+    if (typeof appApi.isMaximized === 'function') {
+      void appApi.isMaximized().then(setMaximized).catch(() => {})
+    }
+    return window.api.app.onMaximizeChange(setMaximized)
+  }, [])
 
   return (
     <div className="titlebar">
@@ -38,7 +52,7 @@ export function Titlebar({ center }: { center?: ReactNode }): React.JSX.Element 
         </button>
         <button
           className="win-btn win-close"
-          onClick={() => window.api.app.close()}
+          onClick={() => (onRequestClose ? onRequestClose() : window.api.app.close())}
           aria-label="Fechar"
           title="Fechar"
         >

@@ -15,11 +15,29 @@ const ROLE_LABEL: Record<KitWidget['role'], string> = {
   chat: 'Chat'
 }
 
+function joinPath(base: string, ...parts: string[]): string {
+  const sep = base.includes('\\') && !base.includes('/') ? '\\' : '/'
+  const cleanBase = base.replace(/[\\/]+$/, '')
+  return [cleanBase, ...parts.map((p) => p.replace(/^[\\/]+|[\\/]+$/g, ''))].join(sep)
+}
+
 function useThumb(kitPath: string, file: string): string | null {
   const [src, setSrc] = useState<string | null>(null)
   useEffect(() => {
-    const png = `${kitPath}\\export\\obs-previews\\${file.replace(/\.html?$/i, '.png')}`
-    void window.api.files.readImage(png).then(setSrc)
+    let cancelled = false
+    setSrc(null)
+    const png = joinPath(kitPath, 'export', 'obs-previews', file.replace(/\.html?$/i, '.png'))
+    void window.api.files
+      .readImage(png)
+      .then((res) => {
+        if (!cancelled) setSrc(res)
+      })
+      .catch(() => {
+        if (!cancelled) setSrc(null)
+      })
+    return () => {
+      cancelled = true
+    }
   }, [kitPath, file])
   return src
 }

@@ -28,7 +28,8 @@ export const SOURCE_LABEL: Record<SourceType, string> = {
   image_source: 'Imagem',
   color_source: 'Cor',
   text_source: 'Texto',
-  audio_input: 'Microfone'
+  audio_input: 'Microfone',
+  audio_output: 'Áudio do sistema'
 }
 
 /** A cena que o editor mexe: no modo estúdio é a prévia; fora dele, a que está no ar. */
@@ -47,7 +48,11 @@ function normalizeZ(scene: Scene): Scene {
     items: scene.items.map((it, i) => ({
       ...it,
       transform: { ...it.transform, zIndex: i },
-      verticalTransform: { ...it.verticalTransform, zIndex: i }
+      // Preserva zIndex independente no verticalTransform quando já definido.
+      verticalTransform: {
+        ...it.verticalTransform,
+        zIndex: typeof it.verticalTransform.zIndex === 'number' ? it.verticalTransform.zIndex : i
+      }
     }))
   }
 }
@@ -75,12 +80,17 @@ export function renameScene(st: StudioScenesState, id: string, name: string): St
 export function duplicateScene(st: StudioScenesState, id: string): StudioScenesState {
   const src = st.scenes.find((s) => s.id === id)
   if (!src) return st
+  const clone = typeof structuredClone === 'function' ? structuredClone(src) : (JSON.parse(JSON.stringify(src)) as Scene)
   const copy: Scene = {
-    ...src,
+    ...clone,
     id: newId('scene'),
     name: `${src.name} (cópia)`,
     createdAt: Date.now(),
-    items: src.items.map((it) => ({ ...it, id: newId('item') }))
+    items: clone.items.map((it) => ({
+      ...it,
+      id: newId('item'),
+      sourceId: newId('src')
+    }))
   }
   const idx = st.scenes.findIndex((s) => s.id === id)
   const scenes = [...st.scenes]
@@ -162,10 +172,40 @@ function defaultVertical(type: SourceType, tf: SourceTransform): SourceTransform
   if (type === 'color_source') return { ...FULL }
   // Coisa que cobre a tela toda no 16:9 vira uma faixa 16:9 no meio do 9:16.
   if (tf.width >= 0.99 && tf.height >= 0.99) return { ...VERTICAL_BAND }
+  const safeW = Math.max(0.02, tf.width)
+  const safeH = Math.max(0.02, tf.height)
   // Mesma proporção em pixels, com 90% da largura do canvas vertical.
-  const aspect = (tf.height * 1080) / (tf.width * 1920)
-  const height = Math.min(0.9, (0.9 * 1080 * aspect) / 1920)
+  const aspect = (safeH * 1080) / (safeW * 1920)
+  const height = Math.min(0.9, Math.max(0.05, (0.9 * 1080 * aspect) / 1920))
   return { x: 0.05, y: 0.05, width: 0.9, height, zIndex: 0 }
+}
+
+export function setTransformCrop(
+  tf: SourceTransform,
+  crop: Partial<Pick<SourceTransform, 'cropTop' | 'cropBottom' | 'cropLeft' | 'cropRight'>>
+): SourceTransform {
+  const clampCrop = (v: number | undefined): number | undefined =>
+    v === undefined ? undefined : Math.max(0, Math.min(0.9, Number.isFinite(v) ? v : 0))
+  return {
+    ...tf,
+    ...(crop.cropTop !== undefined ? { cropTop: clampCrop(crop.cropTop) } : {}),
+    ...(crop.cropBottom !== undefined ? { cropBottom: clampCrop(crop.cropBottom) } : {}),
+    ...(crop.cropLeft !== undefined ? { cropLeft: clampCrop(crop.cropLeft) } : {}),
+    ...(crop.cropRight !== undefined ? { cropRight: clampCrop(crop.cropRight) } : {})
+  }
+}
+
+export function clearTransformCrop(tf: SourceTransform): SourceTransform {
+  return { ...tf, cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 }
+}
+
+export function setTransformFlipX(tf: SourceTransform, flipX: boolean): SourceTransform {
+  return { ...tf, flipX }
+}
+
+export function setTransformOpacity(tf: SourceTransform, opacity: number): SourceTransform {
+  const clamped = Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 1
+  return { ...tf, opacity: clamped }
 }
 
 /** Fonte de som (microfone): não tem imagem, só liga o canal do mixer nesta cena. */
@@ -242,18 +282,22 @@ const px = (x: number, y: number, w: number, h: number): Partial<SourceTransform
   height: h / 1080
 })
 
-/** Monta a URL do widget com os parâmetros preenchidos. */
+/** Monta a URL do widget com os parâmetros preenchidos, preservando `#hash`. */
 export function widgetUrl(base: string, params: Record<string, string>): string {
-  const root = base.split('?')[0]
+  const hashIdx = base.indexOf('#')
+  const beforeHash = hashIdx >= 0 ? base.slice(0, hashIdx) : base
+  const hash = hashIdx >= 0 ? base.slice(hashIdx) : ''
+  const root = beforeHash.split('?')[0]
   const q = Object.entries(params).filter(([, v]) => v.trim() !== '')
-  if (q.length === 0) return root
-  return `${root}?${q.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')}`
+  if (q.length === 0) return `${root}${hash}`
+  return `${root}?${q.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&')}${hash}`
 }
 
 export function widgetParams(url: string): Record<string, string> {
-  const q = url.split('?')[1]
-  if (!q) return {}
-  return Object.fromEntries(new URLSearchParams(q))
+  const withoutHash = url.split('#')[0]
+  const qIdx = withoutHash.indexOf('?')
+  if (qIdx < 0) return {}
+  return Object.fromEntries(new URLSearchParams(withoutHash.slice(qIdx + 1)))
 }
 
 export function kitItem(w: KitWidget, transform?: Partial<SourceTransform>): SceneItem {

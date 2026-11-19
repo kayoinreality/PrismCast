@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Badge, Button, IconButton, StatPill } from '@/components/ui'
 import {
   IconActivity,
@@ -34,7 +34,11 @@ export function ViewerPlayer({
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null)
   const shellRef = useRef<HTMLDivElement>(null)
+  const chatListRef = useRef<HTMLDivElement>(null)
   const idleTimer = useRef<number>(0)
+  const voiceErrTimer = useRef<number>(0)
+  const onTopRef = useRef(false)
+  const prevMsgCount = useRef(0)
 
   const [controlsVisible, setControlsVisible] = useState(true)
   const [muted, setMuted] = useState(false)
@@ -44,6 +48,9 @@ export function ViewerPlayer({
   const [showChat, setShowChat] = useState(false)
   const [chatText, setChatText] = useState('')
   const [fullscreen, setFullscreen] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
+  const [chatStuck, setChatStuck] = useState(true)
+  const [unreadChat, setUnreadChat] = useState(0)
 
   const {
     stream,
@@ -65,6 +72,20 @@ export function ViewerPlayer({
     video.muted = muted
     video.volume = volume
   }, [muted, volume])
+
+  // Garante que alwaysOnTop não fique preso na janela principal ao sair/desmontar.
+  useEffect(() => {
+    onTopRef.current = onTop
+  }, [onTop])
+
+  useEffect(() => {
+    return () => {
+      window.clearTimeout(voiceErrTimer.current)
+      if (onTopRef.current) {
+        void window.api.app.setAlwaysOnTop(false).catch(() => {})
+      }
+    }
+  }, [])
 
   const wake = useCallback((): void => {
     setControlsVisible(true)
@@ -100,8 +121,49 @@ export function ViewerPlayer({
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleFullscreen, onLeave, wake])
 
+  // Auto-scroll e contagem de mensagens não lidas no chat da sala.
+  useLayoutEffect(() => {
+    const count = chatMessages.length
+    if (count === 0) {
+      prevMsgCount.current = 0
+      setUnreadChat(0)
+      return
+    }
+    const delta = Math.max(0, count - prevMsgCount.current)
+    prevMsgCount.current = count
+    if (showChat && chatStuck && chatListRef.current) {
+      chatListRef.current.scrollTop = chatListRef.current.scrollHeight
+      setUnreadChat(0)
+    } else if (delta > 0) {
+      setUnreadChat((u) => u + delta)
+    }
+  }, [chatMessages, showChat, chatStuck])
+
+  const onChatScroll = (): void => {
+    const el = chatListRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32
+    setChatStuck(atBottom)
+    if (atBottom) setUnreadChat(0)
+  }
+
   const toggleOnTop = async (): Promise<void> => {
-    setOnTop(await window.api.app.setAlwaysOnTop(!onTop))
+    try {
+      setOnTop(await window.api.app.setAlwaysOnTop(!onTop))
+    } catch {
+      /* ignora falha */
+    }
+  }
+
+  const handleTogglePartyVoice = async (): Promise<void> => {
+    setVoiceError(null)
+    const wasActive = partyVoiceActive
+    const ok = await viewer.togglePartyVoice()
+    if (!wasActive && !ok) {
+      setVoiceError('Não foi possível abrir o microfone para o Party Voice.')
+      window.clearTimeout(voiceErrTimer.current)
+      voiceErrTimer.current = window.setTimeout(() => setVoiceError(null), 4000)
+    }
   }
 
   const handleChatSubmit = (e: React.FormEvent): void => {
@@ -109,6 +171,8 @@ export function ViewerPlayer({
     if (!chatText.trim()) return
     viewer.sendChat(chatText)
     setChatText('')
+    setChatStuck(true)
+    setUnreadChat(0)
   }
 
   const waiting = !stream || state === 'conectando'
@@ -118,9 +182,8 @@ export function ViewerPlayer({
       ref={shellRef}
       className={`player ${controlsVisible || showChat ? '' : 'is-idle'}`}
       onMouseMove={wake}
-      onDoubleClick={toggleFullscreen}
     >
-      <video ref={videoRef} autoPlay playsInline />
+      <video ref={videoRef} autoPlay playsInline onDoubleClick={toggleFullscreen} />
 
       {waiting && (
         <div className="player-waiting">
@@ -131,6 +194,12 @@ export function ViewerPlayer({
 
       {state === 'instavel' && (
         <div className="player-banner">A conexão oscilou. Tentando recuperar...</div>
+      )}
+
+      {voiceError && (
+        <div className="player-banner" role="alert">
+          {voiceError}
+        </div>
       )}
 
       <div className="player-reactions">
@@ -203,15 +272,24 @@ export function ViewerPlayer({
               : 'Falar com o Host (Party Voice)'
           }
           active={partyVoiceActive}
-          onClick={() => void viewer.togglePartyVoice()}
+          onClick={() => void handleTogglePartyVoice()}
         >
           {partyVoiceActive ? <IconMic size={18} /> : <IconMicOff size={18} />}
         </IconButton>
 
         <IconButton
-          label="Chat da Sala"
+          label={unreadChat > 0 && !showChat ? `Chat da Sala (${unreadChat} novas)` : 'Chat da Sala'}
           active={showChat}
-          onClick={() => setShowChat((c) => !c)}
+          onClick={() => {
+            setShowChat((c) => {
+              const next = !c
+              if (next) {
+                setUnreadChat(0)
+                setChatStuck(true)
+              }
+              return next
+            })
+          }}
         >
           <IconChat size={18} />
         </IconButton>
@@ -235,12 +313,12 @@ export function ViewerPlayer({
       </div>
 
       {showChat && (
-        <aside className="player-chat-drawer fade-in" onDoubleClick={(e) => e.stopPropagation()}>
+        <aside className="player-chat-drawer fade-in">
           <div className="player-chat-head">
             <span>Chat ao Vivo</span>
             <Badge tone="live">{chatMessages.length}</Badge>
           </div>
-          <div className="player-chat-list">
+          <div className="player-chat-list" ref={chatListRef} onScroll={onChatScroll}>
             {chatMessages.length === 0 ? (
               <div className="player-chat-empty">Mande uma mensagem para o host e a sala!</div>
             ) : (
@@ -254,6 +332,20 @@ export function ViewerPlayer({
               ))
             )}
           </div>
+          {!chatStuck && unreadChat > 0 && (
+            <button
+              type="button"
+              className="link-btn"
+              style={{ alignSelf: 'center', fontSize: 12 }}
+              onClick={() => {
+                setChatStuck(true)
+                setUnreadChat(0)
+                chatListRef.current?.scrollTo({ top: chatListRef.current.scrollHeight })
+              }}
+            >
+              ↓ {unreadChat} {unreadChat === 1 ? 'mensagem nova' : 'mensagens novas'}
+            </button>
+          )}
           <form className="player-chat-form" onSubmit={handleChatSubmit}>
             <input
               type="text"

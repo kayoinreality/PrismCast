@@ -46,6 +46,7 @@ export function QualityPanel({
   }
 
   const choosePreset = (id: PresetId): void => {
+    if (disabled) return
     if (id === 'custom') {
       setForceCustom(true)
       return
@@ -58,7 +59,7 @@ export function QualityPanel({
   return (
     <div className={`quality-panel ${disabled ? 'is-disabled' : ''}`}>
       <div className="preset-row">
-        <Segmented options={PRESET_OPTIONS} value={active} onChange={choosePreset} size="sm" />
+        <Segmented options={PRESET_OPTIONS} value={active} onChange={choosePreset} size="sm" disabled={disabled} />
       </div>
 
       {!showCustom && (
@@ -73,6 +74,7 @@ export function QualityPanel({
           <Field label="Resolução">
             <Segmented
               size="sm"
+              disabled={disabled}
               value={String(settings.maxHeight ?? 'native')}
               onChange={(v) => set('maxHeight', v === 'native' ? null : Number(v))}
               options={HEIGHT_OPTIONS.map((h) => ({
@@ -85,6 +87,7 @@ export function QualityPanel({
           <Field label="Quadros por segundo">
             <Segmented
               size="sm"
+              disabled={disabled}
               value={String(settings.fps)}
               onChange={(v) => set('fps', Number(v))}
               options={FPS_OPTIONS.map((f) => ({ value: String(f), label: String(f) }))}
@@ -114,6 +117,7 @@ export function QualityPanel({
           >
             <Segmented
               size="sm"
+              disabled={disabled}
               value={settings.degradation}
               onChange={(v) => set('degradation', v)}
               options={[
@@ -130,6 +134,7 @@ export function QualityPanel({
           >
             <Segmented
               size="sm"
+              disabled={disabled}
               value={settings.codec}
               onChange={(v) => set('codec', v)}
               options={CODEC_OPTIONS.map((c) => ({

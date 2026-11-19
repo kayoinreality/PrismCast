@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FirewallStatus } from '@shared/ipc'
 import { Modal } from './Modal'
 import { Button } from './ui'
@@ -25,22 +25,35 @@ export function FirewallModal({
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [manual, setManual] = useState(false)
+  const copyTimer = useRef<number>(0)
+
+  useEffect(() => () => window.clearTimeout(copyTimer.current), [])
 
   if (!status) return null
 
   const authorize = async (): Promise<void> => {
     setBusy(true)
     setError(null)
-    const result = await window.api.firewall.authorize()
-    setBusy(false)
-    if (result.ok) onDone()
-    else setError(result.error ?? 'Não foi possível criar a regra.')
+    try {
+      const result = await window.api.firewall.authorize()
+      if (result.ok) onDone()
+      else setError(result.error ?? 'Não foi possível criar a regra.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível criar a regra.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const copy = async (): Promise<void> => {
-    await navigator.clipboard.writeText(status.command)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 1800)
+    try {
+      await navigator.clipboard.writeText(status.command)
+      setCopied(true)
+      window.clearTimeout(copyTimer.current)
+      copyTimer.current = window.setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* fallback silencioso se área de transferência falhar */
+    }
   }
 
   return (
@@ -50,13 +63,13 @@ export function FirewallModal({
       icon={<IconShield size={20} />}
       title="Liberar o app no firewall do Windows"
       description="Sem isso o Windows bloqueia as conexões de entrada e ninguém consegue encontrar nem entrar na sua transmissão."
-      onClose={onSkip}
+      onClose={busy ? undefined : onSkip}
       footer={
         <>
           <Button variant="ghost" onClick={onSkip} disabled={busy}>
             Tentar assim mesmo
           </Button>
-          <Button variant="primary" onClick={authorize} loading={busy} icon={<IconShield size={17} />}>
+          <Button variant="primary" onClick={() => void authorize()} loading={busy} icon={<IconShield size={17} />}>
             Liberar agora
           </Button>
         </>
@@ -101,7 +114,7 @@ export function FirewallModal({
               <Button
                 size="sm"
                 variant="subtle"
-                onClick={copy}
+                onClick={() => void copy()}
                 icon={copied ? <IconCheck size={15} /> : <IconCopy size={15} />}
               >
                 {copied ? 'Copiado' : 'Copiar'}

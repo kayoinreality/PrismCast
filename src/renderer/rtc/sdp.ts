@@ -27,9 +27,24 @@ export function preferOpusStereo(sdp: string, bitrateBps = 192_000): string {
 
   if (fmtpIndex >= 0) {
     const existing = lines[fmtpIndex].slice(`a=fmtp:${pt} `.length)
-    const keys = new Set(existing.split(';').map((kv) => kv.split('=')[0].trim()))
-    const additions = params.filter((p) => !keys.has(p.split('=')[0]))
-    if (additions.length) lines[fmtpIndex] = `a=fmtp:${pt} ${existing};${additions.join(';')}`
+    const map = new Map<string, string>()
+    const order: string[] = []
+    for (const kv of existing.split(';')) {
+      const trimmed = kv.trim()
+      if (!trimmed) continue
+      const eq = trimmed.indexOf('=')
+      const k = (eq < 0 ? trimmed : trimmed.slice(0, eq)).trim()
+      const v = eq < 0 ? '' : trimmed.slice(eq + 1).trim()
+      if (!map.has(k)) order.push(k)
+      map.set(k, v)
+    }
+    // Sobrescreve chaves existentes para que stereo/bitrate reflitam o pedido (RFC 7587).
+    for (const p of params) {
+      const [k, v] = p.split('=')
+      if (!map.has(k)) order.push(k)
+      map.set(k, v)
+    }
+    lines[fmtpIndex] = `a=fmtp:${pt} ${order.map((k) => (map.get(k) ? `${k}=${map.get(k)}` : k)).join(';')}`
   } else {
     const rtpmapIndex = lines.findIndex((l) => l.startsWith(`a=rtpmap:${pt} `))
     if (rtpmapIndex < 0) return sdp
@@ -61,15 +76,38 @@ export function applyCodecPreference(
   const capabilities = RTCRtpSender.getCapabilities('video')
   if (!capabilities?.codecs?.length) return
 
-  const wanted = MIME_BY_CODEC[codec === 'auto' ? 'h264' : codec]
-  const preferred = capabilities.codecs.filter(
-    (c) => c.mimeType.toLowerCase() === wanted.toLowerCase()
-  )
-  if (!preferred.length) return
+  const wanted = MIME_BY_CODEC[codec === 'auto' ? 'h264' : codec].toLowerCase()
+  const codecs = capabilities.codecs
+  const preferred: (typeof codecs)[number][] = []
+  const rest: (typeof codecs)[number][] = []
 
-  const rest = capabilities.codecs.filter(
-    (c) => c.mimeType.toLowerCase() !== wanted.toLowerCase()
-  )
+  // Agrupa cada codec com seu video/rtx imediatamente seguinte e prioriza High/Main em H.264.
+  const h264Rank = (fmtp: string | undefined): number => {
+    const s = (fmtp ?? '').toLowerCase()
+    if (s.includes('profile-level-id=6400')) return 0 // High
+    if (s.includes('profile-level-id=4d00')) return 1 // Main
+    if (s.includes('profile-level-id=42e0')) return 2 // Constrained Baseline
+    return 3
+  }
+
+  const preferredGroups: Array<{ rank: number; items: (typeof codecs)[number][] }> = []
+  for (let i = 0; i < codecs.length; i++) {
+    const c = codecs[i]
+    const next = codecs[i + 1]
+    const hasRtx = next && next.mimeType.toLowerCase() === 'video/rtx'
+    const pair = hasRtx ? [c, next] : [c]
+    if (hasRtx) i++
+
+    if (c.mimeType.toLowerCase() === wanted) {
+      preferredGroups.push({ rank: wanted === 'video/h264' ? h264Rank(c.sdpFmtpLine) : 0, items: pair })
+    } else {
+      rest.push(...pair)
+    }
+  }
+
+  if (preferredGroups.length === 0) return
+  preferredGroups.sort((a, b) => a.rank - b.rank)
+  for (const g of preferredGroups) preferred.push(...g.items)
 
   try {
     transceiver.setCodecPreferences([...preferred, ...rest])

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { PLATFORM_INFO, PRISMCAST_TWITCH_CLIENT_ID } from '@shared/ipc'
 import type { Destination, PlatformId, TwitchLoginState } from '@shared/protocol'
 import { Button, Field, TextInput, Toggle } from '@/components/ui'
-import { IconCheck, IconExternal, IconKey, IconPlus, IconTrash } from '@/components/Icons'
+import { IconAlert, IconCheck, IconExternal, IconKey, IconPlus, IconTrash } from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
 import { newId } from '@/studio/scenes'
 import './DestinationsScreen.css'
@@ -24,14 +24,19 @@ function KeyForm({ dest }: { dest: Destination }): React.JSX.Element {
 
   const save = async (): Promise<void> => {
     setSaving(true)
-    const res = await window.api.destinations.setKey(dest.id, key)
-    setSaving(false)
-    if (res.ok) {
-      setKey('')
-      setError(null)
-      toast(`Chave de ${dest.name} salva e destino ligado`, 'good')
-    } else {
-      setError(res.error)
+    try {
+      const res = await window.api.destinations.setKey(dest.id, key)
+      if (res.ok) {
+        setKey('')
+        setError(null)
+        toast(`Chave de ${dest.name} salva e destino ligado`, 'good')
+      } else {
+        setError(res.error)
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Não foi possível salvar a chave.')
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -66,10 +71,23 @@ function KeyForm({ dest }: { dest: Destination }): React.JSX.Element {
   )
 }
 
-function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginState }): React.JSX.Element {
+function TwitchLogin({
+  dest,
+  state,
+  onStartLogin
+}: {
+  dest: Destination
+  state: TwitchLoginState
+  onStartLogin: () => void
+}): React.JSX.Element {
   const { settings, update } = useStudio()
   const [clientId, setClientId] = useState(settings.twitchClientId)
   const [setup, setSetup] = useState(false)
+
+  useEffect(() => {
+    setClientId(settings.twitchClientId)
+  }, [settings.twitchClientId])
+
   const own = settings.twitchClientId.trim()
   const custom = own.length > 0 && own !== PRISMCAST_TWITCH_CLIENT_ID
   const scopes = dest.account?.scopes ?? []
@@ -95,7 +113,7 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
   return (
     <div className="twitch-login">
       <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-        <Button className="btn-twitch" onClick={() => void window.api.destinations.twitchLogin(dest.id)}>
+        <Button className="btn-twitch" onClick={onStartLogin}>
           {dest.account ? 'Entrar de novo com a Twitch' : 'Entrar com a Twitch'}
         </Button>
         <span className="hint">Pede a chave de transmissão, mudar título/categoria e escrever no chat.</span>
@@ -134,7 +152,15 @@ function TwitchLogin({ dest, state }: { dest: Destination; state: TwitchLoginSta
   )
 }
 
-function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLoginState }): React.JSX.Element {
+function DestinationCard({
+  dest,
+  twitch,
+  onStartTwitchLogin
+}: {
+  dest: Destination
+  twitch: TwitchLoginState
+  onStartTwitchLogin: () => void
+}): React.JSX.Element {
   const { settings, update } = useStudio()
   const state = useEngineState()
   const [advanced, setAdvanced] = useState(PLATFORM_INFO[dest.platform].serverFromDashboard && !dest.server)
@@ -176,6 +202,7 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
         </div>
         <Toggle
           label=""
+          ariaLabel={`Ativar ${dest.name}`}
           checked={dest.enabled}
           disabled={!ready}
           onChange={(v) => patch({ enabled: v })}
@@ -184,7 +211,7 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
 
       {status?.error && <div className="dest-error">{status.error}</div>}
 
-      {dest.platform === 'twitch' && <TwitchLogin dest={dest} state={twitch} />}
+      {dest.platform === 'twitch' && <TwitchLogin dest={dest} state={twitch} onStartLogin={onStartTwitchLogin} />}
       {dest.platform === 'twitch' && dest.account && !showKey ? (
         <button className="link-btn dest-advanced-toggle" onClick={() => setShowKey(true)}>
           Colar a chave manualmente
@@ -240,16 +267,21 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
         )}
         <div className="spacer" />
         {confirmRemove ? (
-          <Button
-            size="sm"
-            variant="danger"
-            onClick={() => {
-              void window.api.destinations.unlink(dest.id)
-              update({ destinations: settings.destinations.filter((d) => d.id !== dest.id) })
-            }}
-          >
-            Remover {dest.name}?
-          </Button>
+          <div className="row" style={{ gap: 'var(--sp-2)' }}>
+            <Button size="sm" variant="ghost" onClick={() => setConfirmRemove(false)}>
+              Cancelar
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => {
+                void window.api.destinations.unlink(dest.id)
+                update({ destinations: settings.destinations.filter((d) => d.id !== dest.id) })
+              }}
+            >
+              Remover {dest.name}?
+            </Button>
+          </div>
         ) : (
           <Button size="sm" variant="ghost" icon={<IconTrash size={14} />} onClick={() => setConfirmRemove(true)}>
             Remover destino
@@ -262,17 +294,32 @@ function DestinationCard({ dest, twitch }: { dest: Destination; twitch: TwitchLo
 
 export function DestinationsScreen(): React.JSX.Element {
   const { settings, update, toast } = useStudio()
-  const [twitch, setTwitch] = useState<TwitchLoginState>({ step: 'idle' })
+  const state = useEngineState()
+  const [twitchStates, setTwitchStates] = useState<Record<string, TwitchLoginState>>({})
+  const [activeTwitchDestId, setActiveTwitchDestId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
 
   useEffect(
     () =>
       window.api.destinations.onTwitchLogin((s) => {
-        setTwitch(s)
-        if (s.step === 'done') toast(`Twitch conectada como ${s.account.displayName}`, 'good')
+        const targetId = activeTwitchDestId ?? settings.destinations.find((d) => d.platform === 'twitch')?.id
+        if (targetId) {
+          setTwitchStates((prev) => ({ ...prev, [targetId]: s }))
+        }
+        if (s.step === 'done') {
+          toast(`Twitch conectada como ${s.account.displayName}`, 'good')
+          setActiveTwitchDestId(null)
+        } else if (s.step === 'idle' || s.step === 'error') {
+          setActiveTwitchDestId(null)
+        }
       }),
-    [toast]
+    [toast, activeTwitchDestId, settings.destinations]
   )
+
+  const startTwitchLogin = (destId: string): void => {
+    setActiveTwitchDestId(destId)
+    void window.api.destinations.twitchLogin(destId)
+  }
 
   const add = (platform: PlatformId): void => {
     const info = PLATFORM_INFO[platform]
@@ -305,9 +352,33 @@ export function DestinationsScreen(): React.JSX.Element {
           </p>
         </header>
 
+        {!state.multistream.ffmpegFound && (
+          <div className="dest-warn row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <span className="row" style={{ gap: 'var(--sp-2)' }}>
+              <IconAlert size={16} />
+              <span>
+                <strong>FFmpeg não encontrado.</strong> Instale o FFmpeg ou configure o executável nas preferências para conseguir transmitir.
+              </span>
+            </span>
+            <Button
+              size="sm"
+              variant="subtle"
+              icon={<IconExternal size={13} />}
+              onClick={() => window.api.app.openExternal('https://ffmpeg.org/download.html')}
+            >
+              Baixar FFmpeg
+            </Button>
+          </div>
+        )}
+
         <div className="dest-list">
           {settings.destinations.map((d) => (
-            <DestinationCard key={d.id} dest={d} twitch={d.platform === 'twitch' ? twitch : { step: 'idle' }} />
+            <DestinationCard
+              key={d.id}
+              dest={d}
+              twitch={d.platform === 'twitch' ? (twitchStates[d.id] ?? { step: 'idle' }) : { step: 'idle' }}
+              onStartTwitchLogin={() => startTwitchLogin(d.id)}
+            />
           ))}
         </div>
 

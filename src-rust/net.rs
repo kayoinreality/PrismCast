@@ -1,8 +1,10 @@
+use if_addrs::IfAddr;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, TcpListener, UdpSocket};
-use std::process::Command;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NetInterface {
     pub name: String,
@@ -11,6 +13,11 @@ pub struct NetInterface {
     pub broadcast: String,
     pub is_preferred: bool,
 }
+
+const CACHE_TTL: Duration = Duration::from_secs(30);
+
+static INTERFACE_CACHE: LazyLock<Mutex<Option<(Instant, Vec<NetInterface>)>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 /// Calcula o endereco de broadcast dirigido da sub-rede (`ip | (~mask)`).
 pub fn compute_broadcast(ip: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
@@ -22,7 +29,7 @@ pub fn compute_broadcast(ip: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Addr {
     Ipv4Addr::from(ip_u32 | !mask_u32)
 }
 
-/// Descobre qual IPv4 local o sistema operacional usa para a rota padrao.
+/// Descobre qual IPv4 local o sistema operacional usa para a rota padrao sem enviar pacotes.
 pub fn preferred_local_ipv4() -> Option<Ipv4Addr> {
     let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
     sock.connect("192.0.2.1:80").ok()?;
@@ -32,137 +39,61 @@ pub fn preferred_local_ipv4() -> Option<Ipv4Addr> {
     }
 }
 
-/// Lista interfaces IPv4 ativas no Windows usando PowerShell/Get-NetIPAddress ou fallback UDP.
+/// Invalida o cache de interfaces de rede (ex: quando o usuario abre o seletor de placas).
+pub fn invalidate_cache() {
+    if let Ok(mut guard) = INTERFACE_CACHE.lock() {
+        *guard = None;
+    }
+}
+
+/// Lista interfaces IPv4 ativas usando `if_addrs` (Win32 `GetAdaptersAddresses` / `getifaddrs`)
+/// com cache de 30 segundos para evitar picos de CPU em polling/broadcasts frequentes.
 pub fn list_interfaces() -> Vec<NetInterface> {
-    let preferred = preferred_local_ipv4().map(|ip| ip.to_string());
-    let mut out = Vec::new();
-
-    if cfg!(target_os = "windows") {
-        if let Ok(output) = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } | Select-Object InterfaceAlias, IPAddress, PrefixLength | ConvertTo-Json -Compress",
-            ])
-            .output()
-        {
-            if let Ok(text) = String::from_utf8(output.stdout) {
-                let trimmed = text.trim();
-                if !trimmed.is_empty() {
-                    let parsed: Result<serde_json::Value, _> = serde_json::from_str(trimmed);
-                    if let Ok(val) = parsed {
-                        let items = match val {
-                            serde_json::Value::Array(arr) => arr,
-                            obj @ serde_json::Value::Object(_) => vec![obj],
-                            _ => vec![],
-                        };
-                        for item in items {
-                            let name = item
-                                .get("InterfaceAlias")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("Ethernet")
-                                .to_string();
-                            let addr_str = item
-                                .get("IPAddress")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let prefix = item
-                                .get("PrefixLength")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(24) as u32;
-
-                            if addr_str.starts_with("169.254.") {
-                                continue;
-                            }
-                            if let Ok(ipv4) = addr_str.parse::<Ipv4Addr>() {
-                                let mask_u32 = if prefix == 0 {
-                                    0
-                                } else {
-                                    !0u32 << (32 - prefix.min(32))
-                                };
-                                let mask = Ipv4Addr::from(mask_u32);
-                                let broadcast = compute_broadcast(ipv4, mask);
-                                let is_preferred = preferred.as_deref() == Some(addr_str.as_str());
-                                out.push(NetInterface {
-                                    name,
-                                    address: addr_str,
-                                    netmask: mask.to_string(),
-                                    broadcast: broadcast.to_string(),
-                                    is_preferred,
-                                });
-                            }
-                        }
-                    }
-                }
+    if let Ok(guard) = INTERFACE_CACHE.lock() {
+        if let Some((fetched_at, cached)) = guard.as_ref() {
+            if fetched_at.elapsed() < CACHE_TTL {
+                return cached.clone();
             }
         }
-    } else if cfg!(target_os = "linux") {
-        if let Ok(output) = Command::new("ip")
-            .args(["-j", "-4", "addr", "show", "up"])
-            .output()
-        {
-            if let Ok(text) = String::from_utf8(output.stdout) {
-                if let Ok(serde_json::Value::Array(ifaces)) =
-                    serde_json::from_str::<serde_json::Value>(text.trim())
-                {
-                    for iface in ifaces {
-                        let name = iface
-                            .get("ifname")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("eth0")
-                            .to_string();
-                        if name == "lo" {
-                            continue;
-                        }
-                        if let Some(addr_info) =
-                            iface.get("addr_info").and_then(|v| v.as_array())
-                        {
-                            for info in addr_info {
-                                let addr_str = info
-                                    .get("local")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("")
-                                    .to_string();
-                                let prefix = info
-                                    .get("prefixlen")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(24) as u32;
-                                if addr_str.is_empty()
-                                    || addr_str.starts_with("127.")
-                                    || addr_str.starts_with("169.254.")
-                                {
-                                    continue;
-                                }
-                                if let Ok(ipv4) = addr_str.parse::<Ipv4Addr>() {
-                                    let mask_u32 = if prefix == 0 {
-                                        0
-                                    } else {
-                                        !0u32 << (32 - prefix.min(32))
-                                    };
-                                    let mask = Ipv4Addr::from(mask_u32);
-                                    let broadcast = compute_broadcast(ipv4, mask);
-                                    let is_preferred =
-                                        preferred.as_deref() == Some(addr_str.as_str());
-                                    out.push(NetInterface {
-                                        name: name.clone(),
-                                        address: addr_str,
-                                        netmask: mask.to_string(),
-                                        broadcast: broadcast.to_string(),
-                                        is_preferred,
-                                    });
-                                }
-                            }
-                        }
-                    }
+    }
+
+    let list = collect_interfaces();
+    if let Ok(mut guard) = INTERFACE_CACHE.lock() {
+        *guard = Some((Instant::now(), list.clone()));
+    }
+    list
+}
+
+fn collect_interfaces() -> Vec<NetInterface> {
+    let preferred = preferred_local_ipv4();
+    let mut out = Vec::new();
+
+    if let Ok(addrs) = if_addrs::get_if_addrs() {
+        for iface in addrs {
+            if iface.is_loopback() {
+                continue;
+            }
+            if let IfAddr::V4(v4) = iface.addr {
+                let ip = v4.ip;
+                if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+                    continue;
                 }
+                let mask = v4.netmask;
+                let broadcast = v4.broadcast.unwrap_or_else(|| compute_broadcast(ip, mask));
+                let is_preferred = preferred == Some(ip);
+                out.push(NetInterface {
+                    name: iface.name,
+                    address: ip.to_string(),
+                    netmask: mask.to_string(),
+                    broadcast: broadcast.to_string(),
+                    is_preferred,
+                });
             }
         }
     }
 
     if out.is_empty() {
-        if let Some(ip) = preferred_local_ipv4() {
+        if let Some(ip) = preferred {
             let mask = Ipv4Addr::new(255, 255, 255, 0);
             out.push(NetInterface {
                 name: "Rede Local".to_string(),
@@ -224,9 +155,13 @@ pub fn broadcast_targets(preferred_interface: Option<&str>) -> Vec<String> {
 }
 
 pub fn find_free_port(start_port: u16) -> u16 {
-    for p in start_port..(start_port + 30) {
+    let end_port = start_port.saturating_add(30);
+    for p in start_port..=end_port {
         if TcpListener::bind(("0.0.0.0", p)).is_ok() {
             return p;
+        }
+        if p == u16::MAX {
+            break;
         }
     }
     TcpListener::bind(("0.0.0.0", 0))
@@ -244,5 +179,25 @@ mod tests {
         let ip = Ipv4Addr::new(192, 168, 1, 42);
         let mask = Ipv4Addr::new(255, 255, 255, 0);
         assert_eq!(compute_broadcast(ip, mask), Ipv4Addr::new(192, 168, 1, 255));
+        assert_eq!(
+            compute_broadcast(ip, Ipv4Addr::new(0, 0, 0, 0)),
+            Ipv4Addr::BROADCAST
+        );
+    }
+
+    #[test]
+    fn test_find_free_port_no_overflow() {
+        let port = find_free_port(u16::MAX - 5);
+        assert!(port > 0);
+    }
+
+    #[test]
+    fn test_list_interfaces_and_cache() {
+        invalidate_cache();
+        let first = list_interfaces();
+        let second = list_interfaces();
+        assert_eq!(first.len(), second.len());
+        let targets = broadcast_targets(None);
+        assert!(targets.contains(&"255.255.255.255".to_string()));
     }
 }

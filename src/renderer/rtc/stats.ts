@@ -42,9 +42,12 @@ export function emptyStats(): StreamStats {
 }
 
 interface Sample {
-  timestamp: number
+  videoTimestamp: number
+  audioTimestamp: number
   videoBytes: number
   audioBytes: number
+  packetsLost: number
+  packetsTotal: number
 }
 
 /** Os tipos do DOM cobrem so parte do relatorio; o resto vem daqui. */
@@ -95,7 +98,8 @@ export class StatsSampler {
 
     let videoBytes = 0
     let audioBytes = 0
-    let now = 0
+    let videoTs = 0
+    let audioTs = 0
     let videoRtp: RawStat | null = null
     let remoteInbound: RawStat | null = null
 
@@ -105,12 +109,13 @@ export class StatsSampler {
 
       if (s.type === rtpType) {
         const bytes = (this.direction === 'send' ? s.bytesSent : s.bytesReceived) ?? 0
-        now = Math.max(now, s.timestamp)
         if (kind === 'video') {
           videoBytes += bytes
+          videoTs = Math.max(videoTs, s.timestamp)
           videoRtp = s
         } else if (kind === 'audio') {
           audioBytes += bytes
+          audioTs = Math.max(audioTs, s.timestamp)
         }
       }
 
@@ -130,6 +135,9 @@ export class StatsSampler {
     const rtp = videoRtp as RawStat | null
     const remote = remoteInbound as RawStat | null
 
+    let curLost = 0
+    let curTotal = 0
+
     // Fora do forEach: a ordem das entradas do relatorio nao e garantida, e o
     // calculo de perda precisa do outbound-rtp e do remote-inbound-rtp juntos.
     if (remote) {
@@ -139,7 +147,8 @@ export class StatsSampler {
       if (typeof remote.jitter === 'number') stats.jitterMs = Math.round(remote.jitter * 1000)
       const lost = remote.packetsLost ?? 0
       const sent = rtp?.packetsSent ?? 0
-      if (lost + sent > 0) stats.lossPct = Math.max(0, (lost / (lost + sent)) * 100)
+      curLost = lost
+      curTotal = lost + sent
     }
 
     if (rtp) {
@@ -157,21 +166,41 @@ export class StatsSampler {
         if (typeof rtp.jitter === 'number') stats.jitterMs = Math.round(rtp.jitter * 1000)
         const lost = rtp.packetsLost ?? 0
         const received = rtp.packetsReceived ?? 0
-        if (lost + received > 0) stats.lossPct = Math.max(0, (lost / (lost + received)) * 100)
+        curLost = lost
+        curTotal = lost + received
       }
     }
 
-    const sample: Sample = { timestamp: now, videoBytes, audioBytes }
-    if (this.previous && sample.timestamp > this.previous.timestamp) {
-      const seconds = (sample.timestamp - this.previous.timestamp) / 1000
-      stats.bitrateKbps = Math.max(
-        0,
-        Math.round(((sample.videoBytes - this.previous.videoBytes) * 8) / seconds / 1000)
-      )
-      stats.audioBitrateKbps = Math.max(
-        0,
-        Math.round(((sample.audioBytes - this.previous.audioBytes) * 8) / seconds / 1000)
-      )
+    const sample: Sample = {
+      videoTimestamp: videoTs,
+      audioTimestamp: audioTs,
+      videoBytes,
+      audioBytes,
+      packetsLost: curLost,
+      packetsTotal: curTotal
+    }
+    if (this.previous) {
+      if (sample.videoTimestamp > this.previous.videoTimestamp) {
+        const sec = (sample.videoTimestamp - this.previous.videoTimestamp) / 1000
+        stats.bitrateKbps = Math.max(
+          0,
+          Math.round(((sample.videoBytes - this.previous.videoBytes) * 8) / sec / 1000)
+        )
+      }
+      if (sample.audioTimestamp > this.previous.audioTimestamp) {
+        const sec = (sample.audioTimestamp - this.previous.audioTimestamp) / 1000
+        stats.audioBitrateKbps = Math.max(
+          0,
+          Math.round(((sample.audioBytes - this.previous.audioBytes) * 8) / sec / 1000)
+        )
+      }
+      const dLost = Math.max(0, sample.packetsLost - this.previous.packetsLost)
+      const dTotal = Math.max(0, sample.packetsTotal - this.previous.packetsTotal)
+      if (dTotal > 0) {
+        stats.lossPct = Math.min(100, Math.max(0, (dLost / dTotal) * 100))
+      }
+    } else if (curTotal > 0) {
+      stats.lossPct = Math.min(100, Math.max(0, (curLost / curTotal) * 100))
     }
     this.previous = sample
 

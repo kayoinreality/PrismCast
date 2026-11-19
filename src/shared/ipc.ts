@@ -6,6 +6,7 @@ import type { QualitySettings, PresetId } from './quality'
 import type {
   AudioApp,
   AudioChannelStatus,
+  AudioLevelSample,
   AudioMixerSettings,
   BrowserSourceFrame,
   ChatSettings,
@@ -18,6 +19,7 @@ import type {
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
+  HotkeyConflict,
   KitConfig,
   LiveInfo,
   MultiChatEvent,
@@ -30,6 +32,7 @@ import type {
   SourceKind,
   StudioCompositorSettings,
   StudioScenesState,
+  TelemetryStats,
   TwitchActionResult,
   TwitchCapabilities,
   TwitchCategory,
@@ -104,6 +107,7 @@ export interface FirewallStatus {
 
 export interface AppSettings {
   schemaVersion: number
+  deviceName?: string
   hostName: string
   viewerName: string
   quality: QualitySettings
@@ -120,6 +124,10 @@ export interface AppSettings {
   twitchClientId: string
   /** Pasta do kit de widgets (overlays HTML), ex. E:\kayoinreality-kit */
   kitPath: string | null
+  /** Pasta personalizada para gravações e clipes de replay. */
+  recordingDir?: string | null
+  /** Caminho customizado do binário FFmpeg. */
+  ffmpegPath?: string | null
   /** título e categoria da próxima live */
   live: LiveInfo
   chat: ChatSettings
@@ -183,6 +191,14 @@ export interface Api {
     /** PCM f32 estéreo intercalado, 48 kHz */
     onPcm(cb: (id: string, pcm: Float32Array) => void): Unsubscribe
     onStatus(cb: (status: AudioChannelStatus[]) => void): Unsubscribe
+    onLevels?(cb: (levels: AudioLevelSample[]) => void): Unsubscribe
+  }
+  telemetry?: {
+    get(): Promise<TelemetryStats>
+    onStats(cb: (stats: TelemetryStats) => void): Unsubscribe
+  }
+  hotkeys?: {
+    conflicts(bindings: HotkeyBindings): Promise<HotkeyConflict[]>
   }
   twitch: {
     capabilities(): Promise<TwitchCapabilities>

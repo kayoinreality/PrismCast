@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   ChatMessage,
   ConnectedViewer,
@@ -42,6 +42,9 @@ export interface HostBroadcast {
 
 export function useHostBroadcast(): HostBroadcast {
   const sessionRef = useRef<HostSession | null>(null)
+  const reactionTimers = useRef<Set<number>>(new Set())
+  const mountedRef = useRef(true)
+
   const [info, setInfo] = useState<HostInfo | null>(null)
   const [viewers, setViewers] = useState<ConnectedViewer[]>([])
   const [states, setStates] = useState<Record<string, PeerState>>({})
@@ -49,7 +52,23 @@ export function useHostBroadcast(): HostBroadcast {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
   const [reactions, setReactions] = useState<ReactionEvent[]>([])
 
+  const clearReactionTimers = useCallback((): void => {
+    for (const id of reactionTimers.current) window.clearTimeout(id)
+    reactionTimers.current.clear()
+  }, [])
+
+  const scheduleReactionExpiry = useCallback((reactionId: string): void => {
+    const t = window.setTimeout(() => {
+      reactionTimers.current.delete(t)
+      if (mountedRef.current) {
+        setReactions((prev) => prev.filter((r) => r.id !== reactionId))
+      }
+    }, 3600)
+    reactionTimers.current.add(t)
+  }, [])
+
   useEffect(() => {
+    mountedRef.current = true
     const offViewers = window.api.host.onViewers((list) => {
       setViewers(list)
 
@@ -86,25 +105,37 @@ export function useHostBroadcast(): HostBroadcast {
 
     const offReaction = window.api.host.onReaction((reaction) => {
       setReactions((prev) => [...prev.slice(-24), reaction])
-      setTimeout(() => {
-        setReactions((prev) => prev.filter((r) => r.id !== reaction.id))
-      }, 3600)
+      scheduleReactionExpiry(reaction.id)
     })
 
     return () => {
+      mountedRef.current = false
       offViewers()
       offMessage()
       offChat()
       offReaction()
+      clearReactionTimers()
+      sessionRef.current?.close()
+      sessionRef.current = null
     }
-  }, [])
+  }, [clearReactionTimers, scheduleReactionExpiry])
 
   useEffect(() => {
     if (!info) return
-    const timer = setInterval(() => {
-      void sessionRef.current?.readStats().then(setStats)
+    let cancelled = false
+    const timer = window.setInterval(() => {
+      const session = sessionRef.current
+      if (!session) return
+      void session.readStats().then((nextStats) => {
+        if (!cancelled && sessionRef.current === session) {
+          setStats(nextStats)
+        }
+      })
     }, 1000)
-    return () => clearInterval(timer)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
   }, [info])
 
   const start = useCallback(
@@ -113,38 +144,55 @@ export function useHostBroadcast(): HostBroadcast {
       settings: QualitySettings,
       opts: HostStartOptions
     ): Promise<HostStartResult> => {
+      sessionRef.current?.close()
+      sessionRef.current = null
+
       const session = new HostSession(stream, settings, (viewerId, msg) =>
         window.api.host.send(viewerId, msg)
       )
-      session.onStateChange = (viewerId, state) =>
-        setStates((prev) => ({ ...prev, [viewerId]: state }))
+      session.onStateChange = (viewerId, state) => {
+        if (sessionRef.current === session) {
+          setStates((prev) => ({ ...prev, [viewerId]: state }))
+        }
+      }
       sessionRef.current = session
 
-      const result = await window.api.host.start(opts)
-      if (result.ok) {
-        setChatMessages([])
-        setReactions([])
-        setInfo({ sessionId: result.sessionId, ip: result.ip, port: result.port, pin: result.pin })
-      } else {
+      try {
+        const result = await window.api.host.start(opts)
+        if (result.ok) {
+          clearReactionTimers()
+          setChatMessages([])
+          setReactions([])
+          setInfo({ sessionId: result.sessionId, ip: result.ip, port: result.port, pin: result.pin })
+        } else {
+          session.close()
+          if (sessionRef.current === session) sessionRef.current = null
+        }
+        return result
+      } catch (err) {
         session.close()
-        sessionRef.current = null
+        if (sessionRef.current === session) sessionRef.current = null
+        return { ok: false, error: err instanceof Error ? err.message : 'Erro ao iniciar transmissão.' }
       }
-      return result
     },
-    []
+    [clearReactionTimers]
   )
 
   const stop = useCallback(async (): Promise<void> => {
-    await window.api.host.stop()
-    sessionRef.current?.close()
-    sessionRef.current = null
-    setInfo(null)
-    setViewers([])
-    setStates({})
-    setStats(new Map())
-    setChatMessages([])
-    setReactions([])
-  }, [])
+    try {
+      await window.api.host.stop()
+    } finally {
+      clearReactionTimers()
+      sessionRef.current?.close()
+      sessionRef.current = null
+      setInfo(null)
+      setViewers([])
+      setStates({})
+      setStats(new Map())
+      setChatMessages([])
+      setReactions([])
+    }
+  }, [clearReactionTimers])
 
   const updateSettings = useCallback((settings: QualitySettings): void => {
     void sessionRef.current?.updateSettings(settings)
@@ -169,19 +217,20 @@ export function useHostBroadcast(): HostBroadcast {
     window.api.host.broadcast({ t: 'chat', message })
   }, [])
 
-  const sendReaction = useCallback((emoji: string, hostName = 'Host'): void => {
-    const reaction: ReactionEvent = {
-      id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-      senderName: hostName,
-      emoji,
-      timestamp: Date.now()
-    }
-    setReactions((prev) => [...prev.slice(-24), reaction])
-    setTimeout(() => {
-      setReactions((prev) => prev.filter((r) => r.id !== reaction.id))
-    }, 3600)
-    window.api.host.broadcast({ t: 'reaction', reaction })
-  }, [])
+  const sendReaction = useCallback(
+    (emoji: string, hostName = 'Host'): void => {
+      const reaction: ReactionEvent = {
+        id: `react-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        senderName: hostName,
+        emoji,
+        timestamp: Date.now()
+      }
+      setReactions((prev) => [...prev.slice(-24), reaction])
+      scheduleReactionExpiry(reaction.id)
+      window.api.host.broadcast({ t: 'reaction', reaction })
+    },
+    [scheduleReactionExpiry]
+  )
 
   const replaceVideoTrack = useCallback(async (track: MediaStreamTrack): Promise<void> => {
     await sessionRef.current?.replaceVideoTrack(track)
@@ -202,22 +251,42 @@ export function useHostBroadcast(): HostBroadcast {
     []
   )
 
-  return {
-    info,
-    viewers,
-    states,
-    stats,
-    chatMessages,
-    reactions,
-    start,
-    stop,
-    updateSettings,
-    kick,
-    sendChat,
-    sendReaction,
-    replaceVideoTrack,
-    replaceAudioTrack,
-    setPartyVoiceEnabled,
-    notifySourceChanged
-  }
+  return useMemo(
+    () => ({
+      info,
+      viewers,
+      states,
+      stats,
+      chatMessages,
+      reactions,
+      start,
+      stop,
+      updateSettings,
+      kick,
+      sendChat,
+      sendReaction,
+      replaceVideoTrack,
+      replaceAudioTrack,
+      setPartyVoiceEnabled,
+      notifySourceChanged
+    }),
+    [
+      info,
+      viewers,
+      states,
+      stats,
+      chatMessages,
+      reactions,
+      start,
+      stop,
+      updateSettings,
+      kick,
+      sendChat,
+      sendReaction,
+      replaceVideoTrack,
+      replaceAudioTrack,
+      setPartyVoiceEnabled,
+      notifySourceChanged
+    ]
+  )
 }

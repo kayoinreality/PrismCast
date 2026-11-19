@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { FirewallStatus } from '@shared/ipc'
 import { MAX_VIEWERS } from '@shared/protocol'
 import { Button, Field, TextInput, Toggle } from '@/components/ui'
@@ -20,35 +20,82 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
   const [chat, setChat] = useState('')
   const [firewall, setFirewall] = useState<FirewallStatus | null>(null)
   const [showFirewall, setShowFirewall] = useState(false)
+  const [stuck, setStuck] = useState(true)
+  const [unread, setUnread] = useState(0)
+  const chatLogRef = useRef<HTMLDivElement>(null)
+  const prevMsgCount = useRef(0)
+
   const info = broadcast.info
   const program = settings.scenes.scenes.find((s) => s.id === settings.scenes.activeSceneId)
 
   useEffect(() => {
-    void window.api.firewall.status().then(setFirewall)
+    let cancelled = false
+    void window.api.firewall
+      .status()
+      .then((st) => {
+        if (!cancelled) setFirewall(st)
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
   }, [])
 
-  const start = async (): Promise<void> => {
-    if (firewall && !firewall.ruleExists && !settings.firewallPromptDismissed) {
+  const start = async (skipFirewallCheck = false): Promise<void> => {
+    if (!skipFirewallCheck && firewall && !firewall.ruleExists && !settings.firewallPromptDismissed) {
       setShowFirewall(true)
       return
     }
     setStarting(true)
-    const res = await broadcast.start(engine.lanStream(), settings.quality, {
-      sourceId: 'program',
-      sourceName: program?.name ?? 'Estúdio',
-      sourceKind: 'screen',
-      hostName: settings.hostName,
-      requirePin: settings.requirePin,
-      maxViewers: MAX_VIEWERS
-    })
-    setStarting(false)
-    if (!res.ok) toast(res.error, 'bad')
+    try {
+      const res = await broadcast.start(engine.lanStream(), settings.quality, {
+        sourceId: 'program',
+        sourceName: program?.name ?? 'Estúdio',
+        sourceKind: 'screen',
+        hostName: settings.hostName,
+        requirePin: settings.requirePin,
+        maxViewers: MAX_VIEWERS
+      })
+      if (!res.ok) toast(res.error, 'bad')
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Não foi possível compartilhar na rede.', 'bad')
+    } finally {
+      setStarting(false)
+    }
   }
 
   // Trocar de cena muda o nome que os espectadores veem.
+  const notifySourceChanged = broadcast.notifySourceChanged
   useEffect(() => {
-    if (info && program) broadcast.notifySourceChanged('program', program.name, 'screen')
-  }, [info, program?.name, broadcast, program])
+    if (info && program) notifySourceChanged('program', program.name, 'screen')
+  }, [info?.sessionId, program?.name, notifySourceChanged])
+
+  // Auto-scroll + contador de mensagens não lidas no chat LAN.
+  useLayoutEffect(() => {
+    const count = broadcast.chatMessages.length
+    if (count === 0) {
+      prevMsgCount.current = 0
+      setUnread(0)
+      return
+    }
+    const delta = Math.max(0, count - prevMsgCount.current)
+    prevMsgCount.current = count
+    const el = chatLogRef.current
+    if (stuck && el) {
+      el.scrollTop = el.scrollHeight
+      setUnread(0)
+    } else if (delta > 0) {
+      setUnread((u) => u + delta)
+    }
+  }, [broadcast.chatMessages, stuck])
+
+  const onChatScroll = (): void => {
+    const el = chatLogRef.current
+    if (!el) return
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 32
+    setStuck(atBottom)
+    if (atBottom) setUnread(0)
+  }
 
   return (
     <div className="page">
@@ -116,7 +163,7 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
             )}
 
             <div className="lan-chat">
-              <div className="lan-chat-log">
+              <div className="lan-chat-log" ref={chatLogRef} onScroll={onChatScroll}>
                 {broadcast.chatMessages.length === 0 ? (
                   <span className="hint">Chat da rede local: aparece aqui o que os espectadores mandarem.</span>
                 ) : (
@@ -127,6 +174,20 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
                   ))
                 )}
               </div>
+              {unread > 0 && (
+                <button
+                  type="button"
+                  className="link-btn"
+                  style={{ alignSelf: 'flex-start', fontSize: 12 }}
+                  onClick={() => {
+                    setStuck(true)
+                    setUnread(0)
+                    chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight })
+                  }}
+                >
+                  ↓ {unread} {unread === 1 ? 'mensagem nova' : 'mensagens novas'}
+                </button>
+              )}
               <form
                 className="row"
                 style={{ gap: 'var(--sp-2)' }}
@@ -134,6 +195,7 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
                   e.preventDefault()
                   broadcast.sendChat(chat, settings.hostName)
                   setChat('')
+                  setStuck(true)
                 }}
               >
                 <TextInput value={chat} onChange={(e) => setChat(e.target.value)} placeholder="Mensagem" />
@@ -150,7 +212,7 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
               <span className="lan-live-title">Compartilhar o estúdio na rede</span>
               <span className="hint">Vai o que estiver no ar: “{program?.name}”.</span>
             </div>
-            <Button variant="primary" loading={starting} onClick={() => void start()}>
+            <Button variant="primary" loading={starting} onClick={() => void start(false)}>
               Começar
             </Button>
           </section>
@@ -176,6 +238,7 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
             />
             <QualityPanel
               settings={settings.quality}
+              audioLocked={info !== null}
               onChange={(quality) => {
                 update({ quality })
                 broadcast.updateSettings(quality)
@@ -190,12 +253,16 @@ export function LanScreen({ broadcast, onWatch }: { broadcast: HostBroadcast; on
         status={firewall}
         onDone={() => {
           setShowFirewall(false)
-          void window.api.firewall.status().then(setFirewall)
-          void start()
+          void window.api.firewall
+            .status()
+            .then(setFirewall)
+            .catch(() => {})
+          void start(true)
         }}
         onSkip={() => {
           setShowFirewall(false)
           update({ firewallPromptDismissed: true })
+          void start(true)
         }}
       />
     </div>

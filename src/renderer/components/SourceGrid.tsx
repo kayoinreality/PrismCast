@@ -5,11 +5,13 @@ import './SourceGrid.css'
 export function SourceGrid({
   sources,
   selectedId,
-  onSelect
+  onSelect,
+  onDoubleClick
 }: {
   sources: DesktopSource[]
   selectedId: string | null
   onSelect: (source: DesktopSource) => void
+  onDoubleClick?: (source: DesktopSource) => void
 }): React.JSX.Element {
   if (sources.length === 0) {
     return (
@@ -26,8 +28,13 @@ export function SourceGrid({
       {sources.map((source) => (
         <button
           key={source.id}
+          type="button"
           className={`source-tile ${source.id === selectedId ? 'is-selected' : ''}`}
           onClick={() => onSelect(source)}
+          onDoubleClick={() => {
+            onSelect(source)
+            onDoubleClick?.(source)
+          }}
           title={source.name}
         >
           <span className="source-thumb">

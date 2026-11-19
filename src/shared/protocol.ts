@@ -151,6 +151,7 @@ export type SourceType =
   | 'text_source'
   /** microfone/entrada do mixer: só vai para a live nas cenas que têm esta fonte */
   | 'audio_input'
+  | 'audio_output'
 
 /** Configurações de cada tipo de fonte. Só os campos do tipo da fonte são usados. */
 export interface SourceSettings {
@@ -202,7 +203,11 @@ export interface SourceTransform {
   cropBottom?: number
   cropLeft?: number
   cropRight?: number
+  flipX?: boolean
+  opacity?: number
 }
+
+export type TransitionType = 'cut' | 'fade' | 'fade-to-black' | 'fade_to_black' | 'slide'
 
 export interface SceneItem {
   id: string
@@ -232,7 +237,7 @@ export interface StudioScenesState {
   activeSceneId: string
   previewSceneId: string
   studioMode: boolean
-  transitionType: 'cut' | 'fade'
+  transitionType: TransitionType
   transitionDurationMs: number
 }
 
@@ -333,9 +338,19 @@ export interface AudioFilters {
   /** ganho antes do fader, em dB */
   gainDb: number
   limiter: { enabled: boolean; ceilingDb: number }
+  /** Equalizador 3 bandas (Fase 5) */
+  eqEnabled?: boolean
+  eqLowDb?: number
+  eqMidDb?: number
+  eqHighDb?: number
+  /** Audio Ducking (Fase 5) */
+  duckingEnabled?: boolean
+  duckingSourceId?: string | null
+  duckingAmountDb?: number
+  duckingReleaseMs?: number
 }
 
-export type AudioChannelKind = 'desktop' | 'mic' | 'app'
+export type AudioChannelKind = 'desktop' | 'mic' | 'app' | 'party_voice'
 
 /** off: só vai para a live · monitor: live e fone · monitor-only: só fone */
 export type AudioMonitorMode = 'off' | 'monitor' | 'monitor-only'
@@ -360,6 +375,31 @@ export interface AudioChannel {
 export interface AudioMixerSettings {
   channels: AudioChannel[]
   partyVoiceEnabled: boolean
+  monitorDeviceId?: string | null
+}
+
+export interface AudioLevelSample {
+  id: string
+  peakDb: number
+  inputDb: number
+  mutedSpeech: boolean
+}
+
+export interface HotkeyConflict {
+  accelerator: string
+  actions: HotkeyAction[]
+}
+
+export interface TelemetryStats {
+  compositorFps: number
+  targetFps: number
+  renderMsP95: number
+  droppedFrames: number
+  encodeBitrateKbps: number
+  encoder: string
+  cpuFallback: boolean
+  micMutedSpeaking: boolean
+  replayBufferedSeconds: number
 }
 
 /** Estado vivo de um canal (não vai para as preferências). */
@@ -427,7 +467,9 @@ export interface ChatSettings {
 
 export type ChatPlatform = 'twitch' | 'youtube' | 'kick'
 
-export type ChatFragment = { t: 'text'; text: string } | { t: 'emote'; url: string; name: string }
+export type ChatFragment =
+  | { t: 'text'; text: string }
+  | { t: 'emote'; url: string; name: string; srcSet?: string; provider?: string }
 
 /** Mensagem de qualquer plataforma, já no formato que o chat do app e os widgets mostram. */
 export interface MultiChatMessage {
@@ -444,7 +486,7 @@ export interface MultiChatMessage {
 }
 
 export interface MultiChatStatus {
-  platform: Exclude<ChatPlatform, 'twitch'>
+  platform: ChatPlatform
   /** off: sem canal configurado · waiting: canal sem live agora (tenta de novo sozinho) */
   state: 'off' | 'connecting' | 'connected' | 'waiting' | 'error'
   channel: string

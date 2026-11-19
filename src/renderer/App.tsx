@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Titlebar } from '@/components/Titlebar'
 import { Modal } from '@/components/Modal'
 import { Rail, type Page } from '@/components/Rail'
@@ -14,12 +14,19 @@ import { ViewerPlayer } from '@/screens/ViewerPlayer'
 import { useSettings } from '@/hooks/useSettings'
 import { useHostBroadcast } from '@/hooks/useHostBroadcast'
 import { useViewerStream, type ConnectTarget } from '@/hooks/useViewerStream'
-import { StudioProvider, useEngineState, useStudio } from '@/studio/StudioContext'
+import { StudioProvider, useStudio } from '@/studio/StudioContext'
+import { useLiveSlice, useRecorderSlice, useLanSlice, studioStore } from '@/studio/StudioStore'
 import { LiveStatus } from '@/components/LiveStatus'
+import { ensureBridge } from '@/bridge'
 import './App.css'
 
 export function App(): React.JSX.Element {
-  const { settings, update } = useSettings()
+  useEffect(() => {
+    ensureBridge()
+    studioStore.init()
+  }, [])
+
+  const { settings, update, flush } = useSettings()
 
   if (!settings) {
     return (
@@ -33,9 +40,37 @@ export function App(): React.JSX.Element {
   }
 
   return (
-    <StudioProvider settings={settings} update={update}>
+    <StudioProvider settings={settings} update={update} flushSettings={flush}>
       <Shell />
     </StudioProvider>
+  )
+}
+
+/** Isola o LiveStatus da Titlebar para que updates 1Hz não re-renderizem o Shell inteiro. */
+function TitlebarStatus({
+  onClick,
+  lanActive
+}: {
+  onClick: () => void
+  lanActive: boolean
+}): React.JSX.Element {
+  const { settings, engine } = useStudio()
+  const multistream = useLiveSlice()
+  const recorder = useRecorderSlice()
+  const { viewers } = useLanSlice()
+  const engineState = engine.state
+  const mergedState = {
+    ...engineState,
+    multistream: multistream.destinations.length > 0 || !engineState.live ? multistream : engineState.multistream,
+    recorder: recorder.recording || !engineState.recorder.recording ? recorder : engineState.recorder
+  }
+  return (
+    <LiveStatus
+      state={mergedState}
+      destinations={settings.destinations}
+      lanViewers={lanActive ? viewers.length : null}
+      onClick={onClick}
+    />
   )
 }
 
@@ -45,18 +80,63 @@ export function App(): React.JSX.Element {
  */
 function Shell(): React.JSX.Element {
   const { engine, settings, update, toast } = useStudio()
-  const state = useEngineState()
+  const liveSlice = useLiveSlice()
+  const recSlice = useRecorderSlice()
   const [page, setPage] = useState<Page>('studio')
   const [watching, setWatching] = useState(false)
+  const [confirmQuit, setConfirmQuit] = useState(false)
+  const [closingAll, setClosingAll] = useState(false)
   const broadcast = useHostBroadcast()
   const viewer = useViewerStream()
 
-  // Atalhos globais (funcionam com o jogo em foco).
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
+  const isBusyLiveOrRec = engine.state.live || liveSlice.active || engine.state.recorder.recording || recSlice.recording
+
+  const requestClose = useCallback(() => {
+    if (isBusyLiveOrRec) {
+      setConfirmQuit(true)
+    } else {
+      ensureBridge().app.close()
+    }
+  }, [isBusyLiveOrRec])
+
+  const quitAfterStopping = async (): Promise<void> => {
+    setClosingAll(true)
+    try {
+      if (engine.state.live || liveSlice.active) {
+        await engine.stopLive().catch(() => {})
+      }
+      if (engine.state.recorder.recording || recSlice.recording) {
+        await ensureBridge().recorder.stop().catch(() => {})
+      }
+      if (broadcast.info) {
+        await broadcast.stop().catch(() => {})
+      }
+    } finally {
+      setClosingAll(false)
+      setConfirmQuit(false)
+      ensureBridge().app.close()
+    }
+  }
+
+  // Listener de evento nativo `app:confirm-quit` vindo do main/Rust quando fechar janela pela barra do SO.
   useEffect(() => {
-    return window.api.app.onHotkey((action) => {
-      const mixer = settings.audioMixer
-      const studio = settings.studio
-      /** Muta/desmuta todos os canais de um tipo (vários microfones contam juntos). */
+    const onConfirmQuitEvent = (): void => {
+      if (isBusyLiveOrRec) setConfirmQuit(true)
+      else ensureBridge().app.close()
+    }
+    window.addEventListener('app:confirm-quit', onConfirmQuitEvent)
+    return () => window.removeEventListener('app:confirm-quit', onConfirmQuitEvent)
+  }, [isBusyLiveOrRec])
+
+  // Atalhos globais (funcionam com o jogo em foco) usando ref para não recriar o listener.
+  useEffect(() => {
+    return ensureBridge().app.onHotkey((action) => {
+      const cur = settingsRef.current
+      const mixer = cur.audioMixer
+      const studio = cur.studio
       const toggleKind = (kind: 'mic' | 'desktop', on: string, off: string): void => {
         const chans = mixer.channels.filter((c) => c.kind === kind)
         if (chans.length === 0) return
@@ -88,10 +168,10 @@ function Shell(): React.JSX.Element {
           break
       }
     })
-  }, [engine, settings.audioMixer, settings.studio, update, toast])
+  }, [engine, update, toast])
 
   const connectToHost = async (target: ConnectTarget, pin: string | null): Promise<string | null> => {
-    const result = await viewer.connect(target, pin, settings.viewerName)
+    const result = await viewer.connect(target, pin, settingsRef.current.viewerName)
     if (!result.ok) return result.message
     setWatching(true)
     return null
@@ -132,17 +212,16 @@ function Shell(): React.JSX.Element {
   return (
     <div className="app">
       <Titlebar
-        center={
-          <LiveStatus
-            state={state}
-            destinations={settings.destinations}
-            lanViewers={broadcast.info ? broadcast.viewers.length : null}
-            onClick={() => setPage('studio')}
-          />
-        }
+        onRequestClose={requestClose}
+        center={<TitlebarStatus lanActive={broadcast.info !== null} onClick={() => setPage('studio')} />}
       />
       <div className="shell">
-        <Rail page={page} onChange={setPage} live={state.live} lan={broadcast.info !== null} />
+        <Rail
+          page={page}
+          onChange={setPage}
+          live={engine.state.live || liveSlice.active}
+          lan={broadcast.info !== null}
+        />
         <main className="shell-page">
           {page === 'studio' && <StudioScreen onOpenDestinations={() => setPage('destinations')} />}
           {page === 'widgets' && <WidgetsScreen onDone={() => setPage('studio')} />}
@@ -161,6 +240,25 @@ function Shell(): React.JSX.Element {
           {page === 'settings' && <SettingsScreen />}
         </main>
       </div>
+
+      <Modal
+        open={confirmQuit}
+        onClose={closingAll ? undefined : () => setConfirmQuit(false)}
+        width={420}
+        icon={<IconAlert size={19} />}
+        title="Você ainda está ao vivo ou gravando"
+        description="Fechar o PrismCast agora vai encerrar sua transmissão e finalizar o arquivo de gravação."
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setConfirmQuit(false)} disabled={closingAll}>
+              Continuar no estúdio
+            </Button>
+            <Button variant="danger" loading={closingAll} onClick={() => void quitAfterStopping()}>
+              Encerrar tudo e fechar
+            </Button>
+          </>
+        }
+      />
     </div>
   )
 }

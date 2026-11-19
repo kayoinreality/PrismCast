@@ -1,36 +1,30 @@
 {
   "name": "prismcast-studio",
   "version": "2.4.0",
-  "description": "PrismCast Studio — Transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML (browser sources) e login real nas plataformas (Windows & Linux)",
-  "main": "./out/main/index.js",
+  "description": "PrismCast Studio — Motor nativo em Rust + Tauri v2 para transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML e Multichat",
   "author": "kayor <kayor@users.noreply.github.com>",
   "homepage": "https://github.com/kayoinreality/PrismCast",
   "private": true,
+  "type": "module",
   "scripts": {
-    "dev": "electron-vite dev",
-    "dev:2": "electron-vite preview",
-    "rust:build": "cargo build --release",
-    "rust:test": "cargo test",
-    "build": "npm run typecheck && cargo build --release && electron-vite build",
-    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "dist": "npm run build && electron-builder --win --config electron-builder.yml",
-    "dist:win": "npm run build && electron-builder --win --config electron-builder.yml",
-    "dist:linux": "npm run build && electron-builder --linux --config electron-builder.yml"
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.web.json",
+    "rust:check": "cargo check --all-targets",
+    "rust:test": "cargo test --all-targets",
+    "rust:build": "cargo build --release"
   },
   "dependencies": {
-    "ws": "^8.21.3"
+    "@tauri-apps/api": "^2.5.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.3",
-    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^5.2.0",
-    "electron": "^44.0.0",
-    "electron-builder": "^26.15.3",
-    "electron-vite": "^5.0.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
     "typescript": "~5.9.3",
     "vite": "^7.3.6"
   }
