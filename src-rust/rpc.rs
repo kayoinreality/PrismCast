@@ -40,7 +40,8 @@ use crate::protocol::{
     AppSettings, AudioChannel, CanvasOrientation, Destination, ExternalControlStatus,
     GpuPipelineStatus, HostToViewer, HotkeyAction, HotkeyBindings, KitConfig, LiveInfo,
     MultiChatEvent, PlatformId, Scene, SourceKind, TelemetryStats, TransitionType,
-    TwitchLoginState, ViewerToHost, MAX_DB, MAX_VIEWERS, MIN_DB, RUST_RPC_PORT, SIGNALING_PORT,
+    TwitchLoginState, UpdateState, ViewerToHost, MAX_DB, MAX_VIEWERS, MIN_DB, RUST_RPC_PORT,
+    SIGNALING_PORT,
 };
 use crate::recorder::{remux_to_mp4, RecorderEngine};
 use crate::rtc_host::{apply_codec_preference, prefer_opus_stereo, RtcHostState};
@@ -50,6 +51,7 @@ use crate::signaling::{
 use crate::store::{
     obs_ws_password_secret, stream_key_secret, twitch_refresh_secret, SettingsStore,
 };
+use crate::updater::UpdateManager;
 use crate::virtual_cam::{self, VirtualCameraEngine};
 use crate::vst_host;
 use futures_util::{SinkExt, StreamExt};
@@ -173,6 +175,7 @@ pub struct AppEngine {
     pub discovery: Arc<AsyncMutex<DiscoveryEngine>>,
     pub signaling: Arc<AsyncMutex<SignalingServer>>,
     pub viewer_client: Arc<AsyncMutex<SignalingClient>>,
+    pub updater: Arc<UpdateManager>,
     hotkeys: Mutex<Option<HotkeyManager>>,
     evt_tx: broadcast::Sender<RpcEvent>,
     obs_event_tx: broadcast::Sender<ObsEvent>,
@@ -267,6 +270,7 @@ impl AppEngine {
             discovery: Arc::new(AsyncMutex::new(discovery)),
             signaling: Arc::new(AsyncMutex::new(SignalingServer::new())),
             viewer_client: Arc::new(AsyncMutex::new(SignalingClient::new())),
+            updater: Arc::new(UpdateManager::new()),
             hotkeys: Mutex::new(None),
             evt_tx,
             obs_event_tx,
@@ -325,6 +329,43 @@ impl AppEngine {
             let eng_obs = engine.clone();
             tokio::spawn(async move {
                 eng_obs.reconcile_obs_ws().await;
+            });
+
+            // Verificação automática não-bloqueante de novas versões no GitHub Releases
+            let eng_upd = Arc::downgrade(&engine);
+            let cancel_upd = engine.bg_cancel.clone();
+            tokio::spawn(async move {
+                tokio::select! {
+                    _ = cancel_upd.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_secs(6)) => {}
+                }
+                let Some(eng) = eng_upd.upgrade() else {
+                    return;
+                };
+                let cfg = eng.store.snapshot().updater;
+                if !cfg.auto_check {
+                    return;
+                }
+                let eng_ev = eng.clone();
+                let st = eng
+                    .updater
+                    .check(cfg.include_prereleases, move |s| {
+                        eng_ev.emit_serializable("updater:status", s);
+                    })
+                    .await;
+                if cfg.auto_download
+                    && st.state == UpdateState::Available
+                    && st.asset.is_some()
+                    && st.latest_version.as_deref() != cfg.skipped_version.as_deref()
+                {
+                    let eng_dl = eng.clone();
+                    let _ = eng
+                        .updater
+                        .download(move |s| {
+                            eng_dl.emit_serializable("updater:status", s);
+                        })
+                        .await;
+                }
             });
         }
 
@@ -892,6 +933,59 @@ impl AppEngine {
                     Ok(Err(e)) => json!({ "ok": false, "error": e }),
                     Err(e) => json!({ "ok": false, "error": e.to_string() }),
                 }
+            }
+
+            // ------------------------------------------------ Atualização Automática (GitHub Releases)
+            "updater.status" | "updater_status" => {
+                serde_json::to_value(self.updater.status()).unwrap_or(Value::Null)
+            }
+            "updater.check" | "updater_check" => {
+                let include_pre = params
+                    .get("includePrereleases")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or_else(|| self.store.snapshot().updater.include_prereleases);
+                let eng = self.clone();
+                let st = self
+                    .updater
+                    .check(include_pre, move |s| {
+                        eng.emit_serializable("updater:status", s);
+                    })
+                    .await;
+                serde_json::to_value(st).unwrap_or(Value::Null)
+            }
+            "updater.download" | "updater_download" => {
+                let eng = self.clone();
+                let st = self
+                    .updater
+                    .download(move |s| {
+                        eng.emit_serializable("updater:status", s);
+                    })
+                    .await;
+                serde_json::to_value(st).unwrap_or(Value::Null)
+            }
+            "updater.cancel" | "updater_cancel" => {
+                let st = self.updater.cancel_download();
+                self.emit_serializable("updater:status", &st);
+                serde_json::to_value(st).unwrap_or(Value::Null)
+            }
+            "updater.install" | "updater_install" => {
+                if self.is_busy() {
+                    return json!({
+                        "ok": false,
+                        "shouldExit": false,
+                        "error": "Encerre a transmissão ou gravação antes de instalar a atualização."
+                    });
+                }
+                let eng = self.clone();
+                let outcome = self.updater.install_prepared(move |s| {
+                    eng.emit_serializable("updater:status", s);
+                });
+                json!({
+                    "ok": outcome.ok,
+                    "shouldExit": outcome.should_exit,
+                    "message": outcome.message,
+                    "error": if outcome.ok { Value::Null } else { Value::String(outcome.message.clone()) }
+                })
             }
 
             // ------------------------------------------------ Kit de Widgets (sem JS/vm)

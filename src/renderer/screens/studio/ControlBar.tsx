@@ -56,19 +56,21 @@ function useOutside(open: boolean, close: () => void): React.RefObject<HTMLDivEl
   return ref
 }
 
+const EMPTY_LIVE_INFO: LiveInfo = { title: '', categoryId: '', categoryName: '' }
+
 /** Título e categoria na própria barra: clique e edite, inclusive no meio da live. */
 function LiveTitle({ onOpenDestinations }: { onOpenDestinations: () => void }): React.JSX.Element {
   const { engine, settings, update, toast } = useStudio()
   const state = useEngineState()
   const caps = useTwitchCaps()
+  const live = settings.live ?? EMPTY_LIVE_INFO
   const [open, setOpen] = useState(false)
-  const [draft, setDraft] = useState<LiveInfo>(settings.live)
+  const [draft, setDraft] = useState<LiveInfo>(live)
   const [saving, setSaving] = useState(false)
   const ref = useOutside(open, () => setOpen(false))
-  const live = settings.live
 
   useEffect(() => {
-    if (open) setDraft(settings.live)
+    if (open) setDraft(settings.live ?? EMPTY_LIVE_INFO)
   }, [open, settings.live])
 
   const save = async (): Promise<void> => {

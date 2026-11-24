@@ -1522,6 +1522,95 @@ pub enum WidgetEvent {
     Chat(MultiChatEvent),
 }
 
+// ------------------------------------------------------------------ Atualização Automática (GitHub Releases)
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdaterSettings {
+    pub auto_check: bool,
+    pub auto_download: bool,
+    pub include_prereleases: bool,
+    pub skipped_version: Option<String>,
+}
+
+impl Default for UpdaterSettings {
+    fn default() -> Self {
+        Self {
+            auto_check: true,
+            auto_download: false,
+            include_prereleases: false,
+            skipped_version: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateState {
+    #[default]
+    Idle,
+    Checking,
+    UpToDate,
+    Available,
+    Downloading,
+    Ready,
+    Installing,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateAssetInfo {
+    pub name: String,
+    pub download_url: String,
+    pub size_bytes: u64,
+    pub sha256: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UpdateStatus {
+    pub state: UpdateState,
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub release_name: Option<String>,
+    pub release_notes: Option<String>,
+    pub release_url: Option<String>,
+    pub published_at: Option<String>,
+    pub install_kind: String,
+    pub asset: Option<UpdateAssetInfo>,
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub progress_percent: f32,
+    pub downloaded_path: Option<String>,
+    pub verified_sha256: bool,
+    pub last_checked_at: Option<u64>,
+    pub error: Option<String>,
+}
+
+impl Default for UpdateStatus {
+    fn default() -> Self {
+        Self {
+            state: UpdateState::Idle,
+            current_version: env!("CARGO_PKG_VERSION").to_string(),
+            latest_version: None,
+            release_name: None,
+            release_notes: None,
+            release_url: None,
+            published_at: None,
+            install_kind: "unknown".to_string(),
+            asset: None,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            progress_percent: 0.0,
+            downloaded_path: None,
+            verified_sha256: false,
+            last_checked_at: None,
+            error: None,
+        }
+    }
+}
+
 // ------------------------------------------------------------------ Preferências Globais (AppSettings Schema v3)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1541,7 +1630,7 @@ pub struct AppSettings {
     pub hotkeys: HotkeyBindings,
     pub destinations: Vec<Destination>,
     pub scenes: StudioScenesState,
-    #[serde(alias = "live")]
+    #[serde(rename = "live", alias = "liveInfo")]
     pub live_info: LiveInfo,
     pub chat: ChatSettings,
     pub kit_path: Option<String>,
@@ -1553,6 +1642,7 @@ pub struct AppSettings {
     pub dynamic_bitrate: DynamicBitrateSettings,
     pub virtual_camera: VirtualCameraSettings,
     pub external_control: ExternalControlSettings,
+    pub updater: UpdaterSettings,
 }
 
 impl Default for AppSettings {
@@ -1587,6 +1677,7 @@ impl Default for AppSettings {
             dynamic_bitrate: DynamicBitrateSettings::default(),
             virtual_camera: VirtualCameraSettings::default(),
             external_control: ExternalControlSettings::default(),
+            updater: UpdaterSettings::default(),
         }
     }
 }
@@ -1885,5 +1976,32 @@ mod tests {
         let t = &settings.scenes.scenes[0].items[0].transform;
         assert!(t.flip_x);
         assert_eq!(t.opacity, 1.0);
+    }
+
+    #[test]
+    fn test_app_settings_serializes_live_field_and_accepts_legacy_live_info() {
+        let mut settings = AppSettings::default();
+        settings.live_info.title = "Minha Live".to_string();
+        settings.live_info.category_name = "Just Chatting".to_string();
+
+        let serialized = serde_json::to_value(&settings).expect("serialize AppSettings");
+        assert_eq!(
+            serialized.get("live").and_then(|v| v.get("title")).and_then(|v| v.as_str()),
+            Some("Minha Live")
+        );
+        assert!(
+            serialized.get("liveInfo").is_none(),
+            "AppSettings deve serializar como 'live' para o frontend"
+        );
+        assert_eq!(
+            serialized.get("updater").and_then(|v| v.get("autoCheck")).and_then(|v| v.as_bool()),
+            Some(true)
+        );
+
+        let legacy: AppSettings = serde_json::from_str(
+            r#"{ "liveInfo": { "title": "Legado", "categoryId": "1", "categoryName": "Games" } }"#,
+        )
+        .expect("deserialize legacy liveInfo");
+        assert_eq!(legacy.live_info.title, "Legado");
     }
 }

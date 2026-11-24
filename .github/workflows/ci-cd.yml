@@ -198,8 +198,16 @@ jobs:
             TAG="v${VERSION}"
           fi
 
+          echo "Gerando manifesto SHA256SUMS.txt para verificação do atualizador automático..."
+          (
+            cd release-assets
+            rm -f SHA256SUMS.txt
+            sha256sum * > SHA256SUMS.txt
+          )
+
           echo "Artefatos prontos para publicação na release ${TAG}:"
           ls -lh release-assets/
+          cat release-assets/SHA256SUMS.txt
 
           if [[ -f ".github/RELEASE_NOTES.md" ]]; then
             NOTES_ARGS=(--notes-file ".github/RELEASE_NOTES.md")

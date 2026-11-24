@@ -53,7 +53,7 @@ export function SourcesDock({
   selectedId: string | null
   onSelect: (id: string | null) => void
 }): React.JSX.Element {
-  const { settings, update, toast, kit, pushUndoSnapshot, undo } = useStudio()
+  const { engine, settings, update, toast, kit, pushUndoSnapshot, undo } = useStudio()
   const st = settings.scenes
   const [menu, setMenu] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
@@ -502,13 +502,12 @@ export function SourcesDock({
         onClose={() => setPicker(null)}
         onPick={(src) => {
           setPicker(null)
-          add(
-            makeItem(src.kind === 'screen' ? 'screen_capture' : 'window_capture', src.name, {
-              captureId: src.id,
-              captureName: src.name
-            }),
-            true
-          )
+          const item = makeItem(src.kind === 'screen' ? 'screen_capture' : 'window_capture', src.name, {
+            captureId: src.id,
+            captureName: src.name
+          })
+          add(item, true)
+          void engine.startCapture(item)
         }}
       />
       <WidgetPickerModal open={widgetPicker} onClose={() => setWidgetPicker(false)} onPick={addWidget} />

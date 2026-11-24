@@ -211,7 +211,17 @@ function Strip({
         </IconButton>
       </div>
       {problem ? (
-        <button className="strip-problem" onClick={onOpen} title={problem}>
+        <button
+          className="strip-problem"
+          onClick={() => {
+            if (ch.kind === 'desktop') {
+              void engine.requestSystemAudio()
+            } else {
+              onOpen()
+            }
+          }}
+          title={problem}
+        >
           <IconAlert size={12} /> {problem}
         </button>
       ) : (

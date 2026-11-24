@@ -323,8 +323,47 @@ mod commands {
     delegate_cmd!(net_interfaces, "net_interfaces");
     delegate_cmd!(firewall_status, "firewall_status");
     delegate_cmd!(firewall_authorize, "firewall_authorize");
+    delegate_cmd!(updater_status, "updater_status");
+    delegate_cmd!(updater_download, "updater_download");
+    delegate_cmd!(updater_cancel, "updater_cancel");
     delegate_cmd!(settings_get, "settings_get");
     delegate_cmd!(dest_twitch_cancel, "dest_twitch_cancel");
+
+    #[tauri::command]
+    pub async fn updater_check(
+        state: State<'_, TauriEngineState>,
+        #[allow(non_snake_case)] includePrereleases: Option<bool>,
+    ) -> Result<Value, String> {
+        let params = match includePrereleases {
+            Some(v) => json!({ "includePrereleases": v }),
+            None => Value::Null,
+        };
+        Ok(state.engine.handle_command("updater_check", params).await)
+    }
+
+    #[tauri::command]
+    pub async fn updater_install(
+        app: AppHandle,
+        state: State<'_, TauriEngineState>,
+    ) -> Result<Value, String> {
+        let res = state
+            .engine
+            .handle_command("updater_install", Value::Null)
+            .await;
+        let should_exit = res
+            .get("shouldExit")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if should_exit {
+            state.force_close.store(true, Ordering::SeqCst);
+            let app_exit = app.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                app_exit.exit(0);
+            });
+        }
+        Ok(res)
+    }
 
     #[tauri::command]
     pub async fn plugins_open_gui(
@@ -871,6 +910,11 @@ mod commands {
                 net_interfaces,
                 firewall_status,
                 firewall_authorize,
+                updater_status,
+                updater_check,
+                updater_download,
+                updater_cancel,
+                updater_install,
                 settings_get,
                 settings_set,
                 dest_set_key,

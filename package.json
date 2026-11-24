@@ -1,6 +1,6 @@
 {
   "name": "prismcast-studio",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "PrismCast Studio — Motor nativo em Rust + Tauri v2 para transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML e Multichat",
   "author": "kayor <kayor@users.noreply.github.com>",
   "homepage": "https://github.com/kayoinreality/PrismCast",

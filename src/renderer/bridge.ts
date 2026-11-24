@@ -44,6 +44,8 @@ import type {
   TwitchCapabilities,
   TwitchCategory,
   TwitchLoginState,
+  UpdateInstallResult,
+  UpdateStatus,
   ViewerToHost,
   VirtualCameraDevice,
   VirtualCameraStatus,
@@ -419,6 +421,18 @@ export function createRustBridgeApi(): Api {
     firewall: {
       status: () => invokeBackend<FirewallStatus>('firewall_status'),
       authorize: () => invokeBackend<{ ok: boolean; error?: string }>('firewall_authorize')
+    },
+    updater: {
+      status: () => invokeBackend<UpdateStatus>('updater_status'),
+      check: (includePrereleases?: boolean) =>
+        invokeBackend<UpdateStatus>(
+          'updater_check',
+          includePrereleases === undefined ? {} : { includePrereleases }
+        ),
+      download: () => invokeBackend<UpdateStatus>('updater_download'),
+      cancel: () => invokeBackend<UpdateStatus>('updater_cancel'),
+      install: () => invokeBackend<UpdateInstallResult>('updater_install'),
+      onStatus: (cb) => listenBackend<UpdateStatus>('updater:status', cb)
     },
     settings: {
       get: () => invokeBackend<AppSettings>('settings_get'),

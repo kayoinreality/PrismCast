@@ -15,6 +15,7 @@ import type {
   RecorderStatus,
   StudioScenesState,
   TelemetryStats,
+  UpdateStatus,
   VirtualCameraStatus
 } from '@shared/protocol'
 import { ensureBridge } from '@/bridge'
@@ -42,6 +43,7 @@ export interface StudioRootState {
   abrTelemetry: AbrDestinationTelemetry[]
   gpuStatus: GpuPipelineStatus
   externalControlStatus: ExternalControlStatus
+  updateStatus: UpdateStatus
   chatMessages: MultiChatMessage[]
   chatStatus: ChatSourceStatus[]
   lanViewers: ConnectedViewer[]
@@ -108,6 +110,25 @@ export const DEFAULT_EXTERNAL_CONTROL_STATUS: ExternalControlStatus = {
   error: null
 }
 
+export const DEFAULT_UPDATE_STATUS: UpdateStatus = {
+  state: 'idle',
+  currentVersion: '',
+  latestVersion: null,
+  releaseName: null,
+  releaseNotes: null,
+  releaseUrl: null,
+  publishedAt: null,
+  installKind: 'unknown',
+  asset: null,
+  downloadedBytes: 0,
+  totalBytes: 0,
+  progressPercent: 0,
+  downloadedPath: null,
+  verifiedSha256: false,
+  lastCheckedAt: null,
+  error: null
+}
+
 type LevelListener = (levels: Record<string, AudioLevelSample>) => void
 
 /**
@@ -127,6 +148,7 @@ class StudioStoreImpl {
     abrTelemetry: [],
     gpuStatus: DEFAULT_GPU_STATUS,
     externalControlStatus: DEFAULT_EXTERNAL_CONTROL_STATUS,
+    updateStatus: DEFAULT_UPDATE_STATUS,
     chatMessages: [],
     chatStatus: [],
     lanViewers: [],
@@ -258,6 +280,20 @@ class StudioStoreImpl {
         })
       )
     }
+
+    if (api.updater) {
+      void api.updater
+        .status()
+        .then((updateStatus) => {
+          if (updateStatus) this.setState({ updateStatus })
+        })
+        .catch(() => {})
+      this.unsubscribers.push(
+        api.updater.onStatus((updateStatus) => {
+          if (updateStatus) this.setState({ updateStatus })
+        })
+      )
+    }
   }
 
   dispose(): void {
@@ -322,6 +358,10 @@ class StudioStoreImpl {
 
   setExternalControlStatus(externalControlStatus: ExternalControlStatus): void {
     this.setState({ externalControlStatus })
+  }
+
+  setUpdateStatus(updateStatus: UpdateStatus): void {
+    this.setState({ updateStatus })
   }
 
   pushToast(message: string, tone: ToastTone = 'info', action?: ToastAction): number {
@@ -402,6 +442,9 @@ export const useGpuStatusSlice = (): GpuPipelineStatus => useStudioSelector((s) 
 
 export const useExternalControlSlice = (): ExternalControlStatus =>
   useStudioSelector((s) => s.externalControlStatus)
+
+export const useUpdateStatusSlice = (): UpdateStatus =>
+  useStudioSelector((s) => s.updateStatus)
 
 export const useChatSlice = (): { messages: MultiChatMessage[]; status: ChatSourceStatus[] } =>
   useStudioSelector((s) => ({ messages: s.chatMessages, status: s.chatStatus }))

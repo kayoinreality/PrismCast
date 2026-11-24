@@ -1,7 +1,7 @@
 import type { DesktopSource } from '@shared/ipc'
 import { ensureBridge } from '@/bridge'
 
-export type CaptureState = 'loading' | 'live' | 'missing' | 'error'
+export type CaptureState = 'idle' | 'loading' | 'live' | 'missing' | 'error'
 
 export interface Capture {
   key: string
@@ -9,6 +9,13 @@ export interface Capture {
   stream: MediaStream | null
   state: CaptureState
   label: string
+}
+
+export interface SyncCaptureSpec {
+  open: () => Promise<{ stream: MediaStream; label: string } | null>
+  /** Se false, registra a fonte em estado `idle` sem abrir `getDisplayMedia()` no boot. */
+  autoStart?: boolean
+  initialLabel?: string
 }
 
 type Entry = Capture
@@ -19,6 +26,13 @@ function makeVideo(): HTMLVideoElement {
   v.playsInline = true
   v.autoplay = true
   return v
+}
+
+function isUserCanceledCapture(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === 'NotAllowedError' || err.name === 'AbortError'
+  }
+  return false
 }
 
 export class CaptureManager {
@@ -46,6 +60,12 @@ export class CaptureManager {
     return this.entries.get(key) ?? null
   }
 
+  hasSystemAudio(): boolean {
+    return Boolean(
+      this.systemAudio && this.systemAudio.getAudioTracks().some((t) => t.readyState === 'live')
+    )
+  }
+
   static displayKey(captureId: string | undefined, captureName: string | undefined): string {
     return `display:${captureId ?? 'primary'}:${captureName ?? ''}`
   }
@@ -65,7 +85,54 @@ export class CaptureManager {
     this.onChange?.()
   }
 
-  sync(wanted: Map<string, () => Promise<{ stream: MediaStream; label: string } | null>>): void {
+  private runEntryOpen(
+    key: string,
+    entry: Entry,
+    open: () => Promise<{ stream: MediaStream; label: string } | null>,
+    userInitiated: boolean
+  ): Promise<void> {
+    const runOpen = async (): Promise<void> => {
+      try {
+        const res = await open()
+        if (this.disposed || this.entries.get(key) !== entry) {
+          res?.stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        if (!res) {
+          this.set(entry, { state: userInitiated ? 'idle' : 'missing' })
+          return
+        }
+        entry.video.srcObject = res.stream
+        await entry.video.play().catch(() => {})
+        const track = res.stream.getVideoTracks()[0]
+        track?.addEventListener('ended', () => {
+          if (!this.disposed && this.entries.get(key) === entry) {
+            this.set(entry, { state: 'missing', stream: null })
+          }
+        })
+        this.set(entry, { stream: res.stream, state: 'live', label: res.label })
+      } catch (err) {
+        if (isUserCanceledCapture(err)) {
+          if (!this.disposed && this.entries.get(key) === entry) {
+            this.set(entry, { state: 'idle' })
+          }
+          return
+        }
+        console.warn('[capture] falhou:', key, err)
+        if (!this.disposed && this.entries.get(key) === entry) {
+          this.set(entry, { state: 'error' })
+        }
+      }
+    }
+
+    // Câmeras não usam sources.select() no main, portanto abrem fora da fila serial de display.
+    if (key.startsWith('camera:')) {
+      return runOpen()
+    }
+    return this.serial(runOpen)
+  }
+
+  sync(wanted: Map<string, SyncCaptureSpec>): void {
     if (this.disposed) return
     for (const [key, entry] of this.entries) {
       if (!wanted.has(key)) {
@@ -74,47 +141,47 @@ export class CaptureManager {
         this.entries.delete(key)
       }
     }
-    for (const [key, open] of wanted) {
+    for (const [key, spec] of wanted) {
       if (this.entries.has(key)) continue
-      const entry: Entry = { key, video: makeVideo(), stream: null, state: 'loading', label: '' }
+      const autoStart = spec.autoStart !== false
+      const entry: Entry = {
+        key,
+        video: makeVideo(),
+        stream: null,
+        state: autoStart ? 'loading' : 'idle',
+        label: spec.initialLabel ?? ''
+      }
       this.entries.set(key, entry)
 
-      const runOpen = async (): Promise<void> => {
-        try {
-          const res = await open()
-          if (this.disposed || this.entries.get(key) !== entry) {
-            res?.stream.getTracks().forEach((t) => t.stop())
-            return
-          }
-          if (!res) {
-            this.set(entry, { state: 'missing' })
-            return
-          }
-          entry.video.srcObject = res.stream
-          await entry.video.play().catch(() => {})
-          const track = res.stream.getVideoTracks()[0]
-          track?.addEventListener('ended', () => {
-            if (!this.disposed && this.entries.get(key) === entry) {
-              this.set(entry, { state: 'missing' })
-            }
-          })
-          this.set(entry, { stream: res.stream, state: 'live', label: res.label })
-        } catch (err) {
-          console.warn('[capture] falhou:', key, err)
-          if (!this.disposed && this.entries.get(key) === entry) {
-            this.set(entry, { state: 'error' })
-          }
-        }
-      }
-
-      // Câmeras não usam sources.select() no main, portanto abrem fora da fila serial de display.
-      if (key.startsWith('camera:')) {
-        void runOpen()
-      } else {
-        void this.serial(runOpen)
+      if (autoStart) {
+        void this.runEntryOpen(key, entry, spec.open, false)
       }
     }
     this.onChange?.()
+  }
+
+  /** Inicia (ou reinicia) uma captura sob demanda a partir de uma ação explícita do usuário. */
+  start(
+    key: string,
+    open: () => Promise<{ stream: MediaStream; label: string } | null>,
+    initialLabel = ''
+  ): Promise<void> {
+    if (this.disposed) return Promise.resolve()
+    const existing = this.entries.get(key)
+    if (existing) {
+      existing.stream?.getTracks().forEach((t) => t.stop())
+      existing.video.srcObject = null
+    }
+    const entry: Entry = {
+      key,
+      video: existing?.video ?? makeVideo(),
+      stream: null,
+      state: 'loading',
+      label: initialLabel || existing?.label || ''
+    }
+    this.entries.set(key, entry)
+    this.onChange?.()
+    return this.runEntryOpen(key, entry, open, true)
   }
 
   retry(key: string): void {
@@ -126,18 +193,72 @@ export class CaptureManager {
     this.onChange?.()
   }
 
-  openDisplay(captureId: string | undefined, captureName: string | undefined) {
+  openDisplay(
+    captureId: string | undefined,
+    captureName: string | undefined,
+    opts?: {
+      withAudio?: boolean
+      onAudioStream?: (stream: MediaStream) => void
+    }
+  ) {
     return async (): Promise<{ stream: MediaStream; label: string } | null> => {
       const api = ensureBridge()
-      const sources = await api.sources.list()
-      const source = resolveSource(sources, captureId, captureName)
-      if (!source) return null
-      await api.sources.select(source.id, false)
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: this.fps, max: this.fps } },
-        audio: false
-      })
-      return { stream, label: source.name }
+      let resolvedName = captureName || 'Tela capturada'
+      try {
+        const sources = await api.sources.list()
+        const source = resolveSource(sources, captureId, captureName)
+        if (source) {
+          resolvedName = source.name
+          await api.sources.select(source.id, Boolean(opts?.withAudio)).catch(() => {})
+        }
+      } catch {
+        /* fallback direto para o seletor nativo do WebView */
+      }
+
+      const videoConstraints: MediaTrackConstraints = {
+        frameRate: { ideal: this.fps, max: this.fps }
+      }
+      let stream: MediaStream
+      if (opts?.withAudio) {
+        try {
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: videoConstraints,
+            audio: true
+          })
+        } catch (err) {
+          if (isUserCanceledCapture(err)) throw err
+          stream = await navigator.mediaDevices.getDisplayMedia({
+            video: videoConstraints,
+            audio: false
+          })
+        }
+      } else {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: videoConstraints,
+          audio: false
+        })
+      }
+
+      const audioTracks = stream.getAudioTracks()
+      if (audioTracks.length > 0 && opts?.onAudioStream) {
+        const audioStream = new MediaStream(audioTracks)
+        for (const t of audioTracks) {
+          stream.removeTrack(t)
+        }
+        const primaryAudio = audioTracks[0]
+        primaryAudio.addEventListener('ended', () => {
+          if (this.systemAudio === audioStream) {
+            this.systemAudio = null
+            this.systemAudioPromise = null
+          }
+        })
+        this.systemAudio?.getTracks().forEach((t) => t.stop())
+        this.systemAudio = audioStream
+        opts.onAudioStream(audioStream)
+      }
+
+      const trackLabel = stream.getVideoTracks()[0]?.label?.trim()
+      return { stream, label: trackLabel || resolvedName }
     }
   }
 
@@ -177,16 +298,19 @@ export class CaptureManager {
 
   acquireSystemAudio(): Promise<MediaStream | null> {
     if (this.disposed) return Promise.resolve(null)
+    if (this.hasSystemAudio()) return Promise.resolve(this.systemAudio)
     this.systemAudioPromise ??= this.serial(async () => {
       try {
         const api = ensureBridge()
-        const sources = await api.sources.list()
-        const screen = sources.find((s) => s.kind === 'screen')
-        if (!screen) {
-          this.systemAudioPromise = null
-          return null
+        try {
+          const sources = await api.sources.list()
+          const screen = sources.find((s) => s.kind === 'screen')
+          if (screen) {
+            await api.sources.select(screen.id, true).catch(() => {})
+          }
+        } catch {
+          /* segue para getDisplayMedia */
         }
-        await api.sources.select(screen.id, true)
         const stream = await navigator.mediaDevices.getDisplayMedia({
           video: { frameRate: 1, width: 64, height: 36 },
           audio: true
@@ -214,7 +338,9 @@ export class CaptureManager {
         this.systemAudio = stream
         return stream
       } catch (err) {
-        console.warn('[capture] audio do sistema indisponivel:', err)
+        if (!isUserCanceledCapture(err)) {
+          console.warn('[capture] audio do sistema indisponivel:', err)
+        }
         this.systemAudioPromise = null
         return null
       }

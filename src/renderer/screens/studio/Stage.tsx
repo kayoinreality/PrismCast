@@ -364,17 +364,45 @@ function StageEditor({
       {shown.map((it) => {
         const cap = engine.capture(it)
         if (!cap || cap.state === 'live') return null
+        const isDisplay = it.type === 'screen_capture' || it.type === 'window_capture'
         const msg =
           cap.state === 'loading'
-            ? 'Abrindo captura…'
-            : it.type === 'camera_input'
-              ? 'Câmera indisponível'
-              : it.type === 'window_capture'
-                ? 'Janela fechada — abra o programa ou troque a janela'
-                : 'Tela indisponível'
+            ? isDisplay
+              ? 'Aguardando você escolher a tela…'
+              : 'Abrindo captura…'
+            : cap.state === 'idle'
+              ? it.type === 'window_capture'
+                ? 'Captura de janela pronta'
+                : 'Captura de tela pronta'
+              : it.type === 'camera_input'
+                ? 'Câmera indisponível'
+                : it.type === 'window_capture'
+                  ? 'Janela fechada — abra o programa ou selecione outra'
+                  : 'Captura de tela interrompida'
+        const actionLabel =
+          cap.state === 'idle'
+            ? it.type === 'window_capture'
+              ? 'Selecionar janela'
+              : 'Selecionar tela'
+            : 'Reconectar'
         return (
           <div key={`m-${it.id}`} className="stage-missing" style={box(tfOf(it))}>
-            <span>{msg}</span>
+            <div className="stage-missing-card">
+              <span>{msg}</span>
+              {cap.state !== 'loading' && (
+                <Button
+                  size="sm"
+                  variant={cap.state === 'idle' ? 'primary' : 'subtle'}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void engine.startCapture(it)
+                  }}
+                >
+                  {actionLabel}
+                </Button>
+              )}
+            </div>
           </div>
         )
       })}

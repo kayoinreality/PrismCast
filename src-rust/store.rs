@@ -1065,4 +1065,23 @@ mod tests {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_live_patch_persists_without_duplicate_field() {
+        let dir = temp_test_dir("live-patch");
+        let store = SettingsStore::with_dir(dir.clone());
+        let next = store.apply_patch(json!({
+            "live": {
+                "title": "Jogando ao vivo",
+                "categoryId": "509658",
+                "categoryName": "Just Chatting"
+            }
+        }));
+        assert_eq!(next.live_info.title, "Jogando ao vivo");
+        assert_eq!(next.live_info.category_name, "Just Chatting");
+
+        let reloaded = SettingsStore::with_dir(dir.clone()).snapshot();
+        assert_eq!(reloaded.live_info.title, "Jogando ao vivo");
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

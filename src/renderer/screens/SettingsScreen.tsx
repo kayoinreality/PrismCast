@@ -9,6 +9,7 @@ import {
   type GpuPipelineSettings,
   type HotkeyBindings,
   type StudioCompositorSettings,
+  type UpdaterSettings,
   type VirtualCameraDevice,
   type VirtualCameraSettings
 } from '@shared/protocol'
@@ -20,6 +21,7 @@ import {
   useAbrTelemetrySlice,
   useExternalControlSlice,
   useGpuStatusSlice,
+  useUpdateStatusSlice,
   useVirtualCamSlice
 } from '@/studio/StudioStore'
 
@@ -54,6 +56,25 @@ const DEFAULT_EXTERNAL_CONTROL: ExternalControlSettings = {
   obsWsAllowLan: false,
   rpcExternalEnabled: false,
   allowBrowserOrigins: []
+}
+
+const DEFAULT_UPDATER_SETTINGS: UpdaterSettings = {
+  autoCheck: true,
+  autoDownload: false,
+  includePrereleases: false,
+  skippedVersion: null
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let val = bytes
+  let idx = 0
+  while (val >= 1024 && idx < units.length - 1) {
+    val /= 1024
+    idx++
+  }
+  return `${val.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`
 }
 
 function generateStrongPassword(length = 20): string {
@@ -184,6 +205,7 @@ export function SettingsScreen(): React.JSX.Element {
   const abrTelemetry = useAbrTelemetrySlice()
   const vcamStatus = useVirtualCamSlice()
   const extStatus = useExternalControlSlice()
+  const updateStatus = useUpdateStatusSlice()
 
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [replaySeconds, setReplaySeconds] = useState(settings.studio.replayBufferSeconds)
@@ -191,11 +213,14 @@ export function SettingsScreen(): React.JSX.Element {
   const [vcamDevices, setVcamDevices] = useState<VirtualCameraDevice[]>([])
   const [loadingVcamDevices, setLoadingVcamDevices] = useState(false)
   const [refreshingGpu, setRefreshingGpu] = useState(false)
+  const [checkingUpdates, setCheckingUpdates] = useState(false)
+  const [installingUpdate, setInstallingUpdate] = useState(false)
 
   const gpu: GpuPipelineSettings = { ...DEFAULT_GPU_PIPELINE, ...(settings.gpuPipeline ?? {}) }
   const abr: DynamicBitrateSettings = { ...DEFAULT_ABR_SETTINGS, ...(settings.dynamicBitrate ?? {}) }
   const vcam: VirtualCameraSettings = { ...DEFAULT_VIRTUAL_CAM_SETTINGS, ...(settings.virtualCamera ?? {}) }
   const ext: ExternalControlSettings = { ...DEFAULT_EXTERNAL_CONTROL, ...(settings.externalControl ?? {}) }
+  const updCfg: UpdaterSettings = { ...DEFAULT_UPDATER_SETTINGS, ...(settings.updater ?? {}) }
 
   const [linuxVcamDraft, setLinuxVcamDraft] = useState(vcam.linuxDevicePath ?? '')
   const [obsPortDraft, setObsPortDraft] = useState(String(ext.obsWsPort || OBS_WS_DEFAULT_PORT))
@@ -261,6 +286,12 @@ export function SettingsScreen(): React.JSX.Element {
         if (!cancelled && Array.isArray(list)) setVcamDevices(list)
       })
       .catch(() => {})
+    void window.api.updater
+      ?.status()
+      .then((st) => {
+        if (!cancelled && st) studioStore.setUpdateStatus(st)
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
       window.clearTimeout(replayTimer.current)
@@ -288,6 +319,64 @@ export function SettingsScreen(): React.JSX.Element {
   const setAbr = (p: Partial<DynamicBitrateSettings>): void => update({ dynamicBitrate: { ...abr, ...p } })
   const setVcam = (p: Partial<VirtualCameraSettings>): void => update({ virtualCamera: { ...vcam, ...p } })
   const setExt = (p: Partial<ExternalControlSettings>): void => update({ externalControl: { ...ext, ...p } })
+  const setUpdCfg = (p: Partial<UpdaterSettings>): void => update({ updater: { ...updCfg, ...p } })
+
+  const checkForUpdates = async (): Promise<void> => {
+    const api = window.api.updater
+    if (!api) return
+    setCheckingUpdates(true)
+    try {
+      const next = await api.check(updCfg.includePrereleases)
+      studioStore.setUpdateStatus(next)
+      if (next.state === 'available' && next.latestVersion) {
+        toast(`Nova versão v${next.latestVersion} disponível!`, 'good')
+      } else if (next.state === 'up-to-date') {
+        toast('Você já está na versão mais recente.', 'good')
+      } else if (next.state === 'error' && next.error) {
+        toast(next.error, 'bad')
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Falha ao verificar atualizações', 'bad')
+    } finally {
+      setCheckingUpdates(false)
+    }
+  }
+
+  const downloadUpdate = async (): Promise<void> => {
+    const api = window.api.updater
+    if (!api) return
+    try {
+      const next = await api.download()
+      studioStore.setUpdateStatus(next)
+      if (next.state === 'ready') {
+        toast('Atualização baixada e pronta para instalar!', 'good')
+      } else if (next.state === 'error' && next.error) {
+        toast(next.error, 'bad')
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Falha ao baixar atualização', 'bad')
+    }
+  }
+
+  const installUpdate = async (): Promise<void> => {
+    const api = window.api.updater
+    if (!api) return
+    if (state.live || state.recorder.recording) {
+      toast('Encerre a live ou gravação antes de instalar a atualização.', 'bad')
+      return
+    }
+    setInstallingUpdate(true)
+    try {
+      const res = await api.install()
+      if (!res.ok) {
+        toast(res.error || 'Falha ao iniciar instalação', 'bad')
+      } else if (res.message) {
+        toast(res.message, 'good')
+      }
+    } finally {
+      setInstallingUpdate(false)
+    }
+  }
 
   // Detecta atalhos duplicados em tempo real (sem precisar chamar IPC a cada tecla).
   const duplicatedKeys = useMemo(() => {
@@ -939,6 +1028,167 @@ export function SettingsScreen(): React.JSX.Element {
               <span className="error-text">Há atalhos repetidos em vermelho. Troque um deles para evitar conflito.</span>
             )}
             <span className="hint">Funcionam mesmo com o jogo em tela cheia. Clique num atalho para trocar.</span>
+          </div>
+        </section>
+
+        <section className="section">
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <div className="section-title">Atualizações automáticas (GitHub Releases)</div>
+            <div className="row" style={{ gap: 'var(--sp-2)', alignItems: 'center' }}>
+              <Badge
+                tone={
+                  updateStatus.state === 'available' || updateStatus.state === 'ready'
+                    ? 'live'
+                    : updateStatus.state === 'error'
+                      ? 'danger'
+                      : updateStatus.state === 'downloading' || updateStatus.state === 'checking'
+                        ? 'warning'
+                        : 'neutral'
+                }
+              >
+                {updateStatus.state === 'checking'
+                  ? 'Verificando…'
+                  : updateStatus.state === 'available' && updateStatus.latestVersion
+                    ? `v${updateStatus.latestVersion} disponível`
+                    : updateStatus.state === 'downloading'
+                      ? `Baixando ${Math.round(updateStatus.progressPercent)}%`
+                      : updateStatus.state === 'ready'
+                        ? 'Pronto para instalar'
+                        : updateStatus.state === 'installing'
+                          ? 'Instalando…'
+                          : updateStatus.state === 'up-to-date'
+                            ? 'Atualizado'
+                            : updateStatus.state === 'error'
+                              ? 'Erro'
+                              : `v${updateStatus.currentVersion || info?.version || '2.5.1'}`}
+              </Badge>
+              <Button
+                size="sm"
+                variant="subtle"
+                loading={checkingUpdates || updateStatus.state === 'checking'}
+                disabled={updateStatus.state === 'downloading' || updateStatus.state === 'installing'}
+                icon={<IconRefresh size={13} />}
+                onClick={() => void checkForUpdates()}
+              >
+                Verificar agora
+              </Button>
+            </div>
+          </div>
+          <div className="panel">
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+                gap: 'var(--sp-2)'
+              }}
+            >
+              <StatPill
+                label="Versão instalada"
+                value={`v${updateStatus.currentVersion || info?.version || '2.5.1'}`}
+              />
+              <StatPill
+                label="Última no GitHub"
+                value={updateStatus.latestVersion ? `v${updateStatus.latestVersion}` : '—'}
+                tone={updateStatus.state === 'available' || updateStatus.state === 'ready' ? 'good' : 'neutral'}
+              />
+              <StatPill label="Distribuição" value={updateStatus.installKind || 'automático'} />
+              <StatPill
+                label="Última verificação"
+                value={
+                  updateStatus.lastCheckedAt
+                    ? new Date(updateStatus.lastCheckedAt).toLocaleTimeString('pt-BR', {
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })
+                    : 'Ainda não verificada'
+                }
+              />
+            </div>
+
+            <Toggle
+              label="Verificar atualizações automaticamente ao abrir"
+              hint="Consulta as builds oficiais publicadas em GitHub Releases sem travar a inicialização."
+              checked={updCfg.autoCheck}
+              onChange={(v) => setUpdCfg({ autoCheck: v })}
+            />
+            <Toggle
+              label="Baixar novas versões automaticamente em segundo plano"
+              hint="Deixa o instalador ou binário portátil pronto e validado por SHA-256 para você instalar quando encerrar a live."
+              checked={updCfg.autoDownload}
+              disabled={!updCfg.autoCheck}
+              onChange={(v) => setUpdCfg({ autoDownload: v })}
+            />
+
+            {updateStatus.state === 'downloading' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+                <div className="row" style={{ justifyContent: 'space-between', fontSize: 12.5 }}>
+                  <span className="mono">
+                    {formatBytes(updateStatus.downloadedBytes)} / {formatBytes(updateStatus.totalBytes)}
+                  </span>
+                  <span className="mono">{Math.round(updateStatus.progressPercent)}%</span>
+                </div>
+                <div className="update-progress-track">
+                  <div
+                    className="update-progress-fill"
+                    style={{ width: `${Math.min(100, Math.max(2, updateStatus.progressPercent))}%` }}
+                  />
+                </div>
+                <div className="row" style={{ justifyContent: 'flex-end' }}>
+                  <Button size="sm" variant="ghost" onClick={() => void window.api.updater?.cancel()}>
+                    Cancelar download
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {(updateStatus.state === 'available' || updateStatus.state === 'ready') && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-3)' }}>
+                {updateStatus.asset && (
+                  <div className="hint">
+                    Pacote selecionado: <span className="mono">{updateStatus.asset.name}</span> (
+                    {formatBytes(updateStatus.asset.sizeBytes)})
+                    {updateStatus.verifiedSha256 && ' · SHA-256 verificado'}
+                  </div>
+                )}
+                {updateStatus.releaseNotes && (
+                  <div className="update-notes">{updateStatus.releaseNotes}</div>
+                )}
+                <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                  {updateStatus.state === 'available' && updateStatus.asset && (
+                    <Button size="sm" variant="primary" onClick={() => void downloadUpdate()}>
+                      Baixar v{updateStatus.latestVersion}
+                    </Button>
+                  )}
+                  {updateStatus.state === 'ready' && (
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      loading={installingUpdate}
+                      disabled={state.live || state.recorder.recording}
+                      title={
+                        state.live || state.recorder.recording
+                          ? 'Encerre a live ou gravação antes de instalar'
+                          : 'Instalar e reiniciar o PrismCast Studio'
+                      }
+                      onClick={() => void installUpdate()}
+                    >
+                      Instalar e reiniciar
+                    </Button>
+                  )}
+                  {updateStatus.releaseUrl && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => window.api.app.openExternal(updateStatus.releaseUrl!)}
+                    >
+                      Ver release no GitHub
+                    </Button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {updateStatus.error && <span className="error-text">{updateStatus.error}</span>}
           </div>
         </section>
 
