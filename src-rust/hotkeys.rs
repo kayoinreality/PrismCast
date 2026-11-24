@@ -1,5 +1,6 @@
 use crate::protocol::{HotkeyAction, HotkeyBindings};
 use std::collections::HashMap;
+#[cfg(windows)]
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 

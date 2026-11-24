@@ -1,9 +1,11 @@
 use crate::capture::{CaptureManager, FrameBuffer};
+use crate::gpu_compositor::{eval_luma_mask, eval_luma_preset, WgpuBackend};
 use crate::protocol::{
-    Scene, SceneItem, SourceTransform, SourceType, StudioCompositorSettings, TelemetryStats,
-    TransitionType,
+    CustomShaderPreset, CustomTransitionConfig, GpuPipelineStatus, Scene, SceneItem,
+    SourceTransform, SourceType, StudioCompositorSettings, TelemetryStats, TransitionType,
 };
 use std::collections::VecDeque;
+use std::f32::consts::{PI, TAU};
 
 pub const CANVAS_H: (u32, u32) = (1920, 1080);
 pub const CANVAS_V: (u32, u32) = (1080, 1920);
@@ -23,6 +25,184 @@ fn fit_for(item: &SceneItem) -> FitMode {
         SourceType::BrowserSource => FitMode::Stretch,
         _ => FitMode::Contain,
     }
+}
+
+/// Layout normalizado de uma camada pronto para consumo pelo shader `LAYER_COMPOSITE_WGSL`.
+#[derive(Debug, Clone)]
+pub(crate) struct ComputedLayerLayout {
+    pub dst_rect: [f32; 4],
+    pub uv_rect: [f32; 4],
+    pub color_rgba: [f32; 4],
+    pub opacity: f32,
+    pub flip_x: bool,
+    pub corner_radius_px: f32,
+    pub is_solid_color: bool,
+    pub rect_px: [f32; 4],
+    pub draw_px: [f32; 4],
+    pub source_key: Option<String>,
+}
+
+/// Calcula todas as camadas visíveis ordenadas por `z_index` com crop, `FitMode` e cantos arredondados
+/// para o backend GPU `wgpu` com a mesma semântica exata do `SoftwareBackend`.
+pub(crate) fn compute_scene_layers(
+    width: u32,
+    height: u32,
+    scene: &Scene,
+    vertical: bool,
+    captures: &CaptureManager,
+    studio: &StudioCompositorSettings,
+) -> Vec<ComputedLayerLayout> {
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let cw = width as f32;
+    let ch = height as f32;
+
+    let mut items: Vec<&SceneItem> = scene
+        .items
+        .iter()
+        .filter(|it| {
+            if !it.visible || it.source_type == SourceType::AudioInput {
+                return false;
+            }
+            if vertical && !it.show_on_vertical {
+                return false;
+            }
+            if !vertical && !it.show_on_horizontal {
+                return false;
+            }
+            if !studio.camera_enabled && it.source_type == SourceType::CameraInput {
+                return false;
+            }
+            true
+        })
+        .collect();
+
+    items.sort_by_key(|it| {
+        if vertical {
+            it.vertical_transform.z_index
+        } else {
+            it.transform.z_index
+        }
+    });
+
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let tf = if vertical {
+            &item.vertical_transform
+        } else {
+            &item.transform
+        };
+        let x0 = (tf.x * cw).round();
+        let y0 = (tf.y * ch).round();
+        let dw = (tf.width * cw).round();
+        let dh = (tf.height * ch).round();
+        if dw <= 0.0 || dh <= 0.0 {
+            continue;
+        }
+        let opacity = tf.opacity.clamp(0.0, 1.0);
+        if opacity <= 0.001 {
+            continue;
+        }
+        let rounded = item.settings.rounded.unwrap_or(false);
+        let corner_radius_px = if rounded { dw.min(dh) * 0.06 } else { 0.0 };
+
+        if item.source_type == SourceType::ColorSource {
+            let col = parse_hex_bgra(item.settings.color.as_deref(), [0, 0, 0, 255]);
+            out.push(ComputedLayerLayout {
+                dst_rect: [x0 / cw, y0 / ch, dw / cw, dh / ch],
+                uv_rect: [0.0, 0.0, 1.0, 1.0],
+                color_rgba: [
+                    col[2] as f32 / 255.0,
+                    col[1] as f32 / 255.0,
+                    col[0] as f32 / 255.0,
+                    col[3] as f32 / 255.0,
+                ],
+                opacity,
+                flip_x: false,
+                corner_radius_px,
+                is_solid_color: true,
+                rect_px: [dw, dh, 0.0, 0.0],
+                draw_px: [dw, dh, 0.0, 0.0],
+                source_key: None,
+            });
+            continue;
+        }
+
+        let Some(key) = capture_key_for_item(item) else {
+            continue;
+        };
+        let Some(src) = captures.get_frame(&key) else {
+            continue;
+        };
+        if src.width == 0 || src.height == 0 {
+            continue;
+        }
+
+        let cl = tf.crop_left.unwrap_or(0.0).clamp(0.0, 0.9);
+        let cr = tf.crop_right.unwrap_or(0.0).clamp(0.0, 0.9);
+        let ct = tf.crop_top.unwrap_or(0.0).clamp(0.0, 0.9);
+        let cb = tf.crop_bottom.unwrap_or(0.0).clamp(0.0, 0.9);
+        if cl + cr >= 0.99 || ct + cb >= 0.99 {
+            continue;
+        }
+
+        let sw = src.width as f32;
+        let sh = src.height as f32;
+        let crop_x0 = cl * sw;
+        let crop_y0 = ct * sh;
+        let crop_w = ((1.0 - cl - cr) * sw).max(1.0);
+        let crop_h = ((1.0 - ct - cb) * sh).max(1.0);
+
+        let (draw_x, draw_y, draw_w, draw_h, sub_x, sub_y, sub_w, sub_h) = match fit_for(item) {
+            FitMode::Stretch => (x0, y0, dw, dh, crop_x0, crop_y0, crop_w, crop_h),
+            FitMode::Cover => {
+                let scale = (dw / crop_w).max(dh / crop_h);
+                let vw = dw / scale;
+                let vh = dh / scale;
+                (
+                    x0,
+                    y0,
+                    dw,
+                    dh,
+                    crop_x0 + (crop_w - vw) * 0.5,
+                    crop_y0 + (crop_h - vh) * 0.5,
+                    vw,
+                    vh,
+                )
+            }
+            FitMode::Contain => {
+                let scale = (dw / crop_w).min(dh / crop_h);
+                let rw = crop_w * scale;
+                let rh = crop_h * scale;
+                (
+                    x0 + (dw - rw) * 0.5,
+                    y0 + (dh - rh) * 0.5,
+                    rw,
+                    rh,
+                    crop_x0,
+                    crop_y0,
+                    crop_w,
+                    crop_h,
+                )
+            }
+        };
+
+        out.push(ComputedLayerLayout {
+            dst_rect: [draw_x / cw, draw_y / ch, draw_w / cw, draw_h / ch],
+            uv_rect: [sub_x / sw, sub_y / sh, sub_w / sw, sub_h / sh],
+            color_rgba: [1.0, 1.0, 1.0, 1.0],
+            opacity,
+            flip_x: tf.flip_x,
+            corner_radius_px,
+            is_solid_color: false,
+            rect_px: [dw, dh, draw_x - x0, draw_y - y0],
+            draw_px: [draw_w, draw_h, 0.0, 0.0],
+            source_key: Some(key),
+        });
+    }
+
+    out
 }
 
 /// Normaliza `z_index` mantendo ordenação independente entre horizontal e vertical
@@ -46,6 +226,48 @@ pub trait CompositorBackend {
         captures: &CaptureManager,
         studio: &StudioCompositorSettings,
     );
+
+    /// Executa transição entre `outgoing` e `incoming` gravando em `target`.
+    /// O padrão executa o motor CPU (`apply_transition_software`); o `WgpuBackend` executa em shader WGSL.
+    #[allow(clippy::too_many_arguments)]
+    fn compose_transition(
+        &mut self,
+        target: &mut FrameBuffer,
+        outgoing: &FrameBuffer,
+        incoming: &FrameBuffer,
+        transition: TransitionType,
+        progress: f32,
+        elapsed_ms: u64,
+        custom: &CustomTransitionConfig,
+        stinger_frame: Option<&FrameBuffer>,
+        luma_matte: Option<&FrameBuffer>,
+    ) {
+        apply_transition_software(
+            target,
+            outgoing,
+            incoming,
+            transition,
+            progress,
+            elapsed_ms,
+            custom,
+            stinger_frame,
+            luma_matte,
+        );
+    }
+
+    /// Retorna `(backend_name, adapter_name, driver_info)`.
+    fn backend_info(&self) -> (String, String, String) {
+        (
+            "software".to_string(),
+            "CPU BGRA".to_string(),
+            "PrismCast Software Compositor".to_string(),
+        )
+    }
+
+    /// Quantidade de texturas ativas em cache GPU (0 para software).
+    fn active_textures(&self) -> usize {
+        0
+    }
 }
 
 /// Converte cor hex `#RRGGBB` / `#RGB` para BGRA `[b, g, r, 255]`.
@@ -402,6 +624,313 @@ fn slide_buffers(dst: &mut FrameBuffer, outgoing: &FrameBuffer, incoming: &Frame
     }
 }
 
+#[inline]
+fn sample_bgra_nearest(src: &FrameBuffer, u: f32, v: f32) -> [u8; 4] {
+    if src.width == 0 || src.height == 0 {
+        return [0, 0, 0, 255];
+    }
+    let sx = ((u.clamp(0.0, 1.0) * (src.width as f32 - 1.0)).round() as usize)
+        .min((src.width as usize) - 1);
+    let sy = ((v.clamp(0.0, 1.0) * (src.height as f32 - 1.0)).round() as usize)
+        .min((src.height as usize) - 1);
+    let off = (sy * (src.width as usize) + sx) * 4;
+    if off + 4 > src.bgra.len() {
+        return [0, 0, 0, 255];
+    }
+    [
+        src.bgra[off],
+        src.bgra[off + 1],
+        src.bgra[off + 2],
+        src.bgra[off + 3],
+    ]
+}
+
+#[inline]
+fn smoothstep_f32(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let span = (edge1 - edge0).max(1e-6);
+    let t = ((x - edge0) / span).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+#[inline]
+fn lerp_bgra(a: [u8; 4], b: [u8; 4], t: f32) -> [u8; 4] {
+    let k = t.clamp(0.0, 1.0);
+    let inv = 1.0 - k;
+    [
+        (a[0] as f32 * inv + b[0] as f32 * k).round().clamp(0.0, 255.0) as u8,
+        (a[1] as f32 * inv + b[1] as f32 * k).round().clamp(0.0, 255.0) as u8,
+        (a[2] as f32 * inv + b[2] as f32 * k).round().clamp(0.0, 255.0) as u8,
+        255,
+    ]
+}
+
+/// Motor de transições em software/CPU suportando todos os modos do `WgpuBackend`:
+/// `Cut`, `Fade`, `FadeToBlack`, `Slide`, `Stinger` (alpha overlay + cut point),
+/// `LumaWipe` (matte customizado ou presets procedurais com softness/invert) e
+/// `CustomShader` (`ZoomBlur`, `RadialWipe`, `GlitchCut`, `Swirl`, fallback para `CustomWgsl`).
+#[allow(clippy::too_many_arguments)]
+pub fn apply_transition_software(
+    target: &mut FrameBuffer,
+    outgoing: &FrameBuffer,
+    incoming: &FrameBuffer,
+    transition: TransitionType,
+    progress: f32,
+    elapsed_ms: u64,
+    custom: &CustomTransitionConfig,
+    stinger_frame: Option<&FrameBuffer>,
+    luma_matte: Option<&FrameBuffer>,
+) {
+    let t = progress.clamp(0.0, 1.0);
+    match transition {
+        TransitionType::Cut => {
+            target.bgra.copy_from_slice(&incoming.bgra);
+        }
+        TransitionType::Fade => {
+            let inv = 1.0 - t;
+            for ((d, s_out), s_in) in target
+                .bgra
+                .chunks_exact_mut(4)
+                .zip(outgoing.bgra.chunks_exact(4))
+                .zip(incoming.bgra.chunks_exact(4))
+            {
+                d[0] = (s_out[0] as f32 * inv + s_in[0] as f32 * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                d[1] = (s_out[1] as f32 * inv + s_in[1] as f32 * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                d[2] = (s_out[2] as f32 * inv + s_in[2] as f32 * t)
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
+                d[3] = 255;
+            }
+        }
+        TransitionType::FadeToBlack => {
+            if t < 0.5 {
+                fade_to_black_buffer(target, outgoing, 1.0 - t * 2.0);
+            } else {
+                fade_to_black_buffer(target, incoming, (t - 0.5) * 2.0);
+            }
+        }
+        TransitionType::Slide => {
+            slide_buffers(target, outgoing, incoming, t);
+        }
+        TransitionType::Stinger => {
+            let cut_reached = elapsed_ms >= custom.stinger_transition_point_ms as u64;
+            let base = if cut_reached { incoming } else { outgoing };
+            target.bgra.copy_from_slice(&base.bgra);
+
+            if let Some(stinger) = stinger_frame {
+                if stinger.width > 0 && stinger.height > 0 && target.width > 0 && target.height > 0
+                {
+                    let w = target.width as usize;
+                    let h = target.height as usize;
+                    let sw = stinger.width as usize;
+                    let sh = stinger.height as usize;
+                    for py in 0..h {
+                        let sy = (py * sh) / h;
+                        for px in 0..w {
+                            let sx = (px * sw) / w;
+                            let s_off = (sy * sw + sx) * 4;
+                            if s_off + 4 <= stinger.bgra.len() {
+                                let spx = [
+                                    stinger.bgra[s_off],
+                                    stinger.bgra[s_off + 1],
+                                    stinger.bgra[s_off + 2],
+                                    stinger.bgra[s_off + 3],
+                                ];
+                                let d_off = (py * w + px) * 4;
+                                blend_pixel(&mut target.bgra[d_off..d_off + 4], spx, 1.0);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        TransitionType::LumaWipe => {
+            let w = target.width as usize;
+            let h = target.height as usize;
+            if w == 0 || h == 0 {
+                return;
+            }
+            let wf = w as f32;
+            let hf = h as f32;
+            let valid_matte = luma_matte.filter(|m| m.width > 0 && m.height > 0);
+            for py in 0..h {
+                let v = (py as f32 + 0.5) / hf;
+                for px in 0..w {
+                    let u = (px as f32 + 0.5) / wf;
+                    let luma = if let Some(matte) = valid_matte {
+                        let m = sample_bgra_nearest(matte, u, v);
+                        (0.114 * (m[0] as f32) + 0.587 * (m[1] as f32) + 0.299 * (m[2] as f32))
+                            / 255.0
+                    } else {
+                        eval_luma_preset(&custom.luma_preset, u, v)
+                    };
+                    let mask = eval_luma_mask(luma, t, custom.luma_softness, custom.luma_invert);
+                    let off = (py * w + px) * 4;
+                    let a = [
+                        outgoing.bgra[off],
+                        outgoing.bgra[off + 1],
+                        outgoing.bgra[off + 2],
+                        255,
+                    ];
+                    let b = [
+                        incoming.bgra[off],
+                        incoming.bgra[off + 1],
+                        incoming.bgra[off + 2],
+                        255,
+                    ];
+                    target.bgra[off..off + 4].copy_from_slice(&lerp_bgra(a, b, mask));
+                }
+            }
+        }
+        TransitionType::CustomShader => {
+            let w = target.width as usize;
+            let h = target.height as usize;
+            if w == 0 || h == 0 {
+                return;
+            }
+            let wf = w as f32;
+            let hf = h as f32;
+            match custom.shader_preset {
+                CustomShaderPreset::ZoomBlur => {
+                    let strength = (t * PI).sin() * 0.18;
+                    let blend_k = smoothstep_f32(0.25, 0.75, t);
+                    for py in 0..h {
+                        let v = (py as f32 + 0.5) / hf;
+                        let dy = v - 0.5;
+                        for px in 0..w {
+                            let u = (px as f32 + 0.5) / wf;
+                            let dx = u - 0.5;
+                            let mut acc_out = [0.0f32; 3];
+                            let mut acc_in = [0.0f32; 3];
+                            for i in 0..5 {
+                                let frac = (i as f32) * 0.25;
+                                let s_out = 1.0 - strength * frac;
+                                let s_in = 1.0 + strength * (1.0 - frac);
+                                let po = sample_bgra_nearest(outgoing, 0.5 + dx * s_out, 0.5 + dy * s_out);
+                                let pi = sample_bgra_nearest(incoming, 0.5 + dx * s_in, 0.5 + dy * s_in);
+                                for c in 0..3 {
+                                    acc_out[c] += po[c] as f32;
+                                    acc_in[c] += pi[c] as f32;
+                                }
+                            }
+                            let out_px = [
+                                (acc_out[0] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                (acc_out[1] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                (acc_out[2] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                255,
+                            ];
+                            let in_px = [
+                                (acc_in[0] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                (acc_in[1] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                (acc_in[2] * 0.2).round().clamp(0.0, 255.0) as u8,
+                                255,
+                            ];
+                            let off = (py * w + px) * 4;
+                            target.bgra[off..off + 4].copy_from_slice(&lerp_bgra(out_px, in_px, blend_k));
+                        }
+                    }
+                }
+                CustomShaderPreset::RadialWipe => {
+                    for py in 0..h {
+                        let v = (py as f32 + 0.5) / hf;
+                        let dy = v - 0.5;
+                        for px in 0..w {
+                            let u = (px as f32 + 0.5) / wf;
+                            let dx = u - 0.5;
+                            let mut ang = dx.atan2(-dy);
+                            if ang < 0.0 {
+                                ang += TAU;
+                            }
+                            let norm_ang = ang / TAU;
+                            let mask = eval_luma_mask(norm_ang, t, 0.03, false);
+                            let off = (py * w + px) * 4;
+                            let a = [
+                                outgoing.bgra[off],
+                                outgoing.bgra[off + 1],
+                                outgoing.bgra[off + 2],
+                                255,
+                            ];
+                            let b = [
+                                incoming.bgra[off],
+                                incoming.bgra[off + 1],
+                                incoming.bgra[off + 2],
+                                255,
+                            ];
+                            target.bgra[off..off + 4].copy_from_slice(&lerp_bgra(a, b, mask));
+                        }
+                    }
+                }
+                CustomShaderPreset::GlitchCut => {
+                    let g = (t * PI).sin();
+                    let ca = g * 0.025;
+                    for py in 0..h {
+                        let v = (py as f32 + 0.5) / hf;
+                        let band = (v * 24.0).floor();
+                        let seed = band * 127.1 + (t * 17.0).floor() * 311.7;
+                        let h_hash = (seed.sin() * 43758.5453).fract().abs() * 2.0 - 1.0;
+                        let shift = h_hash * g * 0.08;
+                        let use_in = (t + h_hash * 0.15) >= 0.5;
+                        let src = if use_in { incoming } else { outgoing };
+                        for px in 0..w {
+                            let u = (px as f32 + 0.5) / wf;
+                            let pr = sample_bgra_nearest(src, u + shift + ca, v);
+                            let pg = sample_bgra_nearest(src, u + shift, v);
+                            let pb = sample_bgra_nearest(src, u + shift - ca, v);
+                            let off = (py * w + px) * 4;
+                            // BGRA layout: B from pb[0], G from pg[1], R from pr[2]
+                            target.bgra[off..off + 4].copy_from_slice(&[pb[0], pg[1], pr[2], 255]);
+                        }
+                    }
+                }
+                CustomShaderPreset::Swirl => {
+                    let twist_peak = (t * PI).sin() * 5.0;
+                    for py in 0..h {
+                        let v = (py as f32 + 0.5) / hf;
+                        let dy = v - 0.5;
+                        for px in 0..w {
+                            let u = (px as f32 + 0.5) / wf;
+                            let dx = u - 0.5;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            let theta = twist_peak * (1.0 - dist).max(0.0);
+                            let c1 = theta.cos();
+                            let s1 = theta.sin();
+                            let out_px = sample_bgra_nearest(
+                                outgoing,
+                                dx * c1 - dy * s1 + 0.5,
+                                dx * s1 + dy * c1 + 0.5,
+                            );
+                            let in_px = sample_bgra_nearest(
+                                incoming,
+                                dx * c1 + dy * s1 + 0.5,
+                                -dx * s1 + dy * c1 + 0.5,
+                            );
+                            let off = (py * w + px) * 4;
+                            target.bgra[off..off + 4].copy_from_slice(&lerp_bgra(out_px, in_px, t));
+                        }
+                    }
+                }
+                CustomShaderPreset::CustomWgsl => {
+                    // Fallback limpo em CPU quando um shader WGSL customizado roda sem GPU
+                    apply_transition_software(
+                        target,
+                        outgoing,
+                        incoming,
+                        TransitionType::Fade,
+                        t,
+                        elapsed_ms,
+                        custom,
+                        None,
+                        None,
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// Desenha uma barra discreta para o Privacy Shield no buffer final (sem dependência de fonte externa).
 fn apply_privacy_shield(target: &mut FrameBuffer) {
     clear_bgra(&mut target.bgra, [18, 13, 11, 255]); // #0b0d12 em BGRA
@@ -440,16 +969,18 @@ pub fn downscale_preview(src: &FrameBuffer, dst: &mut FrameBuffer) {
     dst.updated_at_ms = src.updated_at_ms;
 }
 
-/// Motor de Composição Dual Output (16:9 + 9:16) em Rust.
+/// Motor de Composição Dual Output (16:9 + 9:16) em Rust com suporte a `wgpu` GPU,
+/// Stinger alpha video, Luma Wipe, Shaders WGSL customizados, Easing e Overrides por cena.
 ///
 /// Correções críticas implementadas:
 /// - `live_vertical` é mantido separado de `studio.dual_output_enabled`: alterar
 ///   configurações (`apply_settings`) durante a live **nunca** desliga ou congela o 9:16!
-/// - Transições (`Cut`, `Fade`, `FadeToBlack`, `Slide`) usam buffers offscreen separados;
-///   trocar para `Cut` limpa `outgoing` imediatamente.
+/// - Transições (`Cut`, `Fade`, `FadeToBlack`, `Slide`, `Stinger`, `LumaWipe`, `CustomShader`)
+///   usam buffers offscreen reutilizáveis; trocar para `Cut` limpa `outgoing` imediatamente.
 /// - Frame pacing por acumulador compensado por drift + métricas reais de `TelemetryStats`.
 pub struct Compositor<B: CompositorBackend = SoftwareBackend> {
     backend: B,
+    gpu_backend: Option<Box<WgpuBackend>>,
     studio: StudioCompositorSettings,
     live_vertical: bool,
 
@@ -459,6 +990,11 @@ pub struct Compositor<B: CompositorBackend = SoftwareBackend> {
     transition_type: TransitionType,
     transition_duration_ms: u32,
     transition_started_ms: u64,
+    custom_transition: CustomTransitionConfig,
+    active_transition_config: CustomTransitionConfig,
+    stinger_frame: Option<FrameBuffer>,
+    luma_matte: Option<FrameBuffer>,
+    stinger_audio_pending: bool,
 
     pub program: FrameBuffer,
     pub vertical: FrameBuffer,
@@ -467,7 +1003,9 @@ pub struct Compositor<B: CompositorBackend = SoftwareBackend> {
     pub preview_small_v: FrameBuffer,
 
     scratch_h: FrameBuffer,
+    scratch_in_h: FrameBuffer,
     scratch_v: FrameBuffer,
+    scratch_in_v: FrameBuffer,
 
     // Frame pacing e telemetria
     next_tick_due_ms: Option<f64>,
@@ -491,8 +1029,10 @@ impl<B: CompositorBackend> Compositor<B> {
         backend: B,
     ) -> Self {
         studio.normalize();
+        let (backend_name, _, _) = backend.backend_info();
         Self {
             backend,
+            gpu_backend: None,
             live_vertical: false,
             program_scene: None,
             preview_scene: None,
@@ -500,22 +1040,113 @@ impl<B: CompositorBackend> Compositor<B> {
             transition_type: TransitionType::Fade,
             transition_duration_ms: 300,
             transition_started_ms: 0,
+            custom_transition: CustomTransitionConfig::default(),
+            active_transition_config: CustomTransitionConfig::default(),
+            stinger_frame: None,
+            luma_matte: None,
+            stinger_audio_pending: false,
             program: FrameBuffer::new(horiz.0, horiz.1),
             vertical: FrameBuffer::new(vert.0, vert.1),
             preview: FrameBuffer::new(PREVIEW_H.0, PREVIEW_H.1),
             preview_small_h: FrameBuffer::new(PREVIEW_H.0, PREVIEW_H.1),
             preview_small_v: FrameBuffer::new(PREVIEW_V.0, PREVIEW_V.1),
             scratch_h: FrameBuffer::new(horiz.0, horiz.1),
+            scratch_in_h: FrameBuffer::new(horiz.0, horiz.1),
             scratch_v: FrameBuffer::new(vert.0, vert.1),
+            scratch_in_v: FrameBuffer::new(vert.0, vert.1),
             next_tick_due_ms: None,
             render_samples_ms: VecDeque::with_capacity(120),
             tick_timestamps_ms: VecDeque::with_capacity(120),
             dropped_frames: 0,
             telemetry: TelemetryStats {
                 target_fps: studio.fps,
+                compositor_backend: backend_name,
                 ..Default::default()
             },
             studio,
+        }
+    }
+
+    /// Tenta ativar o backend GPU `wgpu` em tempo de execução e retorna o `GpuPipelineStatus`.
+    /// Em ambientes sem GPU (ex.: CI headless), mantém o fallback limpo sem pânico.
+    pub fn try_enable_gpu_backend(&mut self) -> GpuPipelineStatus {
+        if let Some(ref gpu) = self.gpu_backend {
+            let (name, adapter, driver) = gpu.backend_info();
+            self.telemetry.compositor_backend = name.clone();
+            self.telemetry.zero_copy_active = true;
+            return GpuPipelineStatus {
+                zero_copy_active: true,
+                compositor_backend: name,
+                capture_backend: "auto".to_string(),
+                adapter_name: adapter,
+                driver_info: driver,
+                frame_copy_count: 0,
+                active_textures: gpu.active_textures(),
+            };
+        }
+
+        let (cur_name, cur_adapter, cur_driver) = self.backend.backend_info();
+        if cur_name == "wgpu" {
+            self.telemetry.compositor_backend = cur_name.clone();
+            self.telemetry.zero_copy_active = true;
+            return GpuPipelineStatus {
+                zero_copy_active: true,
+                compositor_backend: cur_name,
+                capture_backend: "auto".to_string(),
+                adapter_name: cur_adapter,
+                driver_info: cur_driver,
+                frame_copy_count: 0,
+                active_textures: self.backend.active_textures(),
+            };
+        }
+
+        match WgpuBackend::try_new() {
+            Ok(gpu) => {
+                let (name, adapter, driver) = gpu.backend_info();
+                let active_textures = gpu.active_textures();
+                self.gpu_backend = Some(Box::new(gpu));
+                self.telemetry.compositor_backend = name.clone();
+                self.telemetry.zero_copy_active = true;
+                GpuPipelineStatus {
+                    zero_copy_active: true,
+                    compositor_backend: name,
+                    capture_backend: "auto".to_string(),
+                    adapter_name: adapter,
+                    driver_info: driver,
+                    frame_copy_count: 0,
+                    active_textures,
+                }
+            }
+            Err(err) => {
+                self.telemetry.compositor_backend = cur_name.clone();
+                self.telemetry.zero_copy_active = false;
+                GpuPipelineStatus {
+                    zero_copy_active: false,
+                    compositor_backend: cur_name,
+                    capture_backend: "software-fallback".to_string(),
+                    adapter_name: cur_adapter,
+                    driver_info: format!("fallback: {err}"),
+                    frame_copy_count: 1,
+                    active_textures: 0,
+                }
+            }
+        }
+    }
+
+    /// Desativa o override `wgpu` e volta ao backend padrão `B`.
+    pub fn disable_gpu_backend(&mut self) {
+        self.gpu_backend = None;
+        let (name, _, _) = self.backend.backend_info();
+        self.telemetry.compositor_backend = name;
+        self.telemetry.zero_copy_active = false;
+    }
+
+    /// Retorna `(backend_name, adapter_name, driver_info)` do backend atualmente ativo.
+    pub fn backend_info(&self) -> (String, String, String) {
+        if let Some(ref gpu) = self.gpu_backend {
+            gpu.backend_info()
+        } else {
+            self.backend.backend_info()
         }
     }
 
@@ -543,6 +1174,135 @@ impl<B: CompositorBackend> Compositor<B> {
         &self.studio
     }
 
+    /// Atualiza a configuração global de transições customizadas (Stinger / LumaWipe / Shaders / Easing).
+    pub fn set_custom_transition(&mut self, mut config: CustomTransitionConfig) {
+        config.normalize();
+        self.custom_transition = config;
+    }
+
+    pub fn custom_transition(&self) -> &CustomTransitionConfig {
+        &self.custom_transition
+    }
+
+    /// Empurra o frame BGRA atual (com canal alfa) do vídeo de Stinger para overlay da transição.
+    pub fn push_stinger_frame(
+        &mut self,
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+    ) -> Result<(), String> {
+        let next_seq = self
+            .stinger_frame
+            .as_ref()
+            .map(|f| f.seq.saturating_add(1))
+            .unwrap_or(1);
+        let mut fb = FrameBuffer::from_bgra(width, height, bgra, 0)?;
+        fb.seq = next_seq;
+        self.stinger_frame = Some(fb);
+        Ok(())
+    }
+
+    pub fn clear_stinger_frame(&mut self) {
+        self.stinger_frame = None;
+    }
+
+    /// Define uma imagem de matte grayscale/BGRA customizada para transições `LumaWipe`.
+    pub fn set_luma_matte(
+        &mut self,
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+    ) -> Result<(), String> {
+        let next_seq = self
+            .luma_matte
+            .as_ref()
+            .map(|f| f.seq.saturating_add(1))
+            .unwrap_or(1);
+        let mut fb = FrameBuffer::from_bgra(width, height, bgra, 0)?;
+        fb.seq = next_seq;
+        self.luma_matte = Some(fb);
+        Ok(())
+    }
+
+    pub fn clear_luma_matte(&mut self) {
+        self.luma_matte = None;
+    }
+
+    /// Consome o gatilho de áudio do Stinger (retorna `true` exatamente uma vez quando uma transição
+    /// `Stinger` é disparada, para o runtime de áudio disparar o SFX sincronizado).
+    pub fn take_stinger_audio_trigger(&mut self) -> bool {
+        std::mem::replace(&mut self.stinger_audio_pending, false)
+    }
+
+    /// Indica se o ponto de corte (`stinger_transition_point_ms`) já foi atingido no instante `now_ms`.
+    pub fn stinger_cut_reached(&self, now_ms: u64) -> bool {
+        if self.outgoing_scene.is_none() || self.transition_type != TransitionType::Stinger {
+            return true;
+        }
+        now_ms.saturating_sub(self.transition_started_ms)
+            >= self.active_transition_config.stinger_transition_point_ms as u64
+    }
+
+    /// Define cenas de Program e Preview aplicando `CustomTransitionConfig` e resolvendo
+    /// automaticamente `Scene::transition_override` quando presente na cena de destino.
+    pub fn set_scenes_with_config(
+        &mut self,
+        program: Option<Scene>,
+        preview: Option<Scene>,
+        transition_type: TransitionType,
+        duration_ms: u32,
+        custom_config: Option<CustomTransitionConfig>,
+        now_ms: u64,
+    ) {
+        if let Some(mut cfg) = custom_config {
+            cfg.normalize();
+            self.custom_transition = cfg;
+        }
+
+        let same_scene = match (&self.program_scene, &program) {
+            (Some(a), Some(b)) => a.id == b.id,
+            _ => false,
+        };
+
+        // Resolve override por cena de destino (se configurado)
+        let (effective_type, effective_duration, mut effective_custom) =
+            if let Some(ref ov) = program.as_ref().and_then(|s| s.transition_override.as_ref()) {
+                (
+                    ov.transition_type,
+                    ov.duration_ms.clamp(50, 10_000),
+                    ov.custom
+                        .clone()
+                        .unwrap_or_else(|| self.custom_transition.clone()),
+                )
+            } else {
+                (
+                    transition_type,
+                    duration_ms.clamp(50, 10_000),
+                    self.custom_transition.clone(),
+                )
+            };
+        effective_custom.normalize();
+
+        if effective_type == TransitionType::Cut {
+            // Correção #9: Cut cancela qualquer transição em andamento imediatamente.
+            self.outgoing_scene = None;
+            self.transition_type = TransitionType::Cut;
+            self.stinger_audio_pending = false;
+        } else if !same_scene {
+            if let (Some(prev), Some(_)) = (&self.program_scene, &program) {
+                self.outgoing_scene = Some(prev.clone());
+                self.transition_type = effective_type;
+                self.transition_duration_ms = effective_duration;
+                self.transition_started_ms = now_ms;
+                self.active_transition_config = effective_custom;
+                self.stinger_audio_pending = effective_type == TransitionType::Stinger;
+            }
+        }
+
+        self.program_scene = program;
+        self.preview_scene = preview;
+    }
+
     pub fn set_scenes(
         &mut self,
         program: Option<Scene>,
@@ -551,25 +1311,7 @@ impl<B: CompositorBackend> Compositor<B> {
         duration_ms: u32,
         now_ms: u64,
     ) {
-        let same_scene = match (&self.program_scene, &program) {
-            (Some(a), Some(b)) => a.id == b.id,
-            _ => false,
-        };
-
-        if transition_type == TransitionType::Cut {
-            // Correção #9: Cut cancela qualquer transição em andamento imediatamente.
-            self.outgoing_scene = None;
-        } else if !same_scene {
-            if let (Some(prev), Some(_)) = (&self.program_scene, &program) {
-                self.outgoing_scene = Some(prev.clone());
-                self.transition_type = transition_type;
-                self.transition_duration_ms = duration_ms.clamp(50, 3000);
-                self.transition_started_ms = now_ms;
-            }
-        }
-
-        self.program_scene = program;
-        self.preview_scene = preview;
+        self.set_scenes_with_config(program, preview, transition_type, duration_ms, None, now_ms);
     }
 
     /// Frame pacing compensado por drift: retorna quantos ticks estão devidos e atualiza
@@ -604,25 +1346,42 @@ impl<B: CompositorBackend> Compositor<B> {
     ) {
         let started = std::time::Instant::now();
 
-        let mut progress = 1.0f32;
+        let mut raw_progress = 1.0f32;
+        let mut elapsed_ms = 0u64;
         if self.outgoing_scene.is_some() {
-            let elapsed = now_ms.saturating_sub(self.transition_started_ms) as f32;
+            elapsed_ms = now_ms.saturating_sub(self.transition_started_ms);
             let dur = self.transition_duration_ms.max(50) as f32;
-            progress = (elapsed / dur).clamp(0.0, 1.0);
-            if progress >= 1.0 {
+            raw_progress = (elapsed_ms as f32 / dur).clamp(0.0, 1.0);
+            if raw_progress >= 1.0 {
                 self.outgoing_scene = None;
             }
         }
+        let eased_progress = if raw_progress >= 1.0 {
+            1.0
+        } else {
+            self.active_transition_config.easing.apply(raw_progress)
+        };
+
+        let vertical_active = self.is_vertical_active();
+        let active_backend: &mut dyn CompositorBackend = match self.gpu_backend.as_deref_mut() {
+            Some(gpu) => gpu,
+            None => &mut self.backend,
+        };
 
         Self::render_orientation(
-            &mut self.backend,
+            active_backend,
             &mut self.program,
             &mut self.scratch_h,
+            &mut self.scratch_in_h,
             self.program_scene.as_ref(),
             self.outgoing_scene.as_ref(),
             false,
             self.transition_type,
-            progress,
+            eased_progress,
+            elapsed_ms,
+            &self.active_transition_config,
+            self.stinger_frame.as_ref(),
+            self.luma_matte.as_ref(),
             captures,
             &self.studio,
         );
@@ -630,16 +1389,21 @@ impl<B: CompositorBackend> Compositor<B> {
         self.program.updated_at_ms = now_ms;
         downscale_preview(&self.program, &mut self.preview_small_h);
 
-        if self.is_vertical_active() {
+        if vertical_active {
             Self::render_orientation(
-                &mut self.backend,
+                active_backend,
                 &mut self.vertical,
                 &mut self.scratch_v,
+                &mut self.scratch_in_v,
                 self.program_scene.as_ref(),
                 self.outgoing_scene.as_ref(),
                 true,
                 self.transition_type,
-                progress,
+                eased_progress,
+                elapsed_ms,
+                &self.active_transition_config,
+                self.stinger_frame.as_ref(),
+                self.luma_matte.as_ref(),
                 captures,
                 &self.studio,
             );
@@ -649,27 +1413,31 @@ impl<B: CompositorBackend> Compositor<B> {
         }
 
         if let Some(ref prev) = self.preview_scene {
-            self.backend
-                .compose_scene(&mut self.preview, prev, false, captures, &self.studio);
+            active_backend.compose_scene(&mut self.preview, prev, false, captures, &self.studio);
             self.preview.seq = self.preview.seq.saturating_add(1);
             self.preview.updated_at_ms = now_ms;
         }
 
-        let elapsed_ms = measured_render_ms
+        let elapsed_render_ms = measured_render_ms
             .unwrap_or_else(|| started.elapsed().as_secs_f32() * 1000.0);
-        self.record_telemetry(now_ms, elapsed_ms);
+        self.record_telemetry(now_ms, elapsed_render_ms);
     }
 
     #[allow(clippy::too_many_arguments)]
     fn render_orientation(
-        backend: &mut B,
+        backend: &mut dyn CompositorBackend,
         target: &mut FrameBuffer,
-        scratch: &mut FrameBuffer,
+        scratch_out: &mut FrameBuffer,
+        scratch_in: &mut FrameBuffer,
         program: Option<&Scene>,
         outgoing: Option<&Scene>,
         vertical: bool,
         transition: TransitionType,
         progress: f32,
+        elapsed_ms: u64,
+        custom: &CustomTransitionConfig,
+        stinger_frame: Option<&FrameBuffer>,
+        luma_matte: Option<&FrameBuffer>,
         captures: &CaptureManager,
         studio: &StudioCompositorSettings,
     ) {
@@ -684,42 +1452,25 @@ impl<B: CompositorBackend> Compositor<B> {
         };
 
         if let (Some(out), true) = (outgoing, progress < 1.0) {
-            match transition {
-                TransitionType::Cut => {
-                    backend.compose_scene(target, prog, vertical, captures, studio);
-                }
-                TransitionType::Fade => {
-                    backend.compose_scene(scratch, out, vertical, captures, studio);
-                    backend.compose_scene(target, prog, vertical, captures, studio);
-                    let t = progress.clamp(0.0, 1.0);
-                    let inv = 1.0 - t;
-                    for (d, s_out) in target
-                        .bgra
-                        .chunks_exact_mut(4)
-                        .zip(scratch.bgra.chunks_exact(4))
-                    {
-                        d[0] = (s_out[0] as f32 * inv + d[0] as f32 * t).round().clamp(0.0, 255.0) as u8;
-                        d[1] = (s_out[1] as f32 * inv + d[1] as f32 * t).round().clamp(0.0, 255.0) as u8;
-                        d[2] = (s_out[2] as f32 * inv + d[2] as f32 * t).round().clamp(0.0, 255.0) as u8;
-                        d[3] = 255;
-                    }
-                }
-                TransitionType::FadeToBlack => {
-                    if progress < 0.5 {
-                        backend.compose_scene(scratch, out, vertical, captures, studio);
-                        fade_to_black_buffer(target, scratch, 1.0 - progress * 2.0);
-                    } else {
-                        backend.compose_scene(scratch, prog, vertical, captures, studio);
-                        fade_to_black_buffer(target, scratch, (progress - 0.5) * 2.0);
-                    }
-                }
-                TransitionType::Slide => {
-                    let mut incoming_tmp = FrameBuffer::new(target.width, target.height);
-                    backend.compose_scene(scratch, out, vertical, captures, studio);
-                    backend.compose_scene(&mut incoming_tmp, prog, vertical, captures, studio);
-                    slide_buffers(target, scratch, &incoming_tmp, progress);
-                }
+            if transition == TransitionType::Cut {
+                backend.compose_scene(target, prog, vertical, captures, studio);
+                return;
             }
+            backend.compose_scene(scratch_out, out, vertical, captures, studio);
+            scratch_out.seq = scratch_out.seq.saturating_add(1);
+            backend.compose_scene(scratch_in, prog, vertical, captures, studio);
+            scratch_in.seq = scratch_in.seq.saturating_add(1);
+            backend.compose_transition(
+                target,
+                scratch_out,
+                scratch_in,
+                transition,
+                progress,
+                elapsed_ms,
+                custom,
+                stinger_frame,
+                luma_matte,
+            );
             return;
         }
 
@@ -762,10 +1513,12 @@ impl<B: CompositorBackend> Compositor<B> {
             self.studio.fps as f32
         };
 
+        let (backend_name, _, _) = self.backend_info();
         self.telemetry.compositor_fps = fps;
         self.telemetry.target_fps = self.studio.fps;
         self.telemetry.render_ms_p95 = p95;
         self.telemetry.dropped_frames = self.dropped_frames;
+        self.telemetry.compositor_backend = backend_name;
     }
 
     pub fn telemetry(&self) -> TelemetryStats {
@@ -776,7 +1529,7 @@ impl<B: CompositorBackend> Compositor<B> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::SourceSettings;
+    use crate::protocol::{SceneTransitionOverride, SourceSettings, TransitionEasing};
 
     fn make_color_item(id: &str, color: &str, z: i32, vz: i32) -> SceneItem {
         SceneItem {
@@ -803,6 +1556,16 @@ mod tests {
         }
     }
 
+    fn make_solid_scene(id: &str, color: &str) -> Scene {
+        Scene {
+            id: id.to_string(),
+            name: id.to_uppercase(),
+            items: vec![make_color_item(id, color, 0, 0)],
+            created_at: 0,
+            transition_override: None,
+        }
+    }
+
     #[test]
     fn test_live_vertical_never_freezes_after_apply_settings() {
         let mut studio = StudioCompositorSettings::default();
@@ -815,12 +1578,14 @@ mod tests {
             name: "A".to_string(),
             items: vec![make_color_item("bg", "#ff0000", 0, 0)],
             created_at: 0,
+            transition_override: None,
         };
         let scene_b = Scene {
             id: "b".to_string(),
             name: "B".to_string(),
             items: vec![make_color_item("bg2", "#0000ff", 0, 0)],
             created_at: 0,
+            transition_override: None,
         };
 
         comp.set_live_vertical(true);
@@ -891,6 +1656,7 @@ mod tests {
             name: "S".to_string(),
             items: vec![cam],
             created_at: 0,
+            transition_override: None,
         };
         comp.set_scenes(Some(scene), None, TransitionType::Cut, 200, 0);
         comp.tick(&captures, 16, Some(1.0));
@@ -912,18 +1678,21 @@ mod tests {
             name: "White".to_string(),
             items: vec![make_color_item("w", "#ffffff", 0, 0)],
             created_at: 0,
+            transition_override: None,
         };
         let s_red = Scene {
             id: "r".to_string(),
             name: "Red".to_string(),
             items: vec![make_color_item("r", "#ff0000", 0, 0)],
             created_at: 0,
+            transition_override: None,
         };
         let s_green = Scene {
             id: "g".to_string(),
             name: "Green".to_string(),
             items: vec![make_color_item("g", "#00ff00", 0, 0)],
             created_at: 0,
+            transition_override: None,
         };
 
         // 1. Inicia FadeToBlack de White -> Red (dur 1000ms). Em t=500ms deve estar preto!
@@ -960,6 +1729,7 @@ mod tests {
                 make_color_item("blue", "#0000ff", 1, 0),
             ],
             created_at: 0,
+            transition_override: None,
         };
         normalize_z(&mut scene, true);
         assert_eq!(scene.items[0].vertical_transform.z_index, 1);
@@ -983,5 +1753,252 @@ mod tests {
         assert!(tel.render_ms_p95 >= 11.9);
         assert!(tel.dropped_frames >= 1);
         assert!(tel.compositor_fps > 0.0);
+    }
+
+    #[test]
+    fn test_stinger_transition_point_alpha_overlay_and_audio_trigger() {
+        let studio = StudioCompositorSettings::default();
+        let mut comp = Compositor::with_dimensions(studio, (4, 2), (2, 4), SoftwareBackend);
+        let captures = CaptureManager::new(60);
+
+        let s_red = make_solid_scene("red", "#ff0000"); // BGRA [0, 0, 255, 255]
+        let s_blue = make_solid_scene("blue", "#0000ff"); // BGRA [255, 0, 0, 255]
+
+        // Stinger 4x2: coluna x=0 verde opaco ([0,255,0,255]), restante transparente ([0,0,0,0])
+        let mut stinger_bgra = vec![0u8; 4 * 2 * 4];
+        for y in 0..2 {
+            let off = (y * 4) * 4;
+            stinger_bgra[off..off + 4].copy_from_slice(&[0, 255, 0, 255]);
+        }
+        comp.push_stinger_frame(4, 2, stinger_bgra).unwrap();
+
+        let cfg = CustomTransitionConfig {
+            stinger_transition_point_ms: 400,
+            ..Default::default()
+        };
+        comp.set_scenes(Some(s_red), None, TransitionType::Cut, 1000, 0);
+        assert!(!comp.take_stinger_audio_trigger());
+
+        comp.set_scenes_with_config(
+            Some(s_blue),
+            None,
+            TransitionType::Stinger,
+            1000,
+            Some(cfg),
+            100,
+        );
+        // Gatilho de áudio do stinger dispara exatamente uma vez
+        assert!(comp.take_stinger_audio_trigger());
+        assert!(!comp.take_stinger_audio_trigger());
+
+        // Antes do ponto de corte (elapsed = 200ms < 400ms): x=0 = stinger verde, x=1 = outgoing vermelho
+        comp.tick(&captures, 300, Some(1.0));
+        assert!(!comp.stinger_cut_reached(300));
+        assert_eq!(&comp.program.bgra[0..4], &[0, 255, 0, 255]);
+        assert_eq!(&comp.program.bgra[4..8], &[0, 0, 255, 255]);
+
+        // Após o ponto de corte (elapsed = 500ms >= 400ms): x=0 = stinger verde, x=1 = incoming azul!
+        comp.tick(&captures, 600, Some(1.0));
+        assert!(comp.stinger_cut_reached(600));
+        assert_eq!(&comp.program.bgra[0..4], &[0, 255, 0, 255]);
+        assert_eq!(&comp.program.bgra[4..8], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn test_luma_wipe_procedural_invert_and_custom_matte() {
+        let studio = StudioCompositorSettings::default();
+        let mut comp = Compositor::with_dimensions(studio, (8, 2), (2, 8), SoftwareBackend);
+        let captures = CaptureManager::new(60);
+
+        let s_black = make_solid_scene("blk", "#000000");
+        let s_white = make_solid_scene("wht", "#ffffff");
+
+        // 1. Horizontal wipe normal em t=0.5: x=0 deve ser branco (incoming), x=7 preto (outgoing)
+        let cfg_horiz = CustomTransitionConfig {
+            luma_preset: "horizontal-wipe".to_string(),
+            luma_softness: 0.05,
+            luma_invert: false,
+            easing: TransitionEasing::Linear,
+            ..Default::default()
+        };
+        comp.set_scenes(Some(s_black.clone()), None, TransitionType::Cut, 1000, 0);
+        comp.set_scenes_with_config(
+            Some(s_white.clone()),
+            None,
+            TransitionType::LumaWipe,
+            1000,
+            Some(cfg_horiz),
+            100,
+        );
+        comp.tick(&captures, 600, Some(1.0)); // progress = 0.5
+        assert!(comp.program.bgra[0] > 240); // x=0: incoming (branco)
+        assert!(comp.program.bgra[7 * 4] < 15); // x=7: outgoing (preto)
+
+        // 2. Horizontal wipe invertido em t=0.5: x=0 preto, x=7 branco
+        let cfg_inv = CustomTransitionConfig {
+            luma_preset: "horizontal-wipe".to_string(),
+            luma_softness: 0.05,
+            luma_invert: true,
+            easing: TransitionEasing::Linear,
+            ..Default::default()
+        };
+        comp.set_scenes(Some(s_black.clone()), None, TransitionType::Cut, 1000, 1200);
+        comp.set_scenes_with_config(
+            Some(s_white.clone()),
+            None,
+            TransitionType::LumaWipe,
+            1000,
+            Some(cfg_inv),
+            1300,
+        );
+        comp.tick(&captures, 1800, Some(1.0));
+        assert!(comp.program.bgra[0] < 15);
+        assert!(comp.program.bgra[7 * 4] > 240);
+
+        // 3. Matte customizado: metade esquerda branca (luma=1.0), metade direita preta (luma=0.0)
+        // Em t=0.5 sem inversão, metade direita (luma=0.0) vira incoming (branco) e esquerda fica outgoing (preto)
+        let mut matte = vec![0u8; 8 * 2 * 4];
+        for y in 0..2 {
+            for x in 0..8 {
+                let off = (y * 8 + x) * 4;
+                let v = if x < 4 { 255u8 } else { 0u8 };
+                matte[off..off + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        comp.set_luma_matte(8, 2, matte).unwrap();
+        let cfg_custom = CustomTransitionConfig {
+            luma_softness: 0.05,
+            luma_invert: false,
+            easing: TransitionEasing::Linear,
+            ..Default::default()
+        };
+        comp.set_scenes(Some(s_black), None, TransitionType::Cut, 1000, 2500);
+        comp.set_scenes_with_config(
+            Some(s_white),
+            None,
+            TransitionType::LumaWipe,
+            1000,
+            Some(cfg_custom),
+            2600,
+        );
+        comp.tick(&captures, 3100, Some(1.0));
+        assert!(comp.program.bgra[0] < 15);
+        assert!(comp.program.bgra[7 * 4] > 240);
+    }
+
+    #[test]
+    fn test_custom_shader_presets_and_easing_curves() {
+        let studio = StudioCompositorSettings::default();
+        let mut comp = Compositor::with_dimensions(studio, (8, 8), (8, 8), SoftwareBackend);
+        let captures = CaptureManager::new(60);
+
+        let s_black = make_solid_scene("blk", "#000000");
+        let s_white = make_solid_scene("wht", "#ffffff");
+
+        // Testa os 4 presets de CustomShader em t=0.5
+        for preset in [
+            CustomShaderPreset::ZoomBlur,
+            CustomShaderPreset::RadialWipe,
+            CustomShaderPreset::GlitchCut,
+            CustomShaderPreset::Swirl,
+        ] {
+            let cfg = CustomTransitionConfig {
+                shader_preset: preset,
+                easing: TransitionEasing::Linear,
+                ..Default::default()
+            };
+            comp.set_scenes(Some(s_black.clone()), None, TransitionType::Cut, 1000, 0);
+            comp.set_scenes_with_config(
+                Some(s_white.clone()),
+                None,
+                TransitionType::CustomShader,
+                1000,
+                Some(cfg),
+                100,
+            );
+            comp.tick(&captures, 600, Some(1.0));
+            // Todos os pixels devem ser opacos (alpha=255)
+            assert!(comp.program.bgra.chunks_exact(4).all(|px| px[3] == 255));
+        }
+
+        // Compara curvas de Easing em t=0.25 (Fade preto -> branco)
+        let mut sample_at_quarter = |easing: TransitionEasing| -> u8 {
+            let cfg = CustomTransitionConfig {
+                easing,
+                ..Default::default()
+            };
+            comp.set_scenes(Some(s_black.clone()), None, TransitionType::Cut, 1000, 0);
+            comp.set_scenes_with_config(
+                Some(s_white.clone()),
+                None,
+                TransitionType::Fade,
+                1000,
+                Some(cfg),
+                100,
+            );
+            comp.tick(&captures, 350, Some(1.0)); // raw t = 0.25
+            comp.program.bgra[0]
+        };
+
+        let v_ease_in_out = sample_at_quarter(TransitionEasing::EaseInOut);
+        let v_linear = sample_at_quarter(TransitionEasing::Linear);
+        let v_cubic_out = sample_at_quarter(TransitionEasing::CubicOut);
+        let v_expo_out = sample_at_quarter(TransitionEasing::ExpoOut);
+
+        assert!(v_ease_in_out < v_linear);
+        assert!(v_linear < v_cubic_out);
+        assert!(v_cubic_out < v_expo_out);
+    }
+
+    #[test]
+    fn test_per_scene_transition_override_and_gpu_backend_probe() {
+        let studio = StudioCompositorSettings::default();
+        let mut comp = Compositor::with_dimensions(studio, (4, 4), (4, 4), SoftwareBackend);
+        let captures = CaptureManager::new(60);
+
+        let s_red = make_solid_scene("red", "#ff0000");
+        let mut s_stinger_target = make_solid_scene("stinger_scene", "#0000ff");
+        s_stinger_target.transition_override = Some(SceneTransitionOverride {
+            transition_type: TransitionType::Stinger,
+            duration_ms: 1000,
+            custom: Some(CustomTransitionConfig {
+                stinger_transition_point_ms: 300,
+                ..Default::default()
+            }),
+        });
+
+        let mut s_cut_target = make_solid_scene("cut_scene", "#00ff00");
+        s_cut_target.transition_override = Some(SceneTransitionOverride {
+            transition_type: TransitionType::Cut,
+            duration_ms: 200,
+            custom: None,
+        });
+
+        // Mesmo pedindo TransitionType::Fade globalmente, o override da cena ativa Stinger!
+        comp.set_scenes(Some(s_red), None, TransitionType::Cut, 300, 0);
+        comp.set_scenes(Some(s_stinger_target), None, TransitionType::Fade, 300, 100);
+        assert!(comp.take_stinger_audio_trigger());
+
+        // Antes do ponto de corte (elapsed = 200ms < 300ms): ainda mostra outgoing (vermelho)
+        comp.tick(&captures, 300, Some(1.0));
+        assert_eq!(&comp.program.bgra[0..4], &[0, 0, 255, 255]);
+
+        // Após o ponto de corte (elapsed = 350ms >= 300ms): troca para incoming (azul)
+        comp.tick(&captures, 450, Some(1.0));
+        assert_eq!(&comp.program.bgra[0..4], &[255, 0, 0, 255]);
+
+        // Cena com override Cut cancela a transição imediatamente mesmo se chamada com Fade
+        comp.set_scenes(Some(s_cut_target), None, TransitionType::Fade, 1000, 500);
+        comp.tick(&captures, 516, Some(1.0));
+        assert_eq!(&comp.program.bgra[0..4], &[0, 255, 0, 255]);
+
+        // Verifica backend_info e try_enable_gpu_backend sem pânico em qualquer ambiente
+        let (bname, _, _) = comp.backend_info();
+        assert_eq!(bname, "software");
+        let gpu_status = comp.try_enable_gpu_backend();
+        assert!(
+            gpu_status.compositor_backend == "wgpu"
+                || gpu_status.compositor_backend == "software"
+        );
     }
 }

@@ -14,15 +14,19 @@ import type {
   ViewerConnectResult
 } from '@shared/ipc'
 import type {
+  AbrDestinationTelemetry,
   AudioApp,
   AudioChannelStatus,
   AudioLevelSample,
+  AudioPluginInfo,
   BrowserSourceFrame,
   BrowserSourceSpec,
   CanvasOrientation,
   ChatMessage,
   ConnectedViewer,
   DiscoveredHost,
+  ExternalControlStatus,
+  GpuPipelineStatus,
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
@@ -41,6 +45,8 @@ import type {
   TwitchCategory,
   TwitchLoginState,
   ViewerToHost,
+  VirtualCameraDevice,
+  VirtualCameraStatus,
   WidgetKit
 } from '@shared/protocol'
 
@@ -59,7 +65,7 @@ declare global {
 type EventCallback = (payload: unknown) => void
 
 /**
- * Cliente RPC WebSocket autenticado com suporte a frames binários (stream 0x01/0x02/0x03)
+ * Cliente RPC WebSocket autenticado com suporte a frames binários (stream 0x01/0x02/0x03/0x04)
  * para fallback quando rodando fora do Tauri v2 (ex.: Vite dev no navegador).
  */
 class RpcWsBridge {
@@ -263,7 +269,59 @@ export function createRustBridgeApi(): Api {
       onPcm: (cb) =>
         listenBackend<{ id: string; pcm: number[] }>('audio:pcm', (p) => cb(p.id, new Float32Array(p.pcm))),
       onStatus: (cb) => listenBackend<AudioChannelStatus[]>('audio:status', cb),
-      onLevels: (cb) => listenBackend<AudioLevelSample[]>('audio:levels', cb)
+      onLevels: (cb) => listenBackend<AudioLevelSample[]>('audio:levels', cb),
+      listDevices: () =>
+        invokeBackend<Array<{ id: string; name: string; kind: 'input' | 'output'; isDefault: boolean }>>(
+          'audio_list_devices'
+        )
+    },
+    plugins: {
+      scan: () => invokeBackend<AudioPluginInfo[]>('plugins_scan'),
+      openGui: (channelId, slotId) =>
+        invokeBackend<OkResult>('plugins_open_gui', { channelId, slotId }),
+      setParam: (channelId, slotId, paramId, value) =>
+        invokeBackend<OkResult>('plugins_set_param', { channelId, slotId, paramId, value })
+    },
+    gpu: {
+      status: () => invokeBackend<GpuPipelineStatus>('gpu_status')
+    },
+    abr: {
+      status: () => invokeBackend<AbrDestinationTelemetry[]>('abr_status'),
+      onUpdate: (cb) => listenBackend<AbrDestinationTelemetry[]>('abr:telemetry', cb)
+    },
+    virtualCam: {
+      status: () => invokeBackend<VirtualCameraStatus>('virtual_cam_status'),
+      devices: () => invokeBackend<VirtualCameraDevice[]>('virtual_cam_devices'),
+      start: (orientation?: CanvasOrientation) =>
+        invokeBackend<VirtualCameraStatus>(
+          'virtual_cam_start',
+          orientation ? { orientation } : {}
+        ),
+      stop: () => invokeBackend<VirtualCameraStatus>('virtual_cam_stop'),
+      pushFrame: (width: number, height: number, bgra: Uint8Array) => {
+        if (window.__TAURI_INTERNALS__) {
+          void invokeBackend('virtual_cam_push_frame', {
+            width,
+            height,
+            bgra: Array.from(bgra)
+          }).catch(() => {})
+        } else {
+          const payload = new Uint8Array(8 + bgra.byteLength)
+          const view = new DataView(payload.buffer)
+          view.setUint32(0, width >>> 0, true)
+          view.setUint32(4, height >>> 0, true)
+          payload.set(bgra, 8)
+          rpcBridge.sendBinary(0x04, 0, payload)
+        }
+      },
+      onStatus: (cb) => listenBackend<VirtualCameraStatus>('virtual-cam:status', cb)
+    },
+    externalControl: {
+      status: () => invokeBackend<ExternalControlStatus>('external_control_status'),
+      setObsPassword: (password: string) =>
+        invokeBackend<OkResult>('external_control_set_obs_password', { password }),
+      restart: () => invokeBackend<ExternalControlStatus>('external_control_restart'),
+      onStatus: (cb) => listenBackend<ExternalControlStatus>('external-control:status', cb)
     },
     telemetry: {
       get: () => invokeBackend<TelemetryStats>('telemetry_get'),
@@ -292,6 +350,7 @@ export function createRustBridgeApi(): Api {
     files: {
       pickImage: () => invokeBackend<string | null>('files_pick_image'),
       pickHtml: () => invokeBackend<string | null>('files_pick_html'),
+      pickMedia: () => invokeBackend<string | null>('files_pick_media'),
       readImage: (path) => invokeBackend<string | null>('files_read_image', { path })
     },
     host: {

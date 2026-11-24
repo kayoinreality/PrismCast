@@ -18,7 +18,13 @@ import {
 } from '@/components/Icons'
 import { formatClock, useNow } from '@/components/LiveStatus'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
-import { useTelemetrySlice, studioStore } from '@/studio/StudioStore'
+import {
+  studioStore,
+  useAbrTelemetrySlice,
+  useGpuStatusSlice,
+  useTelemetrySlice,
+  useVirtualCamSlice
+} from '@/studio/StudioStore'
 import { GoLiveModal, LiveInfoFields, useTwitchCaps } from './GoLive'
 
 function formatHotkey(accel: string | undefined, fallback: string): string {
@@ -171,9 +177,13 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
   const { engine, settings, update, toast } = useStudio()
   const state = useEngineState()
   const telemetry = useTelemetrySlice()
+  const gpuStatus = useGpuStatusSlice()
+  const abrTelemetry = useAbrTelemetrySlice()
+  const vcamStore = useVirtualCamSlice()
   const [confirmStop, setConfirmStop] = useState(false)
   const [preparing, setPreparing] = useState(false)
   const [togglingRec, setTogglingRec] = useState(false)
+  const [togglingVcam, setTogglingVcam] = useState(false)
   const [localMutedSpeaking, setLocalMutedSpeaking] = useState(false)
   const now = useNow(state.live)
   const studio = settings.studio
@@ -248,6 +258,34 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
       ? telemetry.replayBufferedSeconds
       : state.recorder.replayBufferedSeconds
   )
+
+  const vcam = state.virtualCamStatus.active ? state.virtualCamStatus : vcamStore
+  const vcamActive = Boolean(vcam.active)
+  const zeroCopyActive = Boolean(
+    telemetry.zeroCopyActive || state.telemetry.zeroCopyActive || gpuStatus.zeroCopyActive
+  )
+  const abrActive = Boolean(
+    telemetry.abrActive || state.telemetry.abrActive || (state.live && abrTelemetry.length > 0)
+  )
+  const abrTargetKbps =
+    telemetry.abrTargetBitrateKbps ??
+    state.telemetry.abrTargetBitrateKbps ??
+    abrTelemetry.reduce((sum, d) => sum + d.currentBitrateKbps, 0)
+  const abrCongestion = Math.max(
+    telemetry.abrCongestionLevel ?? state.telemetry.abrCongestionLevel ?? 0,
+    abrTelemetry.reduce((m, d) => Math.max(m, d.congestionLevel), 0)
+  )
+  const abrStateBad =
+    abrCongestion >= 0.6 || abrTelemetry.some((d) => d.state === 'congested' || d.state === 'floor')
+  const abrStateWarn =
+    !abrStateBad && (abrCongestion >= 0.25 || abrTelemetry.some((d) => d.state === 'recovering'))
+  const abrColor = abrStateBad ? 'var(--danger)' : abrStateWarn ? 'var(--warning)' : 'var(--live)'
+  const abrLabel =
+    abrTargetKbps >= 1000
+      ? `${(abrTargetKbps / 1000).toFixed(1)} Mb/s`
+      : abrTargetKbps > 0
+        ? `${abrTargetKbps} kb/s`
+        : 'ativo'
 
   const telemetryTone = !state.multistream.ffmpegFound || dropped > 30
     ? 'is-bad'
@@ -331,10 +369,39 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
             >
               <span className="cb-telemetry-dot" />
               <span>{isCpuEncoder ? 'CPU (x264)' : encoderName}</span>
+              {zeroCopyActive && (
+                <span
+                  style={{
+                    padding: '1px 6px',
+                    borderRadius: 4,
+                    background: 'var(--live-soft)',
+                    color: 'var(--live)',
+                    fontWeight: 650,
+                    fontSize: 10.5
+                  }}
+                  title={`Pipeline GPU Zero-Copy ativo (${telemetry.compositorBackend || gpuStatus.compositorBackend})`}
+                >
+                  GPU Zero-Copy
+                </span>
+              )}
               <span>· {realFps}/{studio.fps}fps</span>
               {bitrateKbps > 0 && (
                 <span>
                   · {bitrateKbps >= 1000 ? `${(bitrateKbps / 1000).toFixed(1)} Mb/s` : `${bitrateKbps} kb/s`}
+                </span>
+              )}
+              {abrActive && (
+                <span
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 4,
+                    color: abrColor,
+                    fontWeight: 650
+                  }}
+                  title={`Bitrate Dinâmico (ABR): alvo ${abrLabel} · congestionamento ${Math.round(abrCongestion * 100)}%`}
+                >
+                  · ABR {abrLabel}
                 </span>
               )}
               {dropped > 0 && <span>· {dropped} drops</span>}
@@ -344,6 +411,31 @@ export function ControlBar({ onOpenDestinations }: { onOpenDestinations: () => v
       </div>
 
       <div className="cb-actions">
+        <Button
+          size="sm"
+          variant={vcamActive ? 'live' : 'ghost'}
+          icon={<IconCamera size={15} />}
+          disabled={togglingVcam}
+          onClick={() => {
+            if (togglingVcam) return
+            setTogglingVcam(true)
+            void engine
+              .toggleVirtualCam()
+              .then((res) => {
+                if (!res.ok) toast(res.error ?? 'Não foi possível alternar a Câmera Virtual', 'bad')
+                else if (res.active) toast('Câmera Virtual ativada', 'good')
+                else toast('Câmera Virtual parada', 'info')
+              })
+              .finally(() => setTogglingVcam(false))
+          }}
+          title={
+            vcamActive
+              ? `Câmera Virtual ativa (${vcam.device || vcam.backend || 'PrismCast'} · ${vcam.width}x${vcam.height}@${vcam.fps}fps) — clique para parar`
+              : 'Publica o palco como webcam virtual para Discord, Zoom, Meet e OBS'
+          }
+        >
+          {vcamActive ? 'Cam Virtual · ON' : 'Cam Virtual'}
+        </Button>
         <Button
           size="sm"
           variant={studio.cameraEnabled ? 'ghost' : 'danger'}

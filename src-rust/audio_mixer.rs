@@ -2,6 +2,7 @@ use crate::protocol::{
     AudioApp, AudioChannel, AudioChannelKind, AudioChannelStatus, AudioLevelSample,
     AudioMixerSettings, AudioMonitorMode, MAX_DB, MIN_DB,
 };
+use crate::vst_host::PluginChain;
 use std::collections::HashMap;
 use std::f32::consts::PI;
 
@@ -529,6 +530,7 @@ struct ChannelStrip {
     gate: NoiseGate,
     compressor: Compressor,
     limiter: Limiter,
+    plugins: PluginChain,
     pre_gain_lin: f32,
     fader_lin: f32,
     duck_gain: f32,
@@ -537,6 +539,8 @@ struct ChannelStrip {
     duck_release_coeff: f32,
     in_scene: bool,
     quantum_buf: Vec<f32>,
+    left_buf: Vec<f32>,
+    right_buf: Vec<f32>,
     last_input_db: f32,
     last_peak_db: f32,
     muted_speech_quantums: u32,
@@ -562,6 +566,7 @@ impl ChannelStrip {
             gate: NoiseGate::new(),
             compressor: Compressor::new(),
             limiter: Limiter::new(),
+            plugins: PluginChain::new(),
             pre_gain_lin: 1.0,
             fader_lin: 1.0,
             duck_gain: 1.0,
@@ -570,6 +575,8 @@ impl ChannelStrip {
             duck_release_coeff: 1.0 - (-1.0 / (0.35 * SAMPLE_RATE)).exp(),
             in_scene: true,
             quantum_buf: vec![0.0; QUANTUM_SAMPLES],
+            left_buf: vec![0.0; QUANTUM_FRAMES],
+            right_buf: vec![0.0; QUANTUM_FRAMES],
             last_input_db: MIN_DB,
             last_peak_db: MIN_DB,
             muted_speech_quantums: 0,
@@ -607,6 +614,8 @@ impl ChannelStrip {
         );
         self.limiter
             .configure(ch.filters.limiter.enabled, ch.filters.limiter.ceiling_db);
+        self.plugins
+            .sync_slots(&ch.filters.plugins, SAMPLE_RATE, QUANTUM_FRAMES);
         self.pre_gain_lin = db_to_linear(ch.filters.gain_db);
         self.fader_lin = db_to_linear(ch.volume_db);
         self.duck_target_lin = db_to_linear(ch.filters.ducking_amount_db);
@@ -659,6 +668,7 @@ impl ChannelStrip {
         let mut raw_peak = 0.0_f32;
         let mut out_peak = 0.0_f32;
 
+        // Pass 1: delay -> HPF -> EQ3 -> Gate -> Compressor -> Pre-Gain
         for f in 0..QUANTUM_FRAMES {
             let l0 = self.quantum_buf[f * 2];
             let r0 = self.quantum_buf[f * 2 + 1];
@@ -673,9 +683,21 @@ impl ChannelStrip {
             let (gl, gr) = self.gate.process_frame(el3, er3);
             let (cl, cr) = self.compressor.process_frame(gl, gr);
 
-            let gl_pre = cl * self.pre_gain_lin;
-            let gr_pre = cr * self.pre_gain_lin;
-            let (ll, lr) = self.limiter.process_frame(gl_pre, gr_pre);
+            self.left_buf[f] = cl * self.pre_gain_lin;
+            self.right_buf[f] = cr * self.pre_gain_lin;
+        }
+
+        // Pass 2: Cadeia de plugins VST3 / CLAP (com proteção contra panic/NaN e wet/dry)
+        if self.plugins.slot_count() > 0 {
+            self.plugins.process_block(
+                &mut self.left_buf[..QUANTUM_FRAMES],
+                &mut self.right_buf[..QUANTUM_FRAMES],
+            );
+        }
+
+        // Pass 3: Limiter -> Sidechain Ducking -> Fader -> Mixagem nos barramentos
+        for f in 0..QUANTUM_FRAMES {
+            let (ll, lr) = self.limiter.process_frame(self.left_buf[f], self.right_buf[f]);
 
             let coeff = if target_duck < self.duck_gain {
                 self.duck_attack_coeff
@@ -882,6 +904,33 @@ impl AudioMixerEngine {
 
     pub fn is_mic_muted_speaking(&self) -> bool {
         self.strips.values().any(|s| s.muted_speech_active)
+    }
+
+    pub fn set_plugin_param(
+        &mut self,
+        channel_id: &str,
+        slot_id: &str,
+        param_id: u32,
+        value: f32,
+    ) -> Result<(), String> {
+        let Some(strip) = self.strips.get_mut(channel_id) else {
+            return Err(format!("Canal de áudio '{channel_id}' não encontrado."));
+        };
+        strip.plugins.set_param(slot_id, param_id, value)
+    }
+
+    pub fn open_plugin_gui(&mut self, channel_id: &str, slot_id: &str) -> Result<(), String> {
+        let Some(strip) = self.strips.get_mut(channel_id) else {
+            return Err(format!("Canal de áudio '{channel_id}' não encontrado."));
+        };
+        strip.plugins.open_gui(slot_id)
+    }
+
+    pub fn export_plugin_states(&self, channel_id: &str) -> HashMap<String, String> {
+        self.strips
+            .get(channel_id)
+            .map(|s| s.plugins.export_states())
+            .unwrap_or_default()
     }
 
     /// Lista aplicativos abertos/com áudio ativo via API nativa do SO.
@@ -1142,11 +1191,11 @@ mod platform {
     use super::*;
 
     pub fn list_audio_apps() -> Vec<AudioApp> {
-        Vec::new()
+        crate::audio_runtime::list_linux_audio_apps()
     }
 
     pub fn list_devices() -> Vec<AudioDeviceInfo> {
-        Vec::new()
+        crate::audio_runtime::list_linux_devices()
     }
 }
 

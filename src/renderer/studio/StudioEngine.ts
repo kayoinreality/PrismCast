@@ -8,6 +8,7 @@ import type {
   Scene,
   SceneItem,
   TelemetryStats,
+  VirtualCameraStatus,
   WidgetKit
 } from '@shared/protocol'
 import { ensureBridge } from '@/bridge'
@@ -16,7 +17,7 @@ import { BrowserSourceCanvases } from './BrowserSourceCanvases'
 import { CaptureManager, type Capture } from './CaptureManager'
 import { Compositor } from './Compositor'
 import { OutputManager } from './OutputManager'
-import { studioStore } from './StudioStore'
+import { DEFAULT_VIRTUAL_CAM_STATUS, studioStore } from './StudioStore'
 import { effectiveUrl, hiddenWithoutCamera, restartsOnShow } from './widgets'
 import { sceneMics } from './scenes'
 
@@ -27,6 +28,7 @@ export interface EngineState {
   multistream: MultistreamStatus
   recorder: RecorderStatus
   telemetry: TelemetryStats
+  virtualCamStatus: VirtualCameraStatus
   captureVersion: number
   audioVersion: number
 }
@@ -76,6 +78,9 @@ export class StudioEngine {
   private settings: AppSettings
   private listeners = new Set<() => void>()
   private statusTimer: number
+  private vcamPumpTimer: number | null = null
+  private vcamPumpFps = 0
+  private offVirtualCamStatus: (() => void) | null = null
   private transitionKeepAliveTimer: number | null = null
   private lastBrowserSpecs = ''
   private systemAudioRequested = false
@@ -99,12 +104,13 @@ export class StudioEngine {
     multistream: { active: false, encoder: '…', ffmpegFound: true, destinations: [] },
     recorder: IDLE_RECORDER,
     telemetry: IDLE_TELEMETRY,
+    virtualCamStatus: { ...DEFAULT_VIRTUAL_CAM_STATUS },
     captureVersion: 0,
     audioVersion: 0
   }
 
   constructor(settings: AppSettings) {
-    ensureBridge()
+    const api = ensureBridge()
     this.settings = settings
     this.mixer = new AudioMixerEngine(settings.audioMixer)
     this.compositor = new Compositor(
@@ -124,7 +130,18 @@ export class StudioEngine {
     this.mixer.onStatus = () => this.patch({ audioVersion: this.state.audioVersion + 1 })
     this.captures.setFps(settings.studio.fps)
     this.statusTimer = window.setInterval(() => void this.pollStatus(), 1000)
-    void ensureBridge().recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
+    void api.recorder.setReplayBuffer(true, settings.studio.replayBufferSeconds)
+
+    if (api.virtualCam) {
+      void api.virtualCam
+        .status()
+        .then((st) => this.applyVirtualCamStatus(st))
+        .catch(() => {})
+      this.offVirtualCamStatus = api.virtualCam.onStatus((st) => {
+        this.applyVirtualCamStatus(st)
+      })
+    }
+
     this.apply(settings)
   }
 
@@ -209,33 +226,46 @@ export class StudioEngine {
       )
     }
 
-    // Preserva o canvas 9:16 ativo enquanto uma live vertical estiver no ar, mesmo
-    // que `studio.dualOutputEnabled` esteja desligado na prévia do editor.
+    // Preserva o canvas 9:16 ativo enquanto uma live vertical ou câmera virtual vertical estiver no ar.
+    const vcamVertical =
+      this.state.virtualCamStatus.active && this.state.virtualCamStatus.orientation === 'vertical'
     this.compositor.setStudio({
       ...settings.studio,
-      dualOutputEnabled: settings.studio.dualOutputEnabled || (this.state.live && this.liveVertical)
+      dualOutputEnabled:
+        settings.studio.dualOutputEnabled || (this.state.live && this.liveVertical) || vcamVertical
     })
 
     const prevProgId = prev.scenes.activeSceneId
-    this.compositor.setScenes(this.programScene(), this.previewScene(), {
+    const nextProg = this.programScene()
+    const effOverride = nextProg?.transitionOverride ?? null
+    const effType = effOverride?.transitionType ?? settings.scenes.transitionType
+    const effMs = effOverride?.durationMs ?? settings.scenes.transitionDurationMs
+    const effCustom = effOverride?.custom ?? settings.scenes.customTransition
+
+    this.compositor.setScenes(nextProg, this.previewScene(), {
       type: settings.scenes.transitionType,
-      ms: settings.scenes.transitionDurationMs
+      ms: settings.scenes.transitionDurationMs,
+      custom: settings.scenes.customTransition
     })
 
     if (
       prevProgId !== settings.scenes.activeSceneId &&
-      settings.scenes.transitionType !== 'cut' &&
+      effType !== 'cut' &&
       this.compositor.getOutgoingScene()
     ) {
+      const holdMs =
+        effType === 'stinger'
+          ? Math.max(effMs, (effCustom?.stingerTransitionPointMs ?? 500) + 250)
+          : effMs
       if (this.transitionKeepAliveTimer !== null) window.clearTimeout(this.transitionKeepAliveTimer)
       this.transitionKeepAliveTimer = window.setTimeout(() => {
         this.transitionKeepAliveTimer = null
         this.syncMedia()
-      }, settings.scenes.transitionDurationMs + 100)
+      }, holdMs + 100)
     }
 
     const used = new Set(settings.scenes.scenes.flatMap((s) => [...sceneMics(s, false)]))
-    this.mixer.setSceneMics(sceneMics(this.programScene()), used)
+    this.mixer.setSceneMics(sceneMics(nextProg), used)
     void this.mixer.applyConfig(settings.audioMixer)
 
     const wantsDesktop = settings.audioMixer.channels.some((c) => c.kind === 'desktop')
@@ -246,6 +276,7 @@ export class StudioEngine {
         else this.systemAudioRequested = false
       })
     }
+    this.syncVirtualCamPump()
     this.syncMedia()
     this.restartOnShow()
   }
@@ -430,6 +461,84 @@ export class StudioEngine {
     }
   }
 
+  async toggleVirtualCam(): Promise<{ ok: boolean; active: boolean; error?: string }> {
+    const api = ensureBridge()
+    if (!api.virtualCam) {
+      return { ok: false, active: false, error: 'Câmera Virtual não suportada neste ambiente.' }
+    }
+    try {
+      const next = this.state.virtualCamStatus.active
+        ? await api.virtualCam.stop()
+        : await api.virtualCam.start(this.settings.virtualCamera?.orientation ?? 'horizontal')
+      this.applyVirtualCamStatus(next)
+      if (next.error) {
+        return { ok: false, active: next.active, error: next.error }
+      }
+      return { ok: true, active: next.active }
+    } catch (err) {
+      return {
+        ok: false,
+        active: this.state.virtualCamStatus.active,
+        error: err instanceof Error ? err.message : 'Falha ao alternar a Câmera Virtual.'
+      }
+    }
+  }
+
+  private applyVirtualCamStatus(status: VirtualCameraStatus): void {
+    studioStore.setVirtualCamStatus(status)
+    this.patch({ virtualCamStatus: status })
+    const vcamVertical = status.active && status.orientation === 'vertical'
+    this.compositor.setStudio({
+      ...this.settings.studio,
+      dualOutputEnabled:
+        this.settings.studio.dualOutputEnabled || (this.state.live && this.liveVertical) || vcamVertical
+    })
+    this.syncVirtualCamPump()
+  }
+
+  private syncVirtualCamPump(): void {
+    const api = ensureBridge()
+    const vcam = this.state.virtualCamStatus
+    const snap = studioStore.getSnapshot()
+    const gpuZeroCopyDirect = Boolean(snap.gpuStatus.zeroCopyActive || snap.telemetry.zeroCopyActive)
+    const shouldPump = Boolean(vcam.active && api.virtualCam?.pushFrame && !gpuZeroCopyDirect)
+
+    if (!shouldPump) {
+      if (this.vcamPumpTimer !== null) {
+        window.clearInterval(this.vcamPumpTimer)
+        this.vcamPumpTimer = null
+        this.vcamPumpFps = 0
+      }
+      return
+    }
+
+    const targetFps = Math.max(
+      15,
+      Math.min(60, this.settings.virtualCamera?.fps || vcam.fps || 30)
+    )
+    if (this.vcamPumpTimer !== null && this.vcamPumpFps === targetFps) return
+    if (this.vcamPumpTimer !== null) window.clearInterval(this.vcamPumpTimer)
+
+    this.vcamPumpFps = targetFps
+    const intervalMs = Math.max(16, Math.round(1000 / targetFps))
+    this.vcamPumpTimer = window.setInterval(() => {
+      const cur = this.state.virtualCamStatus
+      if (!cur.active) return
+      const curSnap = studioStore.getSnapshot()
+      if (curSnap.gpuStatus.zeroCopyActive || curSnap.telemetry.zeroCopyActive) {
+        this.syncVirtualCamPump()
+        return
+      }
+      const orient = cur.orientation ?? this.settings.virtualCamera?.orientation ?? 'horizontal'
+      const defaultW = orient === 'vertical' ? 720 : 1280
+      const defaultH = orient === 'vertical' ? 1280 : 720
+      const targetW = cur.width > 0 ? Math.min(cur.width, 1920) : defaultW
+      const targetH = cur.height > 0 ? Math.min(cur.height, 1920) : defaultH
+      const frame = this.compositor.captureBgraFrame(orient, targetW, targetH)
+      api.virtualCam?.pushFrame?.(frame.width, frame.height, frame.bgra)
+    }, intervalMs)
+  }
+
   private async pollStatus(): Promise<void> {
     try {
       const api = ensureBridge()
@@ -444,22 +553,41 @@ export class StudioEngine {
         .filter((d) => d.enabled)
         .reduce((acc, d) => acc + d.bitrateKbps, 0)
       const micMutedSpeaking = Object.values(studioStore.audioLevelsRef).some((l) => l.mutedSpeech)
-      const telemetry = this.compositor.getTelemetry(
+      const rustTel = studioStore.getSnapshot().telemetry
+      const localTel = this.compositor.getTelemetry(
         multistream.encoder || 'libx264',
         multistream.active ? activeBitrate : 0,
         micMutedSpeaking,
         recorder.replayBufferedSeconds
       )
+      const telemetry: TelemetryStats = {
+        ...localTel,
+        zeroCopyActive: rustTel.zeroCopyActive ?? studioStore.getSnapshot().gpuStatus.zeroCopyActive,
+        compositorBackend: rustTel.compositorBackend ?? studioStore.getSnapshot().gpuStatus.compositorBackend,
+        abrActive: rustTel.abrActive,
+        abrTargetBitrateKbps: rustTel.abrTargetBitrateKbps,
+        abrCongestionLevel: rustTel.abrCongestionLevel,
+        virtualCamActive: rustTel.virtualCamActive ?? this.state.virtualCamStatus.active,
+        externalClients: rustTel.externalClients ?? studioStore.getSnapshot().externalControlStatus.obsWsClients,
+        audioRuntimeActive: rustTel.audioRuntimeActive
+      }
 
       let nextLive = this.state.live
       let nextLiveStartedAt = this.state.liveStartedAt
       if (this.state.live && !multistream.active) {
         this.liveVertical = false
         this.outputs.setStreaming(false, false)
-        this.compositor.setStudio(this.settings.studio)
+        const vcamVertical =
+          this.state.virtualCamStatus.active && this.state.virtualCamStatus.orientation === 'vertical'
+        this.compositor.setStudio({
+          ...this.settings.studio,
+          dualOutputEnabled: this.settings.studio.dualOutputEnabled || vcamVertical
+        })
         nextLive = false
         nextLiveStartedAt = null
       }
+
+      this.syncVirtualCamPump()
 
       // Só notifica assinantes React se algum valor relevante realmente mudou (elimina re-render 1Hz em idle).
       const sig = JSON.stringify({
@@ -468,7 +596,10 @@ export class StudioEngine {
         ms: multistream,
         fps: Math.round(telemetry.compositorFps),
         drop: telemetry.droppedFrames,
-        muteSpeak: telemetry.micMutedSpeaking
+        muteSpeak: telemetry.micMutedSpeaking,
+        vcam: this.state.virtualCamStatus.active,
+        zc: Boolean(telemetry.zeroCopyActive),
+        abr: Boolean(telemetry.abrActive)
       })
       if (sig !== this.lastStatusSignature) {
         this.lastStatusSignature = sig
@@ -500,6 +631,8 @@ export class StudioEngine {
     window.removeEventListener('keydown', this.unlockAudio)
     window.removeEventListener('beforeunload', this.onBeforeUnload)
     window.clearInterval(this.statusTimer)
+    if (this.vcamPumpTimer !== null) window.clearInterval(this.vcamPumpTimer)
+    if (this.offVirtualCamStatus) this.offVirtualCamStatus()
     if (this.transitionKeepAliveTimer !== null) window.clearTimeout(this.transitionKeepAliveTimer)
     this.outputs.dispose()
     this.compositor.dispose()

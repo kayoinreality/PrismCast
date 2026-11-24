@@ -246,6 +246,26 @@ mod commands {
     }
 
     #[tauri::command]
+    pub async fn files_pick_media(app: AppHandle) -> Result<Value, String> {
+        let picked = tokio::task::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .add_filter(
+                    "Mídia de Transição (Stinger / Luma Matte)",
+                    &["webm", "mp4", "mov", "png", "jpg", "jpeg", "webp"],
+                )
+                .blocking_pick_file()
+        })
+        .await
+        .ok()
+        .flatten();
+        match picked {
+            Some(f) => Ok(Value::String(f.to_string())),
+            None => Ok(Value::Null),
+        }
+    }
+
+    #[tauri::command]
     pub async fn files_read_image(
         state: State<'_, TauriEngineState>,
         path: String,
@@ -274,6 +294,15 @@ mod commands {
 
     delegate_cmd!(sources_list, "sources_list");
     delegate_cmd!(audio_list_apps, "audio_list_apps");
+    delegate_cmd!(audio_list_devices, "audio_list_devices");
+    delegate_cmd!(plugins_scan, "plugins_scan");
+    delegate_cmd!(gpu_status, "gpu_status");
+    delegate_cmd!(abr_status, "abr_status");
+    delegate_cmd!(virtual_cam_status, "virtual_cam_status");
+    delegate_cmd!(virtual_cam_devices, "virtual_cam_devices");
+    delegate_cmd!(virtual_cam_stop, "virtual_cam_stop");
+    delegate_cmd!(external_control_status, "external_control_status");
+    delegate_cmd!(external_control_restart, "external_control_restart");
     delegate_cmd!(telemetry_get, "telemetry_get");
     delegate_cmd!(twitch_capabilities, "twitch_capabilities");
     delegate_cmd!(twitch_get_info, "twitch_get_info");
@@ -296,6 +325,87 @@ mod commands {
     delegate_cmd!(firewall_authorize, "firewall_authorize");
     delegate_cmd!(settings_get, "settings_get");
     delegate_cmd!(dest_twitch_cancel, "dest_twitch_cancel");
+
+    #[tauri::command]
+    pub async fn plugins_open_gui(
+        state: State<'_, TauriEngineState>,
+        #[allow(non_snake_case)] channelId: String,
+        #[allow(non_snake_case)] slotId: String,
+    ) -> Result<Value, String> {
+        Ok(state
+            .engine
+            .handle_command(
+                "plugins_open_gui",
+                json!({ "channelId": channelId, "slotId": slotId }),
+            )
+            .await)
+    }
+
+    #[tauri::command]
+    pub async fn plugins_set_param(
+        state: State<'_, TauriEngineState>,
+        #[allow(non_snake_case)] channelId: String,
+        #[allow(non_snake_case)] slotId: String,
+        #[allow(non_snake_case)] paramId: u32,
+        value: f64,
+    ) -> Result<Value, String> {
+        Ok(state
+            .engine
+            .handle_command(
+                "plugins_set_param",
+                json!({
+                    "channelId": channelId,
+                    "slotId": slotId,
+                    "paramId": paramId,
+                    "value": value,
+                }),
+            )
+            .await)
+    }
+
+    #[tauri::command]
+    pub async fn virtual_cam_start(
+        state: State<'_, TauriEngineState>,
+        orientation: Option<String>,
+    ) -> Result<Value, String> {
+        Ok(state
+            .engine
+            .handle_command("virtual_cam_start", json!({ "orientation": orientation }))
+            .await)
+    }
+
+    #[tauri::command]
+    pub async fn virtual_cam_push_frame(
+        state: State<'_, TauriEngineState>,
+        width: u32,
+        height: u32,
+        bgra: Vec<u8>,
+    ) -> Result<Value, String> {
+        let res = state
+            .engine
+            .virtual_cam
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_frame_bgra(width, height, &bgra);
+        match res {
+            Ok(()) => Ok(json!({ "ok": true })),
+            Err(error) => Ok(json!({ "ok": false, "error": error })),
+        }
+    }
+
+    #[tauri::command]
+    pub async fn external_control_set_obs_password(
+        state: State<'_, TauriEngineState>,
+        password: String,
+    ) -> Result<Value, String> {
+        Ok(state
+            .engine
+            .handle_command(
+                "external_control_set_obs_password",
+                json!({ "password": password }),
+            )
+            .await)
+    }
 
     #[tauri::command]
     pub async fn sources_select(
@@ -701,6 +811,7 @@ mod commands {
                 kit_pick_folder,
                 files_pick_image,
                 files_pick_html,
+                files_pick_media,
                 files_read_image,
                 sources_list,
                 sources_select,
@@ -708,8 +819,22 @@ mod commands {
                 bs_reload,
                 bs_ack,
                 audio_list_apps,
+                audio_list_devices,
                 audio_app_for_window,
                 audio_sync,
+                plugins_scan,
+                plugins_open_gui,
+                plugins_set_param,
+                gpu_status,
+                abr_status,
+                virtual_cam_status,
+                virtual_cam_devices,
+                virtual_cam_start,
+                virtual_cam_stop,
+                virtual_cam_push_frame,
+                external_control_status,
+                external_control_set_obs_password,
+                external_control_restart,
                 telemetry_get,
                 hotkeys_conflicts,
                 twitch_capabilities,

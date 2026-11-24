@@ -1,17 +1,21 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react'
 import type { AppSettings } from '@shared/ipc'
 import type {
+  AbrDestinationTelemetry,
   AudioLevelSample,
   AudioMixerSettings,
   ChatSourceStatus,
   ConnectedViewer,
   DiscoveredHost,
+  ExternalControlStatus,
+  GpuPipelineStatus,
   LiveInfo,
   MultiChatMessage,
   MultistreamStatus,
   RecorderStatus,
   StudioScenesState,
-  TelemetryStats
+  TelemetryStats,
+  VirtualCameraStatus
 } from '@shared/protocol'
 import { ensureBridge } from '@/bridge'
 
@@ -34,6 +38,10 @@ export interface StudioRootState {
   live: MultistreamStatus
   recorder: RecorderStatus
   telemetry: TelemetryStats
+  virtualCamStatus: VirtualCameraStatus
+  abrTelemetry: AbrDestinationTelemetry[]
+  gpuStatus: GpuPipelineStatus
+  externalControlStatus: ExternalControlStatus
   chatMessages: MultiChatMessage[]
   chatStatus: ChatSourceStatus[]
   lanViewers: ConnectedViewer[]
@@ -69,6 +77,37 @@ const DEFAULT_TELEMETRY: TelemetryStats = {
   replayBufferedSeconds: 0
 }
 
+export const DEFAULT_VIRTUAL_CAM_STATUS: VirtualCameraStatus = {
+  active: false,
+  backend: 'none',
+  device: '',
+  orientation: 'horizontal',
+  width: 1920,
+  height: 1080,
+  fps: 30,
+  framesSent: 0,
+  error: null
+}
+
+export const DEFAULT_GPU_STATUS: GpuPipelineStatus = {
+  zeroCopyActive: false,
+  compositorBackend: 'canvas-2d',
+  captureBackend: 'software-fallback',
+  adapterName: 'Detectando…',
+  driverInfo: '',
+  frameCopyCount: 1,
+  activeTextures: 0
+}
+
+export const DEFAULT_EXTERNAL_CONTROL_STATUS: ExternalControlStatus = {
+  obsWsRunning: false,
+  obsWsPort: 4455,
+  obsWsClients: 0,
+  rpcWsPort: 41236,
+  rpcWsClients: 0,
+  error: null
+}
+
 type LevelListener = (levels: Record<string, AudioLevelSample>) => void
 
 /**
@@ -84,6 +123,10 @@ class StudioStoreImpl {
     live: DEFAULT_MULTISTREAM,
     recorder: DEFAULT_RECORDER,
     telemetry: DEFAULT_TELEMETRY,
+    virtualCamStatus: DEFAULT_VIRTUAL_CAM_STATUS,
+    abrTelemetry: [],
+    gpuStatus: DEFAULT_GPU_STATUS,
+    externalControlStatus: DEFAULT_EXTERNAL_CONTROL_STATUS,
     chatMessages: [],
     chatStatus: [],
     lanViewers: [],
@@ -164,6 +207,57 @@ class StudioStoreImpl {
         })
       )
     }
+
+    if (api.virtualCam) {
+      void api.virtualCam
+        .status()
+        .then((virtualCamStatus) => {
+          this.setState({ virtualCamStatus })
+        })
+        .catch(() => {})
+      this.unsubscribers.push(
+        api.virtualCam.onStatus((virtualCamStatus) => {
+          this.setState({ virtualCamStatus })
+        })
+      )
+    }
+
+    if (api.abr) {
+      void api.abr
+        .status()
+        .then((abrTelemetry) => {
+          if (Array.isArray(abrTelemetry)) this.setState({ abrTelemetry })
+        })
+        .catch(() => {})
+      this.unsubscribers.push(
+        api.abr.onUpdate((abrTelemetry) => {
+          if (Array.isArray(abrTelemetry)) this.setState({ abrTelemetry })
+        })
+      )
+    }
+
+    if (api.gpu) {
+      void api.gpu
+        .status()
+        .then((gpuStatus) => {
+          this.setState({ gpuStatus })
+        })
+        .catch(() => {})
+    }
+
+    if (api.externalControl) {
+      void api.externalControl
+        .status()
+        .then((externalControlStatus) => {
+          this.setState({ externalControlStatus })
+        })
+        .catch(() => {})
+      this.unsubscribers.push(
+        api.externalControl.onStatus((externalControlStatus) => {
+          this.setState({ externalControlStatus })
+        })
+      )
+    }
   }
 
   dispose(): void {
@@ -212,6 +306,22 @@ class StudioStoreImpl {
 
   setRecorderStatus(recorder: RecorderStatus): void {
     this.setState({ recorder })
+  }
+
+  setVirtualCamStatus(virtualCamStatus: VirtualCameraStatus): void {
+    this.setState({ virtualCamStatus })
+  }
+
+  setAbrTelemetry(abrTelemetry: AbrDestinationTelemetry[]): void {
+    this.setState({ abrTelemetry })
+  }
+
+  setGpuStatus(gpuStatus: GpuPipelineStatus): void {
+    this.setState({ gpuStatus })
+  }
+
+  setExternalControlStatus(externalControlStatus: ExternalControlStatus): void {
+    this.setState({ externalControlStatus })
   }
 
   pushToast(message: string, tone: ToastTone = 'info', action?: ToastAction): number {
@@ -281,6 +391,17 @@ export const useLiveSlice = (): MultistreamStatus => useStudioSelector((s) => s.
 export const useRecorderSlice = (): RecorderStatus => useStudioSelector((s) => s.recorder)
 
 export const useTelemetrySlice = (): TelemetryStats => useStudioSelector((s) => s.telemetry)
+
+export const useVirtualCamSlice = (): VirtualCameraStatus =>
+  useStudioSelector((s) => s.virtualCamStatus)
+
+export const useAbrTelemetrySlice = (): AbrDestinationTelemetry[] =>
+  useStudioSelector((s) => s.abrTelemetry)
+
+export const useGpuStatusSlice = (): GpuPipelineStatus => useStudioSelector((s) => s.gpuStatus)
+
+export const useExternalControlSlice = (): ExternalControlStatus =>
+  useStudioSelector((s) => s.externalControlStatus)
 
 export const useChatSlice = (): { messages: MultiChatMessage[]; status: ChatSourceStatus[] } =>
   useStudioSelector((s) => ({ messages: s.chatMessages, status: s.chatStatus }))
