@@ -143,11 +143,11 @@ pub mod dxgi {
     };
 
     /// Guard RAII garantindo `ReleaseFrame()` mesmo em caminhos de erro antecipado.
-    struct FrameReleaseGuard<'a> {
-        duplication: &'a IDXGIOutputDuplication,
+    struct FrameReleaseGuard {
+        duplication: IDXGIOutputDuplication,
     }
 
-    impl Drop for FrameReleaseGuard<'_> {
+    impl Drop for FrameReleaseGuard {
         fn drop(&mut self) {
             unsafe {
                 let _ = self.duplication.ReleaseFrame();
@@ -350,7 +350,7 @@ pub mod dxgi {
             }
 
             let _guard = FrameReleaseGuard {
-                duplication: &self.duplication,
+                duplication: self.duplication.clone(),
             };
 
             let desktop_res = desktop_res_opt

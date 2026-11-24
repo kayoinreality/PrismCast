@@ -1185,6 +1185,7 @@ mod tests {
         let devices = list_virtual_camera_devices();
         assert!(!devices.is_empty());
 
+        #[allow(unused_mut)]
         let mut cfg = VirtualCameraSettings::default();
         #[cfg(target_os = "linux")]
         {
