@@ -201,13 +201,23 @@ jobs:
           echo "Artefatos prontos para publicação na release ${TAG}:"
           ls -lh release-assets/
 
+          if [[ -f ".github/RELEASE_NOTES.md" ]]; then
+            NOTES_ARGS=(--notes-file ".github/RELEASE_NOTES.md")
+          else
+            NOTES_ARGS=(--generate-notes)
+          fi
+
           if gh release view "${TAG}" >/dev/null 2>&1; then
             echo "Atualizando release existente ${TAG}..."
             gh release upload "${TAG}" release-assets/* --clobber
-            gh release edit "${TAG}" --draft=false --title "PrismCast Studio ${TAG} (Windows & Linux)"
+            if [[ -f ".github/RELEASE_NOTES.md" ]]; then
+              gh release edit "${TAG}" --draft=false --title "PrismCast Studio ${TAG} (Windows & Linux)" --notes-file ".github/RELEASE_NOTES.md"
+            else
+              gh release edit "${TAG}" --draft=false --title "PrismCast Studio ${TAG} (Windows & Linux)"
+            fi
           else
             echo "Criando nova release ${TAG}..."
             gh release create "${TAG}" release-assets/* \
               --title "PrismCast Studio ${TAG} (Windows & Linux)" \
-              --generate-notes
+              "${NOTES_ARGS[@]}"
           fi

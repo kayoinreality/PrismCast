@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { IconBroadcast, IconClose, IconMaximize, IconMinimize, IconRestore } from './Icons'
+import { IconClose, IconMaximize, IconMinimize, IconPrismCastMark, IconRestore } from './Icons'
 import './Titlebar.css'
 
 /**
@@ -27,7 +27,7 @@ export function Titlebar({
   return (
     <div className="titlebar">
       <div className="titlebar-brand">
-        <IconBroadcast size={16} />
+        <IconPrismCastMark size={18} />
         <span>PrismCast</span>
       </div>
 

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="pt-br" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+  <String Id="LaunchApp">Abrir o PrismCast Studio</String>
+  <String Id="DowngradeErrorMessage">Uma versão mais recente do PrismCast Studio já está instalada.</String>
+  <String Id="PathEnvVarFeature">Adiciona o diretório de instalação do PrismCast Studio à variável PATH do sistema.</String>
+  <String Id="InstallAppFeature">Instala o PrismCast Studio.</String>
+</WixLocalization>
