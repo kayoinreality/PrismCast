@@ -3,7 +3,7 @@ import { Titlebar } from '@/components/Titlebar'
 import { Modal } from '@/components/Modal'
 import { Rail, type Page } from '@/components/Rail'
 import { Button } from '@/components/ui'
-import { IconAlert, IconBroadcast } from '@/components/Icons'
+import { IconAlert, IconPrismCastMark } from '@/components/Icons'
 import { StudioScreen } from '@/screens/studio/StudioScreen'
 import { DestinationsScreen } from '@/screens/DestinationsScreen'
 import { WidgetsScreen } from '@/screens/WidgetsScreen'
@@ -288,7 +288,7 @@ export function AppFallback({ error }: { error: Error }): React.JSX.Element {
       <Titlebar />
       <div className="screen boot">
         <div className="empty-state">
-          <IconBroadcast size={30} />
+          <IconPrismCastMark size={36} />
           <span className="empty-title">O app encontrou um erro</span>
           <span className="mono selectable">{error.message}</span>
         </div>

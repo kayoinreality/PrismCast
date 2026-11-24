@@ -394,7 +394,7 @@ fn make_clap_host() -> Box<ClapHost> {
         name: b"PrismCast Studio\0".as_ptr() as *const c_char,
         vendor: b"PrismCast\0".as_ptr() as *const c_char,
         url: b"https://github.com/kayoinreality/PrismCast\0".as_ptr() as *const c_char,
-        version: b"2.4.0\0".as_ptr() as *const c_char,
+        version: concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char,
         get_extension: Some(clap_host_get_extension),
         request_restart: Some(clap_host_noop),
         request_process: Some(clap_host_noop),
