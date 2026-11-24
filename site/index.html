@@ -3,96 +3,698 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="PrismCast Studio: Estúdio de transmissão LAN P2P com latência zero, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets StreamElements e Core Nativo em Rust." />
-    <meta name="theme-color" content="#0b0d12" />
-    <title>PrismCast Studio — Transmissão LAN P2P, Multistream & Estúdio</title>
-    <link rel="stylesheet" href="styles.css" />
+    <meta
+      name="description"
+      content="PrismCast Studio — Estúdio de transmissão nativo em Rust e Tauri v2 para Windows e Linux. Dual Output 16:9 + 9:16, multistreaming RTMP com aceleração de hardware, mixer DSP 48 kHz com áudio por aplicativo, MultiChat e LAN P2P."
+    />
+    <meta name="theme-color" content="#f3efe6" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="PrismCast Studio — Estúdio de transmissão nativo em Rust" />
+    <meta
+      property="og:description"
+      content="Dual Output 16:9 + 9:16, multistreaming para Twitch, YouTube, Kick e TikTok, áudio isolado por programa e LAN P2P. Para Windows e Linux."
+    />
+    <title>PrismCast Studio — Estúdio de transmissão em Rust para Windows e Linux</title>
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="site-header">
-      <a class="brand" href="#inicio" aria-label="PrismCast Studio, início">
-        <span class="brand-mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24"><path d="M4 6.75A2.75 2.75 0 0 1 6.75 4h10.5A2.75 2.75 0 0 1 20 6.75v7.5A2.75 2.75 0 0 1 17.25 17H13l-3.7 3.15c-.65.55-1.65.09-1.65-.77V17h-.9A2.75 2.75 0 0 1 4 14.25v-7.5Z"/><path d="m10 8 4 2.25L10 12.5V8Z"/></svg>
-        </span>
-        <span>PrismCast <strong>Studio</strong></span>
-      </a>
-      <nav aria-label="Navegação principal">
-        <a href="#como-funciona">Como funciona</a>
-        <a href="#recursos">Recursos</a>
-        <a href="#baixar">Baixar</a>
-      </nav>
-      <a class="header-link" href="https://github.com/kayoinreality/PrismCast" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      <div class="wrap header-inner">
+        <a class="brand" href="#topo" aria-label="PrismCast Studio, voltar ao topo">
+          <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <rect width="24" height="24" rx="4" fill="#161513" />
+            <rect x="4" y="6" width="11" height="9" rx="1" fill="none" stroke="#f3efe6" stroke-width="1.5" />
+            <rect x="17" y="6" width="3" height="12" rx="1" fill="none" stroke="#f3efe6" stroke-width="1.3" opacity="0.72" />
+            <circle cx="7.5" cy="9.5" r="1.6" fill="#d63626" />
+          </svg>
+          <span>PrismCast Studio</span>
+          <span class="version-tag" data-release-version>v2.4.0</span>
+        </a>
+
+        <nav class="site-nav" aria-label="Navegação principal">
+          <a href="#estudio">Estúdio</a>
+          <a href="#recursos">Recursos</a>
+          <a href="#atalhos">Atalhos &amp; Segurança</a>
+          <a href="#baixar">Download</a>
+        </nav>
+
+        <div class="header-actions">
+          <a
+            class="text-link"
+            href="https://github.com/kayoinreality/PrismCast"
+            target="_blank"
+            rel="noreferrer"
+            >GitHub <span aria-hidden="true">↗</span></a
+          >
+          <a class="btn btn-primary btn-sm" href="#baixar">Baixar</a>
+        </div>
+      </div>
     </header>
 
-    <main id="inicio">
-      <section class="hero wrap">
-        <div class="hero-copy">
-          <p class="eyebrow"><span class="status-dot"></span> Core Nativo em Rust · Dual Output 16:9 + 9:16</p>
-          <h1>Seu estúdio completo.<br /><em>Na LAN e nas plataformas.</em></h1>
-          <p class="hero-text">Transmita na rede local em ultra-baixa latência com áudio sincronizado e faça Multistreaming simultâneo para YouTube, Twitch, Kick e TikTok Live com widgets e webcam PiP.</p>
-          <div class="hero-actions">
-            <a class="button primary" href="https://github.com/kayoinreality/PrismCast/releases/latest" target="_blank" rel="noreferrer">Ver downloads <span aria-hidden="true">↓</span></a>
-            <a class="button ghost" href="#como-funciona">Conhecer o app <span aria-hidden="true">→</span></a>
-          </div>
-          <ul class="platforms" aria-label="Informações de compatibilidade">
-            <li><span class="windows-logo" aria-hidden="true">⊞</span> Windows</li>
-            <li><span aria-hidden="true">◉</span> Core Nativo em Rust</li>
-            <li><span aria-hidden="true">⌁</span> Multistream RTMP</li>
-          </ul>
-        </div>
-
-        <div class="app-window" aria-label="Prévia ilustrativa do aplicativo PrismCast Studio">
-          <div class="window-bar"><span class="window-name"><i></i> PrismCast Studio</span><span class="window-controls">— &nbsp; □ &nbsp; ×</span></div>
-          <div class="window-content">
-            <div class="window-intro"><span class="live-pill"><b></b> AO VIVO</span><span class="tiny-text">LAN P2P + Multistream</span></div>
-            <div class="stream-area">
-              <div class="stream-glow"></div>
-              <div class="signal"><span></span><span></span><span></span></div>
-              <p>PrismCast Studio · Ao Vivo</p>
-              <small>Dual Output 16:9 (1080p) + 9:16 (TikTok) · 60 FPS</small>
-            </div>
-            <div class="window-footer">
-              <div class="viewer"><span class="avatar">P</span><span>Mixer de Áudio + Replay 30s Ativos</span></div>
-              <span class="connection"><i></i> Rust Core</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="statement">
-        <div class="wrap statement-inner">
-          <p>Imagem e áudio vão <strong>direto de um computador para o outro na LAN</strong> ou via <strong>FFmpeg com aceleração por hardware</strong> para suas plataformas favoritas.</p>
-          <div class="privacy-stamp"><span>◇</span><span>privacidade<br />por padrão</span></div>
-        </div>
-      </section>
-
-      <section class="features wrap" id="recursos">
-        <div class="section-heading"><p class="eyebrow">Recursos Profissionais</p><h2>Inspirado no Streamlabs, construído em Rust.</h2></div>
-        <div class="feature-grid">
-          <article class="feature feature-violet"><div class="feature-icon">↗</div><h3>Dual Output 16:9 + 9:16</h3><p>Renderize simultaneamente uma cena horizontal para Twitch/YouTube e uma vertical para TikTok Live com presets inteligentes.</p></article>
-          <article class="feature feature-teal"><div class="feature-icon">◌</div><h3>Mixer de Áudio Ao Vivo</h3><p>Mixa áudio do sistema (WASAPI) e microfone em 48 kHz com ganho de 0% a 200%, supressão de ruído e compressor dinâmico.</p></article>
-          <article class="feature feature-amber"><div class="feature-icon">⌁</div><h3>Replay Buffer (30s) e Gravação</h3><p>Grave localmente em alta resolução ou salve instantaneamente os últimos 30 segundos com um clique ou atalho Ctrl+Shift+S.</p></article>
-          <article class="feature feature-slate"><div class="feature-icon">⌘</div><h3>StreamElements & Widgets</h3><p>Integre overlays e alertas do StreamElements e Browser Sources sobrepostos na sua cena em tempo real.</p></article>
-        </div>
-      </section>
-
-      <section class="how" id="como-funciona">
+    <main id="topo">
+      <!-- Editorial Hero -->
+      <section class="hero">
         <div class="wrap">
-          <div class="section-heading"><p class="eyebrow">Pronto em instantes</p><h2>Entre no ar com segurança.</h2></div>
-          <div class="steps">
-            <article class="step"><span class="step-number">01</span><div><h3>Escolha o que compartilhar</h3><p>Abra o app, selecione sua tela ou janela, ative a Webcam PiP e configure o mixer de som.</p></div><span class="step-symbol share-symbol">↗</span></article>
-            <article class="step"><span class="step-number">02</span><div><h3>Conecte na LAN ou Multistream</h3><p>Quem estiver na rede local entra instantaneamente ou você pode transmitir para YouTube, Twitch, Kick e TikTok.</p></div><span class="step-symbol">••••••</span></article>
-            <article class="step"><span class="step-number">03</span><div><h3>Controle total em tempo real</h3><p>Troque de fonte ao vivo sem queda de chamada, use o escudo Volto Já e interaja pelo chat LAN com reações e voz.</p></div><span class="step-symbol play-symbol">▶</span></article>
+          <div class="hero-grid">
+            <div>
+              <h1 class="hero-title">
+                O estúdio de live em Rust, sem o peso do navegador<span class="tally-mark">.</span>
+              </h1>
+            </div>
+            <div class="hero-aside">
+              <p class="hero-lead">
+                Monte cenas em 16:9 e 9:16 ao mesmo tempo, isole o áudio de um único jogo ou programa e transmita para
+                Twitch, YouTube, Kick, TikTok ou pela rede local — num binário nativo em Rust + Tauri v2.
+              </p>
+              <div class="hero-cta-row">
+                <a class="btn btn-primary" id="hero-download-btn" href="#baixar">Baixar para Windows</a>
+                <a
+                  class="btn btn-secondary"
+                  href="https://github.com/kayoinreality/PrismCast"
+                  target="_blank"
+                  rel="noreferrer"
+                  >Código-fonte</a
+                >
+              </div>
+              <p class="hero-footnote" id="hero-download-note">
+                Windows 10 e 11 (64 bits) · Portátil .exe, NSIS e MSI · Licença MIT
+              </p>
+            </div>
+          </div>
+
+          <div class="spec-strip" aria-label="Especificações principais">
+            <div class="spec-cell">
+              <span class="spec-k">Rust + Tauri v2</span>
+              <span class="spec-v">Sem Electron nem Chromium duplicado</span>
+            </div>
+            <div class="spec-cell">
+              <span class="spec-k">Dual Output 16:9 + 9:16</span>
+              <span class="spec-v">Posição própria de cada fonte no vertical</span>
+            </div>
+            <div class="spec-cell">
+              <span class="spec-k">Mixer DSP 48 kHz f32</span>
+              <span class="spec-v">EQ 3 bandas, Gate, Ducking, WASAPI e PipeWire</span>
+            </div>
+            <div class="spec-cell">
+              <span class="spec-k">Windows &amp; Linux</span>
+              <span class="spec-v">Portable, NSIS, MSI, AppImage, deb e rpm</span>
+            </div>
           </div>
         </div>
       </section>
 
-      <section class="download wrap" id="baixar">
-        <div><p class="eyebrow">Download Direto</p><h2>PrismCast Studio<br /><em>Pronto para usar.</em></h2><p>Baixe o executável portátil para Windows, execute e transmita. Não precisa de cadastro nem instalação complexa.</p></div>
-        <div class="download-side"><a class="button primary" href="https://github.com/kayoinreality/PrismCast/releases/latest" target="_blank" rel="noreferrer">Baixar para Windows <span aria-hidden="true">↓</span></a><small>Windows 10 ou 11 · 64 bits · Portátil</small></div>
+      <!-- Interactive Studio Console Showcase -->
+      <section class="stage-section" id="estudio" aria-label="Demonstração interativa do estúdio">
+        <div class="wrap">
+          <div class="console-frame">
+            <div class="console-titlebar">
+              <div class="console-titlebar-left">
+                <span class="tally-indicator"><span class="tally-dot" aria-hidden="true"></span> NO AR</span>
+                <strong>PrismCast Studio</strong>
+                <span class="mono" id="active-scene-readout">Gameplay + Cam</span>
+              </div>
+              <div class="console-telemetry">
+                <span><strong>60 FPS</strong> · 1080p</span>
+                <span><strong>6000 kbps</strong> · NVENC</span>
+                <span><strong>48 kHz</strong> · f32</span>
+              </div>
+            </div>
+
+            <div class="console-toolbar" role="toolbar" aria-label="Controles do palco demonstrativo">
+              <div class="scene-tabs" role="group" aria-label="Cenas">
+                <button class="console-btn" type="button" data-scene="gameplay" aria-pressed="true">
+                  <span class="key-num">1</span> Gameplay + Cam
+                </button>
+                <button class="console-btn" type="button" data-scene="chatting" aria-pressed="false">
+                  <span class="key-num">2</span> Só conversando
+                </button>
+                <button class="console-btn" type="button" data-scene="starting" aria-pressed="false">
+                  <span class="key-num">3</span> Começando
+                </button>
+                <button class="console-btn" type="button" data-scene="brb" aria-pressed="false">
+                  <span class="key-num">4</span> Volto já
+                </button>
+              </div>
+
+              <div class="console-toggles">
+                <button class="console-btn" type="button" id="toggle-dual" aria-pressed="true">
+                  Saída 9:16
+                </button>
+                <button class="console-btn" type="button" id="toggle-camera" aria-pressed="true">
+                  Câmera: Ligada
+                </button>
+                <button class="console-btn console-btn-live" type="button" id="toggle-transition">
+                  Transição: Esmaecer
+                </button>
+              </div>
+            </div>
+
+            <div class="console-workspace">
+              <div class="monitors-pane">
+                <div class="monitor-unit is-wide">
+                  <div class="monitor-meta">
+                    <span>PROGRAMA · 16:9</span>
+                    <span class="badge-out">TWITCH · YOUTUBE · LAN</span>
+                  </div>
+                  <div class="monitor-canvas-wrap is-wide">
+                    <canvas
+                      id="canvas-wide"
+                      aria-label="Prévia horizontal 16:9 do compositor PrismCast Studio"
+                    ></canvas>
+                  </div>
+                </div>
+
+                <div class="monitor-unit is-vertical" id="monitor-vertical-unit">
+                  <div class="monitor-meta">
+                    <span>VERTICAL · 9:16</span>
+                    <span class="badge-out">TIKTOK</span>
+                  </div>
+                  <div class="monitor-canvas-wrap is-vertical">
+                    <canvas
+                      id="canvas-vertical"
+                      aria-label="Prévia vertical 9:16 do compositor PrismCast Studio"
+                    ></canvas>
+                  </div>
+                </div>
+              </div>
+
+              <aside class="chat-pane" aria-label="Prévia do MultiChat unificado">
+                <div class="chat-head">
+                  <span>MULTICHAT</span>
+                  <span class="chat-streams">
+                    <span>TW</span>
+                    <span>YT</span>
+                    <span>KK</span>
+                  </span>
+                </div>
+                <div class="chat-feed">
+                  <div class="chat-msg">
+                    <span class="chat-src">TW</span>
+                    <span class="chat-user">mikael_r</span>
+                    áudio do jogo tá limpo demais hoje
+                  </div>
+                  <div class="chat-msg">
+                    <span class="chat-src is-yt">YT</span>
+                    <span class="chat-user">larissa.dev</span>
+                    chegando pelo shorts 9:16, sem corte na câmera!
+                  </div>
+                  <div class="chat-msg">
+                    <span class="chat-src is-kick">KK</span>
+                    <span class="chat-user">diegok</span>
+                    salva o replay dessa curva
+                  </div>
+                  <div class="chat-msg">
+                    <span class="chat-src">TW</span>
+                    <span class="chat-user">brunoc</span>
+                    o ducking abaixou certinho a música quando vc falou
+                  </div>
+                </div>
+                <div class="chat-foot">
+                  <span>7TV · BTTV · FFZ</span>
+                  <span>Popout sempre no topo</span>
+                </div>
+              </aside>
+            </div>
+
+            <div class="mixer-dock" aria-label="Mixer de áudio interativo">
+              <div class="mixer-ch">
+                <div class="mixer-ch-top">
+                  <span class="mixer-ch-label">Áudio do PC <span class="mixer-ch-sub">DUCKING</span></span>
+                  <span class="mixer-ch-readout" id="db-desktop">-6.0 dB</span>
+                </div>
+                <canvas class="meter-canvas" id="meter-desktop" aria-hidden="true"></canvas>
+                <div class="mixer-ch-controls">
+                  <input
+                    class="fader"
+                    id="fader-desktop"
+                    type="range"
+                    min="-60"
+                    max="6"
+                    step="0.5"
+                    value="-6"
+                    aria-label="Volume do Áudio do PC em dB"
+                  />
+                  <button class="mute-btn" id="mute-desktop" type="button" aria-pressed="false">ATIVO</button>
+                </div>
+              </div>
+
+              <div class="mixer-ch">
+                <div class="mixer-ch-top">
+                  <span class="mixer-ch-label">Microfone <span class="mixer-ch-sub">GATE · EQ</span></span>
+                  <span class="mixer-ch-readout" id="db-mic">-2.0 dB</span>
+                </div>
+                <canvas class="meter-canvas" id="meter-mic" aria-hidden="true"></canvas>
+                <div class="mixer-ch-controls">
+                  <input
+                    class="fader"
+                    id="fader-mic"
+                    type="range"
+                    min="-60"
+                    max="6"
+                    step="0.5"
+                    value="-2"
+                    aria-label="Volume do Microfone em dB"
+                  />
+                  <button class="mute-btn" id="mute-mic" type="button" aria-pressed="false">ATIVO</button>
+                </div>
+              </div>
+
+              <div class="mixer-ch">
+                <div class="mixer-ch-top">
+                  <span class="mixer-ch-label">Jogo / Spotify <span class="mixer-ch-sub">POR APP</span></span>
+                  <span class="mixer-ch-readout" id="db-app">-10.0 dB</span>
+                </div>
+                <canvas class="meter-canvas" id="meter-app" aria-hidden="true"></canvas>
+                <div class="mixer-ch-controls">
+                  <input
+                    class="fader"
+                    id="fader-app"
+                    type="range"
+                    min="-60"
+                    max="6"
+                    step="0.5"
+                    value="-10"
+                    aria-label="Volume do aplicativo capturado em dB"
+                  />
+                  <button class="mute-btn" id="mute-app" type="button" aria-pressed="false">ATIVO</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="console-caption">
+            <span>Simulação interativa: troque de cena, oculte a câmera ou arraste os faders acima.</span>
+            <span>Composição Dual Output + DSP 48 kHz + MultiChat na mesma janela.</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Editorial Technical Index -->
+      <section class="capabilities" id="recursos">
+        <div class="wrap cap-layout">
+          <div class="cap-sticky">
+            <p class="section-kicker">Arquitetura &amp; Recursos</p>
+            <h2 class="section-title">Feito para quem abre live todo dia.</h2>
+            <p class="section-copy">
+              Tudo o que normalmente exige cinco plugins separados no OBS já vem integrado no motor em Rust — sem
+              scripts frágeis e sem desperdiçar RAM enquanto o jogo roda.
+            </p>
+            <div class="arch-note">
+              Core: prismcast_core (Rust 2021)<br />
+              Interface: Tauri v2 + WebView do sistema<br />
+              Codificação: FFmpeg HW (NVENC / AMF / QSV / x264)
+            </div>
+          </div>
+
+          <ol class="cap-list">
+            <li class="cap-item">
+              <span class="cap-num">01</span>
+              <div class="cap-body">
+                <h3>Palco editável e Dual Output real (16:9 + 9:16)</h3>
+                <p>
+                  Cada fonte — tela, janela isolada, webcam, widget HTML, imagem ou texto — tem posição e recorte
+                  próprios na saída horizontal e na vertical. O Modo Estúdio permite montar a próxima cena na prévia
+                  antes de mandar ao ar por corte, esmaecer, fade to black ou slide.
+                </p>
+                <div class="cap-specs">
+                  <span>1920×1080 + 1080×1920</span>
+                  <span>Modo Estúdio</span>
+                  <span>Desfazer Ctrl+Z</span>
+                </div>
+              </div>
+            </li>
+
+            <li class="cap-item">
+              <span class="cap-num">02</span>
+              <div class="cap-body">
+                <h3>Multistreaming isolado por destino</h3>
+                <p>
+                  Envie o mesmo estúdio para Twitch, YouTube, Kick, TikTok e servidores RTMP/RTMPS próprios ao mesmo
+                  tempo. Cada plataforma roda em seu processo FFmpeg dedicado com teste real de encoder por hardware: se
+                  uma rota oscilar, as outras continuam estáveis no ar.
+                </p>
+                <div class="cap-specs">
+                  <span>NVENC · AMF · QSV · x264</span>
+                  <span>Twitch OAuth Device Flow</span>
+                  <span>RTMPS (Kick)</span>
+                </div>
+              </div>
+            </li>
+
+            <li class="cap-item">
+              <span class="cap-num">03</span>
+              <div class="cap-body">
+                <h3>Mixer DSP 48 kHz e captura de áudio por programa</h3>
+                <p>
+                  Capture apenas o áudio do jogo, do Spotify ou do Discord sem vazar notificações do sistema. Cada canal
+                  conta com medidor de pico, passa-alta, noise gate, EQ de 3 bandas, compressor, limitador, sidechain
+                  ducking, monitoramento no fone e atraso de sincronia.
+                </p>
+                <div class="cap-specs">
+                  <span>WASAPI loopback (Windows)</span>
+                  <span>PipeWire / PulseAudio (Linux)</span>
+                  <span>PCM f32 estéreo</span>
+                </div>
+              </div>
+            </li>
+
+            <li class="cap-item">
+              <span class="cap-num">04</span>
+              <div class="cap-body">
+                <h3>MultiChat unificado com emotes e janela popout</h3>
+                <p>
+                  Leia Twitch, YouTube Live e Kick no mesmo painel lateral ou destaque o chat para o segundo monitor com
+                  opção sempre por cima do jogo. Com o login da Twitch, responda direto pelo estúdio e atualize título e
+                  categoria da live sem abrir o navegador.
+                </p>
+                <div class="cap-specs">
+                  <span>Twitch IRC &amp; Helix</span>
+                  <span>YouTube &amp; Kick</span>
+                  <span>7TV · BTTV · FFZ</span>
+                </div>
+              </div>
+            </li>
+
+            <li class="cap-item">
+              <span class="cap-num">05</span>
+              <div class="cap-body">
+                <h3>Kits de overlay OBS e widgets HTML</h3>
+                <p>
+                  Aponte para a pasta do seu kit OBS para criar as cenas automaticamente. O PrismCast lê e grava o
+                  <code>config.js</code> via parser estático seguro (sem executar JS arbitrário) e sincroniza contagem
+                  regressiva, jogo do dia e ocultação automática de moldura quando você desliga a câmera.
+                </p>
+                <div class="cap-specs">
+                  <span>Parser estático seguro</span>
+                  <span>StreamElements HTTPS</span>
+                  <span>HTML local</span>
+                </div>
+              </div>
+            </li>
+
+            <li class="cap-item">
+              <span class="cap-num">06</span>
+              <div class="cap-body">
+                <h3>Transmissão LAN P2P, Gravação MP4 e Replay Buffer</h3>
+                <p>
+                  Compartilhe sua tela ou cena com outros computadores da rede local via WebRTC com descoberta automática
+                  e proteção por PIN — sem passar por servidores externos. Grave localmente em MP4 ou salve os últimos
+                  segundos do buffer em RAM com um atalho global.
+                </p>
+                <div class="cap-specs">
+                  <span>WebRTC LAN + PIN</span>
+                  <span>Replay Buffer EBML</span>
+                  <span>Remux MP4 nativo</span>
+                </div>
+              </div>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <!-- Matte Hardware Band: Shortcuts & Engineering/Privacy -->
+      <section class="hardware-band" id="atalhos">
+        <div class="wrap hardware-grid">
+          <div>
+            <p class="section-kicker">Controle sem sair do jogo</p>
+            <h2 class="section-title">Atalhos globais de estúdio</h2>
+            <table class="shortcut-table" aria-label="Atalhos globais padrão do PrismCast Studio">
+              <tbody>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>M</kbd></td>
+                  <td>Mutar ou ligar microfone</td>
+                </tr>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>D</kbd></td>
+                  <td>Mutar ou ligar áudio do PC</td>
+                </tr>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>P</kbd></td>
+                  <td>Ativar Tela de Pausa (Volto já)</td>
+                </tr>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>S</kbd></td>
+                  <td>Salvar clipe do Replay Buffer</td>
+                </tr>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>V</kbd></td>
+                  <td>Ligar ou desligar saída vertical 9:16</td>
+                </tr>
+                <tr>
+                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>C</kbd></td>
+                  <td>Ligar ou desligar câmera e molduras</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div>
+            <p class="section-kicker">Engenharia &amp; Privacidade</p>
+            <h2 class="section-title">Seus segredos ficam na sua máquina</h2>
+            <div class="eng-notes">
+              <div class="eng-row">
+                <h3>Cofre nativo do sistema operacional</h3>
+                <p>
+                  Chaves RTMP e tokens OAuth são armazenados com DPAPI no Windows e Secret Service (com fallback
+                  restrito <code>0600</code>) no Linux. As chaves nunca voltam em texto claro para a interface.
+                </p>
+              </div>
+              <div class="eng-row">
+                <h3>Login Twitch sem servidor intermediário</h3>
+                <p>
+                  Usa OAuth Device Flow diretamente contra a API oficial da Twitch: você autoriza em
+                  <code>twitch.tv/activate</code> e o estúdio obtém nome, categoria e stream key sem intermediários.
+                </p>
+              </div>
+              <div class="eng-row">
+                <h3>Código aberto, sem telemetria oculta</h3>
+                <p>
+                  Licença MIT, builds automatizadas no GitHub Actions diretamente a partir do código-fonte público e
+                  tráfego LAN estritamente local com autenticação por token de 256 bits.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Downloads Matrix -->
+      <section class="downloads" id="baixar">
+        <div class="wrap">
+          <div class="downloads-head">
+            <div>
+              <p class="section-kicker">Download direto · <span data-release-version>v2.4.0</span></p>
+              <h2 class="section-title">Escolha o pacote do seu sistema</h2>
+            </div>
+
+            <div class="os-tabs" role="tablist" aria-label="Sistema operacional">
+              <button
+                class="os-tab"
+                type="button"
+                role="tab"
+                id="tab-windows"
+                data-os-tab="windows"
+                aria-controls="panel-windows"
+                aria-selected="true"
+              >
+                Windows (x64)
+              </button>
+              <button
+                class="os-tab"
+                type="button"
+                role="tab"
+                id="tab-linux"
+                data-os-tab="linux"
+                aria-controls="panel-linux"
+                aria-selected="false"
+              >
+                Linux (x86_64)
+              </button>
+            </div>
+          </div>
+
+          <!-- Windows Panel -->
+          <div
+            class="dl-panel"
+            id="panel-windows"
+            role="tabpanel"
+            aria-labelledby="tab-windows"
+            data-os-panel="windows"
+          >
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Executável Portátil (.exe)
+                  <span class="dl-badge is-recommended">Portátil</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="win-portable">Windows 10 / 11 · 64 bits · sem instalador</span>
+              </div>
+              <div class="dl-desc">Um único arquivo executável — baixe, abra e transmita sem instalação.</div>
+              <a
+                class="btn btn-primary btn-sm"
+                data-asset-link="win-portable"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar .exe</a
+              >
+            </div>
+
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Instalador Windows (NSIS)
+                  <span class="dl-badge">Setup</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="win-nsis">Cria atalho no Menu Iniciar e instala WebView2 se necessário</span>
+              </div>
+              <div class="dl-desc">Recomendado para instalação permanente com desinstalador padrão do Windows.</div>
+              <a
+                class="btn btn-secondary btn-sm"
+                data-asset-link="win-nsis"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar Setup</a
+              >
+            </div>
+
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Pacote MSI
+                  <span class="dl-badge">MSI</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="win-msi">Windows Installer · x64</span>
+              </div>
+              <div class="dl-desc">Pacote padrão Microsoft Installer para instalação gerenciada ou silenciosa.</div>
+              <a
+                class="btn btn-secondary btn-sm"
+                data-asset-link="win-msi"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar .msi</a
+              >
+            </div>
+          </div>
+
+          <!-- Linux Panel -->
+          <div
+            class="dl-panel"
+            id="panel-linux"
+            role="tabpanel"
+            aria-labelledby="tab-linux"
+            data-os-panel="linux"
+            hidden
+          >
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  AppImage Universal
+                  <span class="dl-badge is-recommended">Recomendado</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="linux-appimage">Qualquer distribuição x86_64 · chmod +x e rodar</span>
+              </div>
+              <div class="dl-desc">Execução direta sem depender do gerenciador de pacotes da distribuição.</div>
+              <a
+                class="btn btn-primary btn-sm"
+                data-asset-link="linux-appimage"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar AppImage</a
+              >
+            </div>
+
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Pacote Debian / Ubuntu (.deb)
+                  <span class="dl-badge">APT</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="linux-deb">Ubuntu, Debian, Pop!_OS, Mint (amd64)</span>
+              </div>
+              <div class="dl-desc">Integração nativa ao menu de aplicativos com dependências WebKitGTK declaradas.</div>
+              <a
+                class="btn btn-secondary btn-sm"
+                data-asset-link="linux-deb"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar .deb</a
+              >
+            </div>
+
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Pacote Fedora / openSUSE (.rpm)
+                  <span class="dl-badge">DNF</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="linux-rpm">Fedora, RHEL, Nobara, openSUSE (x86_64)</span>
+              </div>
+              <div class="dl-desc">Pacote RPM nativo pronto para instalação via <code>dnf</code> ou <code>zypper</code>.</div>
+              <a
+                class="btn btn-secondary btn-sm"
+                data-asset-link="linux-rpm"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar .rpm</a
+              >
+            </div>
+
+            <div class="dl-row">
+              <div>
+                <div class="dl-name">
+                  Arquivo Portátil (.tar.gz)
+                  <span class="dl-badge">Binário</span>
+                </div>
+                <span class="dl-meta" data-asset-meta="linux-tar">Contém os binários prismcast e prismcast-audio</span>
+              </div>
+              <div class="dl-desc">Para Arch, NixOS ou instalações manuais em <code>~/.local/bin</code>.</div>
+              <a
+                class="btn btn-secondary btn-sm"
+                data-asset-link="linux-tar"
+                href="https://github.com/kayoinreality/PrismCast/releases/latest"
+                target="_blank"
+                rel="noreferrer"
+                >Baixar .tar.gz</a
+              >
+            </div>
+          </div>
+
+          <div class="dl-prereq">
+            <span>
+              <strong>Requisito para multistream RTMP/RTMPS e gravação:</strong> FFmpeg disponível no PATH.
+            </span>
+            <code id="dl-ffmpeg-cmd">winget install ffmpeg</code>
+          </div>
+        </div>
       </section>
     </main>
 
-    <footer class="footer wrap"><a class="brand" href="#inicio"><span class="brand-mark" aria-hidden="true">◉</span><span>PrismCast <strong>Studio</strong></span></a><p>Estúdio LAN P2P e Multistreaming com Core em Rust.</p><a href="https://github.com/kayoinreality/PrismCast" target="_blank" rel="noreferrer">Código-fonte no GitHub ↗</a></footer>
+    <footer class="site-footer">
+      <div class="wrap footer-inner">
+        <div>
+          <strong>PrismCast Studio</strong> · Rust + Tauri v2 · Licença MIT
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/kayoinreality/PrismCast/releases" target="_blank" rel="noreferrer">Todas as releases</a>
+          <a href="https://github.com/kayoinreality/PrismCast" target="_blank" rel="noreferrer">Código-fonte</a>
+          <a href="https://github.com/kayoinreality/PrismCast/issues" target="_blank" rel="noreferrer">Reportar problema</a>
+        </div>
+      </div>
+    </footer>
+
+    <script src="./app.js" defer></script>
   </body>
 </html>
