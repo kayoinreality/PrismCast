@@ -14,6 +14,7 @@ pub const SCHEMA_VERSION: u32 = 3;
 pub const DISCOVERY_PORT: u16 = 41234;
 pub const SIGNALING_PORT: u16 = 41235;
 pub const RUST_RPC_PORT: u16 = 41236;
+pub const OBS_WS_DEFAULT_PORT: u16 = 4455;
 
 pub const ANNOUNCE_INTERVAL_MS: u64 = 2000;
 pub const HOST_TTL_MS: u64 = 6000;
@@ -408,6 +409,124 @@ pub enum TransitionType {
     Fade,
     FadeToBlack,
     Slide,
+    Stinger,
+    LumaWipe,
+    CustomShader,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransitionEasing {
+    Linear,
+    #[default]
+    EaseInOut,
+    CubicOut,
+    ExpoOut,
+}
+
+impl TransitionEasing {
+    pub fn apply(self, t: f32) -> f32 {
+        let x = t.clamp(0.0, 1.0);
+        match self {
+            TransitionEasing::Linear => x,
+            TransitionEasing::EaseInOut => {
+                if x < 0.5 {
+                    2.0 * x * x
+                } else {
+                    1.0 - (-2.0 * x + 2.0).powi(2) / 2.0
+                }
+            }
+            TransitionEasing::CubicOut => 1.0 - (1.0 - x).powi(3),
+            TransitionEasing::ExpoOut => {
+                if x >= 1.0 {
+                    1.0
+                } else {
+                    1.0 - 2.0_f32.powf(-10.0 * x)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum CustomShaderPreset {
+    #[default]
+    ZoomBlur,
+    RadialWipe,
+    GlitchCut,
+    Swirl,
+    CustomWgsl,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct CustomTransitionConfig {
+    pub stinger_path: Option<String>,
+    pub stinger_transition_point_ms: u32,
+    pub stinger_audio_gain_db: f32,
+    pub luma_matte_path: Option<String>,
+    pub luma_preset: String,
+    pub luma_softness: f32,
+    pub luma_invert: bool,
+    pub shader_preset: CustomShaderPreset,
+    pub custom_wgsl: Option<String>,
+    pub easing: TransitionEasing,
+}
+
+impl Default for CustomTransitionConfig {
+    fn default() -> Self {
+        Self {
+            stinger_path: None,
+            stinger_transition_point_ms: 500,
+            stinger_audio_gain_db: 0.0,
+            luma_matte_path: None,
+            luma_preset: "horizontal-wipe".to_string(),
+            luma_softness: 0.15,
+            luma_invert: false,
+            shader_preset: CustomShaderPreset::ZoomBlur,
+            custom_wgsl: None,
+            easing: TransitionEasing::EaseInOut,
+        }
+    }
+}
+
+impl CustomTransitionConfig {
+    pub fn normalize(&mut self) {
+        self.stinger_transition_point_ms = self.stinger_transition_point_ms.clamp(0, 10_000);
+        self.stinger_audio_gain_db = self.stinger_audio_gain_db.clamp(-60.0, 12.0);
+        self.luma_softness = self.luma_softness.clamp(0.0, 0.5);
+        if self.luma_preset.trim().is_empty() {
+            self.luma_preset = "horizontal-wipe".to_string();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SceneTransitionOverride {
+    pub transition_type: TransitionType,
+    pub duration_ms: u32,
+    pub custom: Option<CustomTransitionConfig>,
+}
+
+impl Default for SceneTransitionOverride {
+    fn default() -> Self {
+        Self {
+            transition_type: TransitionType::Fade,
+            duration_ms: 300,
+            custom: None,
+        }
+    }
+}
+
+impl SceneTransitionOverride {
+    pub fn normalize(&mut self) {
+        self.duration_ms = self.duration_ms.clamp(50, 10_000);
+        if let Some(ref mut c) = self.custom {
+            c.normalize();
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -441,6 +560,8 @@ pub struct Scene {
     pub name: String,
     pub items: Vec<SceneItem>,
     pub created_at: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transition_override: Option<SceneTransitionOverride>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,6 +573,7 @@ pub struct StudioScenesState {
     pub studio_mode: bool,
     pub transition_type: TransitionType,
     pub transition_duration_ms: u32,
+    pub custom_transition: CustomTransitionConfig,
 }
 
 impl Default for StudioScenesState {
@@ -463,14 +585,19 @@ impl Default for StudioScenesState {
             studio_mode: false,
             transition_type: TransitionType::Fade,
             transition_duration_ms: 300,
+            custom_transition: CustomTransitionConfig::default(),
         }
     }
 }
 
 impl StudioScenesState {
     pub fn normalize(&mut self) {
-        self.transition_duration_ms = self.transition_duration_ms.clamp(50, 3000);
+        self.transition_duration_ms = self.transition_duration_ms.clamp(50, 10_000);
+        self.custom_transition.normalize();
         for scene in &mut self.scenes {
+            if let Some(ref mut ov) = scene.transition_override {
+                ov.normalize();
+            }
             for item in &mut scene.items {
                 item.normalize();
             }
@@ -686,6 +813,77 @@ impl Default for AudioLimiterSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioPluginFormat {
+    #[default]
+    Vst3,
+    Clap,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioPluginParam {
+    pub id: u32,
+    pub name: String,
+    pub value: f32,
+    pub min: f32,
+    pub max: f32,
+    pub default_value: f32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioPluginSlot {
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub format: AudioPluginFormat,
+    pub path: String,
+    pub plugin_uid: String,
+    pub enabled: bool,
+    pub wet_dry: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_b64: Option<String>,
+    pub params: HashMap<String, f32>,
+}
+
+impl Default for AudioPluginSlot {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            vendor: String::new(),
+            format: AudioPluginFormat::Vst3,
+            path: String::new(),
+            plugin_uid: String::new(),
+            enabled: true,
+            wet_dry: 1.0,
+            state_b64: None,
+            params: HashMap::new(),
+        }
+    }
+}
+
+impl AudioPluginSlot {
+    pub fn normalize(&mut self) {
+        self.wet_dry = self.wet_dry.clamp(0.0, 1.0);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AudioPluginInfo {
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+    pub format: AudioPluginFormat,
+    pub path: String,
+    pub plugin_uid: String,
+    pub has_gui: bool,
+    pub params: Vec<AudioPluginParam>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct AudioFilters {
@@ -707,6 +905,8 @@ pub struct AudioFilters {
     pub ducking_source_id: Option<String>,
     pub ducking_amount_db: f32,
     pub ducking_release_ms: u32,
+    // Cadeia de plugins VST3 / CLAP por canal
+    pub plugins: Vec<AudioPluginSlot>,
 }
 
 impl Default for AudioFilters {
@@ -728,6 +928,7 @@ impl Default for AudioFilters {
             ducking_source_id: None,
             ducking_amount_db: -12.0,
             ducking_release_ms: 350,
+            plugins: Vec::new(),
         }
     }
 }
@@ -761,6 +962,9 @@ impl AudioFilters {
         self.eq_high_db = self.eq_high_db.clamp(-12.0, 12.0);
         self.ducking_amount_db = self.ducking_amount_db.clamp(-40.0, 0.0);
         self.ducking_release_ms = self.ducking_release_ms.clamp(50, 5000);
+        for slot in &mut self.plugins {
+            slot.normalize();
+        }
     }
 }
 
@@ -957,6 +1161,192 @@ impl HotkeyAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum GpuCaptureBackendKind {
+    #[default]
+    Auto,
+    DxgiDuplication,
+    WindowsGraphicsCapture,
+    PipewireDmabuf,
+    SoftwareFallback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GpuPipelineSettings {
+    pub zero_copy_enabled: bool,
+    pub prefer_wgpu: bool,
+    pub capture_backend: GpuCaptureBackendKind,
+    pub native_encoder_pipe: bool,
+}
+
+impl Default for GpuPipelineSettings {
+    fn default() -> Self {
+        Self {
+            zero_copy_enabled: true,
+            prefer_wgpu: true,
+            capture_backend: GpuCaptureBackendKind::Auto,
+            native_encoder_pipe: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GpuPipelineStatus {
+    pub zero_copy_active: bool,
+    pub compositor_backend: String,
+    pub capture_backend: String,
+    pub adapter_name: String,
+    pub driver_info: String,
+    pub frame_copy_count: u32,
+    pub active_textures: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DynamicBitrateSettings {
+    pub enabled: bool,
+    pub min_bitrate_kbps: u32,
+    pub step_down_ratio: f32,
+    pub step_up_kbps: u32,
+    pub stability_window_secs: u32,
+    pub use_persistent_rtmp: bool,
+}
+
+impl Default for DynamicBitrateSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_bitrate_kbps: 1500,
+            step_down_ratio: 0.75,
+            step_up_kbps: 250,
+            stability_window_secs: 10,
+            use_persistent_rtmp: true,
+        }
+    }
+}
+
+impl DynamicBitrateSettings {
+    pub fn normalize(&mut self) {
+        self.min_bitrate_kbps = self.min_bitrate_kbps.clamp(500, 10_000);
+        self.step_down_ratio = self.step_down_ratio.clamp(0.4, 0.95);
+        self.step_up_kbps = self.step_up_kbps.clamp(50, 2000);
+        self.stability_window_secs = self.stability_window_secs.clamp(3, 60);
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AbrDestinationTelemetry {
+    pub id: String,
+    pub configured_bitrate_kbps: u32,
+    pub current_bitrate_kbps: u32,
+    pub observed_bitrate_kbps: u32,
+    pub congestion_level: f32,
+    pub write_latency_ms: f32,
+    pub adjustments: u32,
+    pub state: String, // "nominal" | "congested" | "recovering" | "floor"
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VirtualCameraSettings {
+    pub enabled: bool,
+    pub orientation: CanvasOrientation,
+    pub fps: u32,
+    pub device_name: String,
+    pub linux_device_path: Option<String>,
+}
+
+impl Default for VirtualCameraSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            orientation: CanvasOrientation::Horizontal,
+            fps: 30,
+            device_name: "PrismCast Virtual Camera".to_string(),
+            linux_device_path: None,
+        }
+    }
+}
+
+impl VirtualCameraSettings {
+    pub fn normalize(&mut self) {
+        self.fps = if self.fps <= 35 { 30 } else { 60 };
+        if self.device_name.trim().is_empty() {
+            self.device_name = "PrismCast Virtual Camera".to_string();
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VirtualCameraDevice {
+    pub id: String,
+    pub name: String,
+    pub backend: String,
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct VirtualCameraStatus {
+    pub active: bool,
+    pub backend: String,
+    pub device: String,
+    pub orientation: CanvasOrientation,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub frames_sent: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalControlSettings {
+    pub obs_ws_enabled: bool,
+    pub obs_ws_port: u16,
+    pub obs_ws_has_password: bool,
+    pub obs_ws_allow_lan: bool,
+    pub rpc_external_enabled: bool,
+    pub allow_browser_origins: Vec<String>,
+}
+
+impl Default for ExternalControlSettings {
+    fn default() -> Self {
+        Self {
+            obs_ws_enabled: false,
+            obs_ws_port: OBS_WS_DEFAULT_PORT,
+            obs_ws_has_password: false,
+            obs_ws_allow_lan: false,
+            rpc_external_enabled: false,
+            allow_browser_origins: Vec::new(),
+        }
+    }
+}
+
+impl ExternalControlSettings {
+    pub fn normalize(&mut self) {
+        if self.obs_ws_port < 1024 {
+            self.obs_ws_port = OBS_WS_DEFAULT_PORT;
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ExternalControlStatus {
+    pub obs_ws_running: bool,
+    pub obs_ws_port: u16,
+    pub obs_ws_clients: usize,
+    pub rpc_ws_port: u16,
+    pub rpc_ws_clients: usize,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "camelCase")]
 pub struct TelemetryStats {
@@ -969,6 +1359,14 @@ pub struct TelemetryStats {
     pub cpu_fallback: bool,
     pub mic_muted_speaking: bool,
     pub replay_buffered_seconds: f32,
+    pub zero_copy_active: bool,
+    pub compositor_backend: String,
+    pub abr_active: bool,
+    pub abr_target_bitrate_kbps: u32,
+    pub abr_congestion_level: f32,
+    pub virtual_cam_active: bool,
+    pub external_clients: usize,
+    pub audio_runtime_active: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1151,6 +1549,10 @@ pub struct AppSettings {
     pub recording_dir: Option<String>,
     pub ffmpeg_path: Option<String>,
     pub chat_window_bounds: Option<WindowBounds>,
+    pub gpu_pipeline: GpuPipelineSettings,
+    pub dynamic_bitrate: DynamicBitrateSettings,
+    pub virtual_camera: VirtualCameraSettings,
+    pub external_control: ExternalControlSettings,
 }
 
 impl Default for AppSettings {
@@ -1181,6 +1583,10 @@ impl Default for AppSettings {
             recording_dir: None,
             ffmpeg_path: None,
             chat_window_bounds: None,
+            gpu_pipeline: GpuPipelineSettings::default(),
+            dynamic_bitrate: DynamicBitrateSettings::default(),
+            virtual_camera: VirtualCameraSettings::default(),
+            external_control: ExternalControlSettings::default(),
         }
     }
 }
@@ -1198,6 +1604,9 @@ impl AppSettings {
         self.studio.normalize();
         self.scenes.normalize();
         self.chat.normalize();
+        self.dynamic_bitrate.normalize();
+        self.virtual_camera.normalize();
+        self.external_control.normalize();
         for dest in &mut self.destinations {
             dest.normalize();
         }

@@ -1,23 +1,35 @@
+use crate::abr::{CongestionSample, DynamicBitrateController};
 use crate::protocol::{
-    CanvasOrientation, Destination, DestinationStatus, MultistreamEngineStatus, MultistreamStatus,
-    MultistreamTarget, MultistreamTargetStatus,
+    AbrDestinationTelemetry, CanvasOrientation, Destination, DestinationStatus,
+    DynamicBitrateSettings, MultistreamEngineStatus, MultistreamStatus, MultistreamTarget,
+    MultistreamTargetStatus,
+};
+use crate::rtmp_publisher::{
+    FlvDemuxer, FlvTag, PersistentRtmpSession, TimestampRebaser, FLV_TAG_SCRIPT_DATA,
+    FLV_TAG_VIDEO,
 };
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, watch, Mutex as AsyncMutex};
 use tokio::task::JoinHandle;
 use url::Url;
 
 const CHUNK_QUEUE_CAP: usize = 64;
+const AUDIO_QUEUE_CAP: usize = 64;
+const ENCODER_STDIN_QUEUE_CAP: usize = 16;
+const FLV_TAG_QUEUE_CAP: usize = 128;
 const STDERR_RING_CAP: usize = 60;
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const STOP_GRACE: Duration = Duration::from_millis(1500);
 const RECONNECT_BACKOFF_SECS: [u64; 5] = [1, 2, 4, 8, 15];
+const DEFAULT_CANVAS_H: (u32, u32) = (1920, 1080);
+const DEFAULT_CANVAS_V: (u32, u32) = (1080, 1920);
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -233,45 +245,13 @@ fn escape_tee_target(url: &str) -> String {
     out
 }
 
-/// Monta os argumentos FFmpeg para um grupo de destinos com mesma orientação e mesmo bitrate.
-/// Quando há 2+ destinos no mesmo grupo, usa o muxer `tee` para evitar codificação H.264/AAC duplicada.
-pub fn build_ffmpeg_args(
+fn append_video_and_audio_encoder_args(
+    args: &mut Vec<String>,
     encoder: &str,
-    endpoints: &[String],
-    fps: u32,
-    bitrate_kbps: u32,
-) -> Vec<String> {
-    let kbps = bitrate_kbps.clamp(1000, 20_000);
-    let fps_clamped = fps.clamp(15, 60);
+    fps_clamped: u32,
+    kbps: u32,
+) {
     let gop = (fps_clamped * 2).to_string();
-
-    let mut args = vec![
-        "-hide_banner".to_string(),
-        "-loglevel".to_string(),
-        "warning".to_string(),
-        "-progress".to_string(),
-        "pipe:2".to_string(),
-        "-probesize".to_string(),
-        "2M".to_string(),
-        "-analyzeduration".to_string(),
-        "1000000".to_string(),
-        "-fflags".to_string(),
-        "+genpts".to_string(),
-    ];
-
-    if encoder == "h264_vaapi" {
-        args.extend(["-vaapi_device".to_string(), "/dev/dri/renderD128".to_string()]);
-    }
-
-    args.extend([
-        "-i".to_string(),
-        "pipe:0".to_string(),
-        "-map".to_string(),
-        "0:v:0".to_string(),
-        "-map".to_string(),
-        "0:a:0?".to_string(),
-    ]);
-
     let rate = [
         "-b:v".to_string(),
         format!("{kbps}k"),
@@ -294,7 +274,12 @@ pub fn build_ffmpeg_args(
                 "cbr".to_string(),
             ]);
             args.extend(rate);
-            args.extend(["-bf".to_string(), "2".to_string(), "-pix_fmt".to_string(), "yuv420p".to_string()]);
+            args.extend([
+                "-bf".to_string(),
+                "2".to_string(),
+                "-pix_fmt".to_string(),
+                "yuv420p".to_string(),
+            ]);
         }
         "h264_amf" => {
             args.extend([
@@ -362,8 +347,20 @@ pub fn build_ffmpeg_args(
         "-ac".to_string(),
         "2".to_string(),
     ]);
+}
 
-    if endpoints.len() <= 1 {
+fn append_rtmp_or_flv_output_args(args: &mut Vec<String>, flv_stdout: bool, endpoints: &[String]) {
+    if flv_stdout {
+        args.extend([
+            "-flush_packets".to_string(),
+            "1".to_string(),
+            "-flvflags".to_string(),
+            "no_duration_filesize".to_string(),
+            "-f".to_string(),
+            "flv".to_string(),
+            "pipe:1".to_string(),
+        ]);
+    } else if endpoints.len() <= 1 {
         args.extend([
             "-f".to_string(),
             "flv".to_string(),
@@ -379,7 +376,171 @@ pub fn build_ffmpeg_args(
             .join("|");
         args.extend(["-f".to_string(), "tee".to_string(), tee_spec]);
     }
+}
 
+/// Monta os argumentos FFmpeg para um grupo de destinos com mesma orientação e mesmo bitrate.
+/// Quando há 2+ destinos no mesmo grupo, usa o muxer `tee` para evitar codificação H.264/AAC duplicada.
+pub fn build_ffmpeg_args(
+    encoder: &str,
+    endpoints: &[String],
+    fps: u32,
+    bitrate_kbps: u32,
+) -> Vec<String> {
+    let kbps = bitrate_kbps.clamp(500, 25_000);
+    let fps_clamped = fps.clamp(15, 60);
+
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
+        "-probesize".to_string(),
+        "2M".to_string(),
+        "-analyzeduration".to_string(),
+        "1000000".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
+    ];
+
+    if encoder == "h264_vaapi" {
+        args.extend(["-vaapi_device".to_string(), "/dev/dri/renderD128".to_string()]);
+    }
+
+    args.extend([
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "0:a:0?".to_string(),
+    ]);
+
+    append_video_and_audio_encoder_args(&mut args, encoder, fps_clamped, kbps);
+    append_rtmp_or_flv_output_args(&mut args, false, endpoints);
+    args
+}
+
+/// Monta argumentos FFmpeg para o modo **Zero-Disconnect ABR**:
+/// recebe WebM/Matroska via `pipe:0` e emite tags FLV contínuos em `pipe:1` (`-f flv pipe:1`)
+/// para publicação pela sessão RTMP/RTMPS persistente em Rust.
+pub fn build_ffmpeg_flv_pipe_args(encoder: &str, fps: u32, bitrate_kbps: u32) -> Vec<String> {
+    let kbps = bitrate_kbps.clamp(500, 25_000);
+    let fps_clamped = fps.clamp(15, 60);
+
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
+        "-probesize".to_string(),
+        "2M".to_string(),
+        "-analyzeduration".to_string(),
+        "1000000".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
+    ];
+
+    if encoder == "h264_vaapi" {
+        args.extend(["-vaapi_device".to_string(), "/dev/dri/renderD128".to_string()]);
+    }
+
+    args.extend([
+        "-i".to_string(),
+        "pipe:0".to_string(),
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "0:a:0?".to_string(),
+    ]);
+
+    append_video_and_audio_encoder_args(&mut args, encoder, fps_clamped, kbps);
+    append_rtmp_or_flv_output_args(&mut args, true, &[]);
+    args
+}
+
+/// Monta argumentos FFmpeg para o modo **Nativo (Raw BGRA + PCM f32le 48kHz estéreo)**:
+/// alimenta frames crus do compositor GPU/CPU diretamente em `pipe:0` e áudio PCM via socket
+/// loopback/pipe (`audio_input`), dispensando completamente `MediaRecorder` do WebView.
+#[allow(clippy::too_many_arguments)]
+pub fn build_ffmpeg_native_args(
+    encoder: &str,
+    width: u32,
+    height: u32,
+    fps: u32,
+    bitrate_kbps: u32,
+    audio_input: Option<&str>,
+    flv_stdout: bool,
+    endpoints: &[String],
+) -> Vec<String> {
+    let w = width.clamp(160, 7680) & !1;
+    let h = height.clamp(160, 4320) & !1;
+    let fps_clamped = fps.clamp(15, 60);
+    let kbps = bitrate_kbps.clamp(500, 25_000);
+
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "warning".to_string(),
+        "-progress".to_string(),
+        "pipe:2".to_string(),
+        "-fflags".to_string(),
+        "+genpts".to_string(),
+    ];
+
+    if encoder == "h264_vaapi" {
+        args.extend(["-vaapi_device".to_string(), "/dev/dri/renderD128".to_string()]);
+    }
+
+    // Entrada 0: vídeo BGRA cru vindo do compositor Rust em pipe:0
+    args.extend([
+        "-thread_queue_size".to_string(),
+        "64".to_string(),
+        "-f".to_string(),
+        "rawvideo".to_string(),
+        "-pix_fmt".to_string(),
+        "bgra".to_string(),
+        "-video_size".to_string(),
+        format!("{w}x{h}"),
+        "-framerate".to_string(),
+        fps_clamped.to_string(),
+        "-i".to_string(),
+        "pipe:0".to_string(),
+    ]);
+
+    // Entrada 1: áudio PCM f32le 48kHz estéreo (ou anullsrc se não houver fonte PCM externa)
+    if let Some(src) = audio_input.map(str::trim).filter(|s| !s.is_empty()) {
+        args.extend([
+            "-thread_queue_size".to_string(),
+            "64".to_string(),
+            "-f".to_string(),
+            "f32le".to_string(),
+            "-ar".to_string(),
+            "48000".to_string(),
+            "-ac".to_string(),
+            "2".to_string(),
+            "-i".to_string(),
+            src.to_string(),
+        ]);
+    } else {
+        args.extend([
+            "-f".to_string(),
+            "lavfi".to_string(),
+            "-i".to_string(),
+            "anullsrc=channel_layout=stereo:sample_rate=48000".to_string(),
+        ]);
+    }
+
+    args.extend([
+        "-map".to_string(),
+        "0:v:0".to_string(),
+        "-map".to_string(),
+        "1:a:0".to_string(),
+    ]);
+
+    append_video_and_audio_encoder_args(&mut args, encoder, fps_clamped, kbps);
+    append_rtmp_or_flv_output_args(&mut args, flv_stdout, endpoints);
     args
 }
 
@@ -474,6 +635,16 @@ fn explain_ffmpeg_error(log: &VecDeque<String>, names: &str, rtmp_urls: &[String
         .unwrap_or_else(|| format!("A transmissão para {names} parou."))
 }
 
+/// Modo de alimentação de mídia do pipeline `MultistreamEngine`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MultistreamInputMode {
+    /// Fluxo WebM/Matroska muxado pelo MediaRecorder (compatibilidade padrão).
+    #[default]
+    WebmChunks,
+    /// Frames BGRA crus do compositor Rust + PCM f32le 48kHz estéreo do AudioRuntime nativo.
+    NativeRaw,
+}
+
 /// Estado interno compartilhado entre a task supervisora do pipeline e `MultistreamEngine`.
 #[derive(Debug, Clone)]
 struct GroupRuntimeState {
@@ -482,7 +653,9 @@ struct GroupRuntimeState {
     state: String, // "connecting" | "live" | "reconnecting" | "error" | "idle"
     started_at: Option<Instant>,
     bytes_sent: u64,
+    dropped_input_chunks: u64,
     progress: FfmpegProgress,
+    abr: AbrDestinationTelemetry,
     error: Option<String>,
 }
 
@@ -499,7 +672,11 @@ struct ResolvedTarget {
 
 struct PipelineGroup {
     orientation: CanvasOrientation,
+    input_mode: MultistreamInputMode,
+    canvas_size: (u32, u32),
     tx: mpsc::Sender<Vec<u8>>,
+    audio_tx: Option<mpsc::Sender<Vec<u8>>>,
+    abr_settings_tx: watch::Sender<DynamicBitrateSettings>,
     stop_tx: watch::Sender<bool>,
     task: JoinHandle<()>,
     runtime: Arc<Mutex<GroupRuntimeState>>,
@@ -508,8 +685,10 @@ struct PipelineGroup {
 /// Motor de Multistreaming + Dual Output (16:9 + 9:16) em Rust.
 ///
 /// Características:
-/// - Agrupa destinos da mesma orientação + bitrate usando muxer `tee` (zero re-encode duplicado).
-/// - Backpressure real via `tokio::sync::mpsc::channel(64)` sem travar `Mutex` durante I/O.
+/// - Agrupa destinos da mesma orientação + bitrate usando muxer `tee` ou sessão RTMP persistente.
+/// - Bitrate Dinâmico (ABR AIMD) com hot-swap do encoder local e Zero-Disconnect via `PersistentRtmpSession`.
+/// - Suporte a alimentação nativa (Raw BGRA + PCM f32le 48kHz estéreo) além de chunks WebM.
+/// - Backpressure real via canais limitados sem travar `Mutex` durante I/O.
 /// - Reconexão automática com backoff exponencial por grupo em quedas transitórias.
 /// - Leitura de `-progress pipe:2` e `stderr` em ring buffer com redação de `streamKey`.
 /// - `impl Drop` garantindo encerramento limpo de processos filhos sem órfãos.
@@ -517,6 +696,10 @@ pub struct MultistreamEngine {
     encoder: String,
     ffmpeg_found: bool,
     ffmpeg_path: Option<String>,
+    dynamic_bitrate: DynamicBitrateSettings,
+    input_mode: MultistreamInputMode,
+    horizontal_size: (u32, u32),
+    vertical_size: (u32, u32),
     active: bool,
     groups: Vec<PipelineGroup>,
     targets: Vec<ResolvedTarget>,
@@ -530,6 +713,10 @@ impl MultistreamEngine {
             encoder: "libx264".to_string(),
             ffmpeg_found: true,
             ffmpeg_path: None,
+            dynamic_bitrate: DynamicBitrateSettings::default(),
+            input_mode: MultistreamInputMode::WebmChunks,
+            horizontal_size: DEFAULT_CANVAS_H,
+            vertical_size: DEFAULT_CANVAS_V,
             active: false,
             groups: Vec::new(),
             targets: Vec::new(),
@@ -544,6 +731,79 @@ impl MultistreamEngine {
 
     pub fn set_ffmpeg_path(&mut self, path: Option<String>) {
         self.ffmpeg_path = path.filter(|s| !s.trim().is_empty());
+    }
+
+    /// Configura a política de Bitrate Dinâmico (ABR) e propaga alterações ao vivo aos grupos ativos.
+    pub fn set_dynamic_bitrate(&mut self, mut settings: DynamicBitrateSettings) {
+        settings.normalize();
+        self.dynamic_bitrate = settings.clone();
+        for group in &self.groups {
+            let _ = group.abr_settings_tx.send(settings.clone());
+        }
+    }
+
+    pub fn dynamic_bitrate(&self) -> &DynamicBitrateSettings {
+        &self.dynamic_bitrate
+    }
+
+    /// Ativa ou desativa o modo de pipe nativo (Raw BGRA + PCM f32le 48kHz estéreo).
+    pub fn set_native_mode(&mut self, enabled: bool) {
+        self.input_mode = if enabled {
+            MultistreamInputMode::NativeRaw
+        } else {
+            MultistreamInputMode::WebmChunks
+        };
+    }
+
+    pub fn is_native_mode(&self) -> bool {
+        self.input_mode == MultistreamInputMode::NativeRaw
+    }
+
+    /// Define dimensões de canvas usadas no modo nativo (padrão: 1920x1080 e 1080x1920).
+    pub fn set_canvas_dimensions(&mut self, horizontal: (u32, u32), vertical: (u32, u32)) {
+        self.horizontal_size = (
+            horizontal.0.clamp(160, 7680) & !1,
+            horizontal.1.clamp(160, 4320) & !1,
+        );
+        self.vertical_size = (
+            vertical.0.clamp(160, 7680) & !1,
+            vertical.1.clamp(160, 4320) & !1,
+        );
+    }
+
+    /// Retorna telemetria ABR por destino ativo.
+    pub fn abr_telemetry(&self) -> Vec<AbrDestinationTelemetry> {
+        let mut out = Vec::new();
+        for group in &self.groups {
+            if let Ok(rt) = group.runtime.lock() {
+                for id in &rt.dest_ids {
+                    let mut item = rt.abr.clone();
+                    item.id = id.clone();
+                    out.push(item);
+                }
+            }
+        }
+        out
+    }
+
+    /// Resumo agregado de ABR para `TelemetryStats`: `(abr_active, current_target_kbps, max_congestion_level)`.
+    pub fn abr_summary(&self) -> (bool, u32, f32) {
+        if !self.active || self.groups.is_empty() {
+            return (false, 0, 0.0);
+        }
+        let mut target_kbps: u32 = 0;
+        let mut max_congestion: f32 = 0.0;
+        let mut any_running = false;
+        for group in &self.groups {
+            if let Ok(rt) = group.runtime.lock() {
+                if matches!(rt.state.as_str(), "connecting" | "live" | "reconnecting") {
+                    any_running = true;
+                    target_kbps = target_kbps.saturating_add(rt.abr.current_bitrate_kbps);
+                    max_congestion = max_congestion.max(rt.abr.congestion_level);
+                }
+            }
+        }
+        (any_running && self.dynamic_bitrate.enabled, target_kbps, max_congestion)
     }
 
     /// Executa probe real do FFmpeg e encoders HW. Seguro para chamar a cada `start`.
@@ -697,7 +957,21 @@ impl MultistreamEngine {
             } else {
                 CanvasOrientation::Vertical
             };
+            let canvas_size = match orientation {
+                CanvasOrientation::Horizontal => self.horizontal_size,
+                CanvasOrientation::Vertical => self.vertical_size,
+            };
             let dest_ids: Vec<String> = group_targets.iter().map(|t| t.id.clone()).collect();
+            let initial_abr = AbrDestinationTelemetry {
+                id: dest_ids.first().cloned().unwrap_or_default(),
+                configured_bitrate_kbps: bitrate_kbps,
+                current_bitrate_kbps: bitrate_kbps,
+                observed_bitrate_kbps: 0,
+                congestion_level: 0.0,
+                write_latency_ms: 0.0,
+                adjustments: 0,
+                state: "nominal".to_string(),
+            };
 
             let runtime = Arc::new(Mutex::new(GroupRuntimeState {
                 dest_ids,
@@ -705,11 +979,21 @@ impl MultistreamEngine {
                 state: "connecting".to_string(),
                 started_at: Some(Instant::now()),
                 bytes_sent: 0,
+                dropped_input_chunks: 0,
                 progress: FfmpegProgress::default(),
+                abr: initial_abr,
                 error: None,
             }));
 
             let (tx, rx) = mpsc::channel::<Vec<u8>>(CHUNK_QUEUE_CAP);
+            let (audio_tx, audio_rx) = if self.input_mode == MultistreamInputMode::NativeRaw {
+                let (atx, arx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE_CAP);
+                (Some(atx), Some(arx))
+            } else {
+                (None, None)
+            };
+            let (abr_settings_tx, abr_settings_rx) =
+                watch::channel(self.dynamic_bitrate.clone());
             let (stop_tx, stop_rx) = watch::channel(false);
 
             let task = tokio::spawn(run_pipeline_supervisor(
@@ -717,15 +1001,23 @@ impl MultistreamEngine {
                 encoder.clone(),
                 fps,
                 bitrate_kbps,
+                canvas_size,
+                self.input_mode,
                 group_targets,
                 runtime.clone(),
                 rx,
+                audio_rx,
+                abr_settings_rx,
                 stop_rx,
             ));
 
             self.groups.push(PipelineGroup {
                 orientation,
+                input_mode: self.input_mode,
+                canvas_size,
                 tx,
+                audio_tx,
+                abr_settings_tx,
                 stop_tx,
                 task,
                 runtime,
@@ -752,13 +1044,17 @@ impl MultistreamEngine {
         }
 
         for group in &self.groups {
-            if group.orientation != orientation {
+            if group.orientation != orientation || group.input_mode != MultistreamInputMode::WebmChunks
+            {
                 continue;
             }
             let payload = chunk.to_vec();
             if let Err(err) = group.tx.try_send(payload) {
                 match err {
                     mpsc::error::TrySendError::Full(_) => {
+                        if let Ok(mut rt) = group.runtime.lock() {
+                            rt.dropped_input_chunks = rt.dropped_input_chunks.saturating_add(1);
+                        }
                         log::warn!(
                             "[multistream] fila cheia ({:?}): chunk de {} bytes descartado por backpressure",
                             orientation,
@@ -767,6 +1063,66 @@ impl MultistreamEngine {
                     }
                     mpsc::error::TrySendError::Closed(_) => {}
                 }
+            }
+        }
+    }
+
+    /// Enfileira um frame BGRA cru do compositor GPU/CPU Rust diretamente para os pipelines nativos.
+    pub fn push_native_frame(&mut self, orientation: CanvasOrientation, bgra: &[u8]) {
+        if !self.active || bgra.is_empty() {
+            return;
+        }
+        for group in &self.groups {
+            if group.orientation != orientation || group.input_mode != MultistreamInputMode::NativeRaw
+            {
+                continue;
+            }
+            let expected = (group.canvas_size.0 as usize)
+                .saturating_mul(group.canvas_size.1 as usize)
+                .saturating_mul(4);
+            if expected > 0 && bgra.len() != expected {
+                log::warn!(
+                    "[multistream] frame nativo BGRA ignorado ({:?}): recebido {} bytes, esperado {} ({}x{})",
+                    orientation,
+                    bgra.len(),
+                    expected,
+                    group.canvas_size.0,
+                    group.canvas_size.1
+                );
+                continue;
+            }
+            if let Err(err) = group.tx.try_send(bgra.to_vec()) {
+                if matches!(err, mpsc::error::TrySendError::Full(_)) {
+                    if let Ok(mut rt) = group.runtime.lock() {
+                        rt.dropped_input_chunks = rt.dropped_input_chunks.saturating_add(1);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Enfileira amostras PCM f32 (48 kHz estéreo intercalado) do AudioRuntime nativo para todos
+    /// os grupos ativos em modo nativo (Horizontal + Vertical sincronizados).
+    pub fn push_native_audio_pcm(&mut self, pcm_f32: &[f32]) {
+        if !self.active || pcm_f32.is_empty() {
+            return;
+        }
+        let mut bytes = Vec::with_capacity(pcm_f32.len() * 4);
+        for &sample in pcm_f32 {
+            let clamped = if sample.is_finite() {
+                sample.clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            bytes.extend_from_slice(&clamped.to_le_bytes());
+        }
+
+        for group in &self.groups {
+            if group.input_mode != MultistreamInputMode::NativeRaw {
+                continue;
+            }
+            if let Some(ref audio_tx) = group.audio_tx {
+                let _ = audio_tx.try_send(bytes.clone());
             }
         }
     }
@@ -787,6 +1143,7 @@ impl MultistreamEngine {
         }
         for g in groups {
             drop(g.tx);
+            drop(g.audio_tx);
             let _ = tokio::time::timeout(STOP_GRACE + Duration::from_millis(500), g.task).await;
         }
         self.active = false;
@@ -948,29 +1305,781 @@ async fn terminate_child(child: &mut Child) {
     }
 }
 
+struct SupervisorConfig {
+    bin: String,
+    encoder: String,
+    fps: u32,
+    canvas_size: (u32, u32),
+    input_mode: MultistreamInputMode,
+    targets: Vec<ResolvedTarget>,
+    endpoints: Vec<String>,
+    secrets: Vec<String>,
+    names: String,
+    primary_dest_id: String,
+}
+
+enum PersistentCycleOutcome {
+    Stop,
+    HotSwap(u32),
+    TransportError(String),
+    EncoderFailed(String),
+}
+
+enum PersistentGroupOutcome {
+    Stopped,
+    FallbackClassic(String),
+    Reconnect(String),
+}
+
+enum ClassicCycleOutcome {
+    Stop,
+    HotSwap(u32),
+    Reconnect(String),
+    Fatal(String),
+}
+
+async fn recv_opt_audio(opt: &mut Option<mpsc::Receiver<Vec<u8>>>) -> Option<Vec<u8>> {
+    match opt {
+        Some(rx) => rx.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Abre um socket TCP loopback efêmero (`127.0.0.1:0`) para alimentar áudio PCM f32le 48kHz
+/// diretamente ao FFmpeg de forma 100% portável entre Windows e Linux.
+async fn start_native_audio_bridge(
+    input_mode: MultistreamInputMode,
+) -> (
+    Option<String>,
+    Option<mpsc::Sender<Vec<u8>>>,
+    Option<JoinHandle<()>>,
+) {
+    if input_mode != MultistreamInputMode::NativeRaw {
+        return (None, None, None);
+    }
+
+    let listener = match TcpListener::bind("127.0.0.1:0").await {
+        Ok(l) => l,
+        Err(e) => {
+            log::warn!("[multistream] falha ao abrir bridge TCP de áudio nativo: {e}");
+            return (None, None, None);
+        }
+    };
+    let port = match listener.local_addr() {
+        Ok(addr) => addr.port(),
+        Err(_) => return (None, None, None),
+    };
+
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(AUDIO_QUEUE_CAP);
+    let task = tokio::spawn(async move {
+        let Ok(Ok((mut stream, _))) =
+            tokio::time::timeout(Duration::from_secs(10), listener.accept()).await
+        else {
+            return;
+        };
+        let _ = stream.set_nodelay(true);
+        while let Some(pcm_bytes) = rx.recv().await {
+            if stream.write_all(&pcm_bytes).await.is_err() {
+                break;
+            }
+        }
+        let _ = stream.shutdown().await;
+    });
+
+    (
+        Some(format!("tcp://127.0.0.1:{port}")),
+        Some(tx),
+        Some(task),
+    )
+}
+
+fn spawn_stderr_reader(
+    stderr: tokio::process::ChildStderr,
+    log_ring: Arc<Mutex<VecDeque<String>>>,
+    runtime_ref: Arc<Mutex<GroupRuntimeState>>,
+    secrets_owned: Vec<String>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        let mut prog = FfmpegProgress::default();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if parse_progress_line(&line, &mut prog) {
+                if let Ok(mut rt) = runtime_ref.lock() {
+                    rt.progress = prog.clone();
+                }
+                continue;
+            }
+            let secret_slices: Vec<&str> = secrets_owned.iter().map(String::as_str).collect();
+            let safe = redact_secrets(&line, &secret_slices);
+            if let Ok(mut ring) = log_ring.lock() {
+                if ring.len() >= STDERR_RING_CAP {
+                    ring.pop_front();
+                }
+                ring.push_back(safe);
+            }
+        }
+    })
+}
+
+fn sync_abr_runtime(
+    runtime: &Arc<Mutex<GroupRuntimeState>>,
+    abr: &DynamicBitrateController,
+    primary_dest_id: &str,
+    observed_override_kbps: Option<u32>,
+) {
+    if let Ok(mut rt) = runtime.lock() {
+        rt.abr = abr.telemetry(primary_dest_id);
+        if let Some(obs) = observed_override_kbps {
+            if obs > 0 && rt.progress.bitrate_kbps == 0 {
+                rt.progress.bitrate_kbps = obs;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_persistent_rtmp_group(
+    cfg: &SupervisorConfig,
+    current_bitrate_kbps: &mut u32,
+    abr: &mut DynamicBitrateController,
+    runtime: &Arc<Mutex<GroupRuntimeState>>,
+    cached_init: &mut Option<Vec<u8>>,
+    rx: &mut mpsc::Receiver<Vec<u8>>,
+    audio_rx: &mut Option<mpsc::Receiver<Vec<u8>>>,
+    abr_rx: &mut watch::Receiver<DynamicBitrateSettings>,
+    stop_rx: &mut watch::Receiver<bool>,
+    had_ever_published: &mut bool,
+) -> PersistentGroupOutcome {
+    let secret_refs: Vec<&str> = cfg.secrets.iter().map(String::as_str).collect();
+    let mut sessions: Vec<(String, PersistentRtmpSession)> = Vec::new();
+    let mut last_connect_err = String::new();
+
+    for target in &cfg.targets {
+        if *stop_rx.borrow() {
+            for (_, mut s) in sessions {
+                s.close().await;
+            }
+            return PersistentGroupOutcome::Stopped;
+        }
+
+        let connect_fut = PersistentRtmpSession::connect(&target.endpoint);
+        tokio::pin!(connect_fut);
+
+        let connected = tokio::select! {
+            res = &mut connect_fut => res,
+            _ = stop_rx.changed() => {
+                if *stop_rx.borrow() {
+                    for (_, mut s) in sessions {
+                        s.close().await;
+                    }
+                    return PersistentGroupOutcome::Stopped;
+                }
+                connect_fut.await
+            }
+        };
+
+        match connected {
+            Ok(session) => sessions.push((target.id.clone(), session)),
+            Err(err) => {
+                let safe = redact_secrets(&err, &secret_refs);
+                log::warn!(
+                    "[rtmp_publisher] falha ao conectar sessão persistente em {}: {safe}",
+                    target.name
+                );
+                last_connect_err = safe;
+            }
+        }
+    }
+
+    if sessions.is_empty() {
+        return if !*had_ever_published {
+            PersistentGroupOutcome::FallbackClassic(last_connect_err)
+        } else {
+            PersistentGroupOutcome::Reconnect(last_connect_err)
+        };
+    }
+
+    *had_ever_published = true;
+    if let Ok(mut rt) = runtime.lock() {
+        rt.state = "live".to_string();
+        rt.error = None;
+    }
+    sync_abr_runtime(runtime, abr, &cfg.primary_dest_id, None);
+
+    let mut rebaser = TimestampRebaser::new();
+    let mut local_encoder_failures: usize = 0;
+
+    loop {
+        if *stop_rx.borrow() {
+            for (_, mut s) in sessions {
+                s.close().await;
+            }
+            return PersistentGroupOutcome::Stopped;
+        }
+
+        let (audio_addr, audio_pipe_tx, audio_bridge_task) =
+            start_native_audio_bridge(cfg.input_mode).await;
+
+        let args = match cfg.input_mode {
+            MultistreamInputMode::WebmChunks => {
+                build_ffmpeg_flv_pipe_args(&cfg.encoder, cfg.fps, *current_bitrate_kbps)
+            }
+            MultistreamInputMode::NativeRaw => build_ffmpeg_native_args(
+                &cfg.encoder,
+                cfg.canvas_size.0,
+                cfg.canvas_size.1,
+                cfg.fps,
+                *current_bitrate_kbps,
+                audio_addr.as_deref(),
+                true,
+                &[],
+            ),
+        };
+
+        let mut cmd = Command::new(&cfg.bin);
+        cmd.args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        configure_no_window(&mut cmd);
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                for (_, mut s) in sessions {
+                    s.close().await;
+                }
+                return PersistentGroupOutcome::Reconnect(format!("Falha ao abrir FFmpeg: {e}"));
+            }
+        };
+
+        let child_stdin = child.stdin.take();
+        let child_stdout = child.stdout.take();
+        let child_stderr = child.stderr.take();
+        let log_ring = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(STDERR_RING_CAP)));
+
+        let stderr_task = child_stderr.map(|err_pipe| {
+            spawn_stderr_reader(err_pipe, log_ring.clone(), runtime.clone(), cfg.secrets.clone())
+        });
+
+        // Writer dedicado para stdin do FFmpeg local (desacoplado da rede RTMP para evitar deadlock).
+        let (enc_in_tx, mut enc_in_rx) = mpsc::channel::<Vec<u8>>(ENCODER_STDIN_QUEUE_CAP);
+        let init_for_encoder = if cfg.input_mode == MultistreamInputMode::WebmChunks
+            && rebaser.segment_count() > 0
+        {
+            cached_init.clone()
+        } else {
+            None
+        };
+        let stdin_task = tokio::spawn(async move {
+            let Some(mut w) = child_stdin else {
+                return;
+            };
+            if let Some(init) = init_for_encoder {
+                if w.write_all(&init).await.is_err() {
+                    return;
+                }
+            }
+            while let Some(chunk) = enc_in_rx.recv().await {
+                if w.write_all(&chunk).await.is_err() {
+                    break;
+                }
+            }
+            let _ = w.shutdown().await;
+        });
+
+        // Demuxer FLV dedicado lendo stdout (`-f flv pipe:1`) do FFmpeg local.
+        let (flv_tx, mut flv_rx) = mpsc::channel::<FlvTag>(FLV_TAG_QUEUE_CAP);
+        let stdout_task = tokio::spawn(async move {
+            let Some(mut out) = child_stdout else {
+                return;
+            };
+            let mut demuxer = FlvDemuxer::new();
+            let mut buf = vec![0u8; 16 * 1024];
+            loop {
+                match out.read(&mut buf).await {
+                    Ok(0) => break,
+                    Ok(n) => match demuxer.push(&buf[..n]) {
+                        Ok(tags) => {
+                            for tag in tags {
+                                if flv_tx.send(tag).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("[rtmp_publisher] erro no FlvDemuxer local: {e}");
+                            break;
+                        }
+                    },
+                    Err(_) => break,
+                }
+            }
+        });
+
+        let mut awaiting_keyframe = rebaser.segment_count() > 0;
+        let mut interval_write_lat_max_ms: f32 = 0.0;
+        let mut interval_bytes_sent: u64 = 0;
+        let mut interval_local_drops: u64 = 0;
+        let mut last_runtime_drops: u64 = runtime
+            .lock()
+            .map(|rt| rt.progress.dropped_frames.saturating_add(rt.dropped_input_chunks))
+            .unwrap_or(0);
+        let mut interval_started = Instant::now();
+
+        let mut abr_tick = tokio::time::interval(Duration::from_secs(1));
+        abr_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Consome o primeiro tick imediato do `tokio::time::interval`.
+        abr_tick.tick().await;
+
+        let outcome = loop {
+            tokio::select! {
+                _ = stop_rx.changed() => {
+                    if *stop_rx.borrow() {
+                        break PersistentCycleOutcome::Stop;
+                    }
+                }
+                Ok(()) = abr_rx.changed() => {
+                    let next_settings = abr_rx.borrow().clone();
+                    abr.update_settings(next_settings);
+                    sync_abr_runtime(runtime, abr, &cfg.primary_dest_id, None);
+                }
+                maybe_chunk = rx.recv() => {
+                    match maybe_chunk {
+                        Some(chunk) => {
+                            if cfg.input_mode == MultistreamInputMode::WebmChunks && cached_init.is_none() {
+                                *cached_init = Some(chunk.clone());
+                            }
+                            if let Err(mpsc::error::TrySendError::Full(_)) = enc_in_tx.try_send(chunk) {
+                                interval_local_drops = interval_local_drops.saturating_add(1);
+                            }
+                        }
+                        None => break PersistentCycleOutcome::Stop,
+                    }
+                }
+                maybe_pcm = recv_opt_audio(audio_rx), if audio_rx.is_some() => {
+                    match maybe_pcm {
+                        Some(pcm) => {
+                            if let Some(ref atx) = audio_pipe_tx {
+                                let _ = atx.try_send(pcm);
+                            }
+                        }
+                        None => {
+                            *audio_rx = None;
+                        }
+                    }
+                }
+                maybe_tag = flv_rx.recv() => {
+                    match maybe_tag {
+                        Some(mut tag) => {
+                            if awaiting_keyframe {
+                                if tag.is_sequence_header || tag.tag_type == FLV_TAG_SCRIPT_DATA {
+                                    // Headers de sequência e metadados sempre passam no hot-swap.
+                                } else if tag.tag_type == FLV_TAG_VIDEO && tag.is_video_keyframe {
+                                    awaiting_keyframe = false;
+                                } else {
+                                    continue;
+                                }
+                            }
+
+                            rebaser.rebase_tag(&mut tag);
+
+                            let mut dead_indices = Vec::new();
+                            let mut last_send_err = String::new();
+                            for (idx, (_, session)) in sessions.iter_mut().enumerate() {
+                                let bytes_before = session.bytes_sent();
+                                match session.send_flv_tag(&tag).await {
+                                    Ok(write_dur) => {
+                                        let lat_ms = write_dur.as_secs_f32() * 1000.0;
+                                        if lat_ms > interval_write_lat_max_ms {
+                                            interval_write_lat_max_ms = lat_ms;
+                                        }
+                                        let delta = session.bytes_sent().saturating_sub(bytes_before);
+                                        interval_bytes_sent = interval_bytes_sent.saturating_add(delta);
+                                        if let Ok(mut rt) = runtime.lock() {
+                                            rt.bytes_sent = rt.bytes_sent.saturating_add(delta);
+                                        }
+                                    }
+                                    Err(err) => {
+                                        last_send_err = redact_secrets(&err, &secret_refs);
+                                        dead_indices.push(idx);
+                                    }
+                                }
+                            }
+
+                            for idx in dead_indices.into_iter().rev() {
+                                let (dead_id, mut dead_session) = sessions.remove(idx);
+                                log::warn!(
+                                    "[rtmp_publisher] sessão persistente encerrada ({dead_id}): {last_send_err}"
+                                );
+                                dead_session.close().await;
+                            }
+
+                            if sessions.is_empty() {
+                                break PersistentCycleOutcome::TransportError(last_send_err);
+                            }
+                        }
+                        None => {
+                            let friendly = log_ring
+                                .lock()
+                                .map(|r| explain_ffmpeg_error(&r, &cfg.names, &cfg.endpoints))
+                                .unwrap_or_else(|_| "Encoder local encerrou inesperadamente.".to_string());
+                            break PersistentCycleOutcome::EncoderFailed(friendly);
+                        }
+                    }
+                }
+                _ = abr_tick.tick() => {
+                    let dt_secs = interval_started.elapsed().as_secs_f32().max(0.25);
+                    let target_count = sessions.len().max(1) as f64;
+                    let measured_kbps = ((interval_bytes_sent as f64 / target_count) * 8.0
+                        / 1000.0
+                        / dt_secs as f64)
+                        .round() as u32;
+
+                    let (ffmpeg_kbps, total_runtime_drops) = runtime
+                        .lock()
+                        .map(|rt| {
+                            (
+                                rt.progress.bitrate_kbps,
+                                rt.progress.dropped_frames.saturating_add(rt.dropped_input_chunks),
+                            )
+                        })
+                        .unwrap_or((0, last_runtime_drops));
+                    let observed_kbps = if measured_kbps > 0 { measured_kbps } else { ffmpeg_kbps };
+                    let runtime_drop_delta = total_runtime_drops.saturating_sub(last_runtime_drops);
+                    last_runtime_drops = total_runtime_drops;
+
+                    let in_occ = (rx.len() as f32 / CHUNK_QUEUE_CAP as f32).clamp(0.0, 1.0);
+                    let enc_occ = (ENCODER_STDIN_QUEUE_CAP.saturating_sub(enc_in_tx.capacity()) as f32
+                        / ENCODER_STDIN_QUEUE_CAP as f32)
+                        .clamp(0.0, 1.0);
+                    let flv_occ = (flv_rx.len() as f32 / FLV_TAG_QUEUE_CAP as f32).clamp(0.0, 1.0);
+
+                    let sample = CongestionSample {
+                        queue_occupancy: in_occ.max(enc_occ).max(flv_occ),
+                        write_latency_ms: interval_write_lat_max_ms,
+                        dropped_frames_delta: runtime_drop_delta.saturating_add(interval_local_drops),
+                        observed_bitrate_kbps: observed_kbps,
+                    };
+
+                    let decision = abr.evaluate(sample, Instant::now());
+                    sync_abr_runtime(runtime, abr, &cfg.primary_dest_id, Some(observed_kbps));
+
+                    interval_write_lat_max_ms = 0.0;
+                    interval_bytes_sent = 0;
+                    interval_local_drops = 0;
+                    interval_started = Instant::now();
+
+                    if let Some(new_kbps) = decision {
+                        log::info!(
+                            "[abr] hot-swap zero-disconnect ({}): {} -> {} kbps",
+                            cfg.names,
+                            *current_bitrate_kbps,
+                            new_kbps
+                        );
+                        break PersistentCycleOutcome::HotSwap(new_kbps);
+                    }
+                }
+            }
+        };
+
+        // Encerra APENAS o encoder FFmpeg local mantendo `sessions` RTMP vivas!
+        drop(enc_in_tx);
+        drop(audio_pipe_tx);
+        terminate_child(&mut child).await;
+        let _ = stdin_task.await;
+        let _ = stdout_task.await;
+        if let Some(t) = stderr_task {
+            let _ = t.await;
+        }
+        if let Some(t) = audio_bridge_task {
+            t.abort();
+        }
+
+        match outcome {
+            PersistentCycleOutcome::Stop => {
+                for (_, mut s) in sessions {
+                    s.close().await;
+                }
+                return PersistentGroupOutcome::Stopped;
+            }
+            PersistentCycleOutcome::HotSwap(new_kbps) => {
+                *current_bitrate_kbps = new_kbps;
+                rebaser.begin_new_segment();
+                local_encoder_failures = 0;
+                continue;
+            }
+            PersistentCycleOutcome::TransportError(err) => {
+                for (_, mut s) in sessions {
+                    s.close().await;
+                }
+                return PersistentGroupOutcome::Reconnect(err);
+            }
+            PersistentCycleOutcome::EncoderFailed(err) => {
+                local_encoder_failures += 1;
+                if local_encoder_failures <= 3 && !sessions.is_empty() {
+                    rebaser.begin_new_segment();
+                    continue;
+                }
+                for (_, mut s) in sessions {
+                    s.close().await;
+                }
+                return PersistentGroupOutcome::Reconnect(err);
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_classic_ffmpeg_cycle(
+    cfg: &SupervisorConfig,
+    current_bitrate_kbps: u32,
+    abr: &mut DynamicBitrateController,
+    runtime: &Arc<Mutex<GroupRuntimeState>>,
+    cached_init: &mut Option<Vec<u8>>,
+    replay_init: bool,
+    rx: &mut mpsc::Receiver<Vec<u8>>,
+    audio_rx: &mut Option<mpsc::Receiver<Vec<u8>>>,
+    abr_rx: &mut watch::Receiver<DynamicBitrateSettings>,
+    stop_rx: &mut watch::Receiver<bool>,
+    attempt: &mut usize,
+) -> ClassicCycleOutcome {
+    let secret_refs: Vec<&str> = cfg.secrets.iter().map(String::as_str).collect();
+    let (audio_addr, audio_pipe_tx, audio_bridge_task) =
+        start_native_audio_bridge(cfg.input_mode).await;
+
+    let args = match cfg.input_mode {
+        MultistreamInputMode::WebmChunks => {
+            build_ffmpeg_args(&cfg.encoder, &cfg.endpoints, cfg.fps, current_bitrate_kbps)
+        }
+        MultistreamInputMode::NativeRaw => build_ffmpeg_native_args(
+            &cfg.encoder,
+            cfg.canvas_size.0,
+            cfg.canvas_size.1,
+            cfg.fps,
+            current_bitrate_kbps,
+            audio_addr.as_deref(),
+            false,
+            &cfg.endpoints,
+        ),
+    };
+
+    let mut cmd = Command::new(&cfg.bin);
+    cmd.args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    configure_no_window(&mut cmd);
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            if let Some(t) = audio_bridge_task {
+                t.abort();
+            }
+            return ClassicCycleOutcome::Fatal(format!("Falha ao abrir FFmpeg: {e}"));
+        }
+    };
+
+    let mut stdin = child.stdin.take();
+    let stderr = child.stderr.take();
+    let log_ring = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(STDERR_RING_CAP)));
+    let stderr_task = stderr.map(|err_pipe| {
+        spawn_stderr_reader(err_pipe, log_ring.clone(), runtime.clone(), cfg.secrets.clone())
+    });
+
+    if replay_init && cfg.input_mode == MultistreamInputMode::WebmChunks {
+        if let (Some(ref init), Some(ref mut w)) = (&cached_init, &mut stdin) {
+            let _ = w.write_all(init).await;
+        }
+    }
+
+    let live_timer = tokio::time::sleep(Duration::from_secs(4));
+    tokio::pin!(live_timer);
+    let mut live_promoted = false;
+
+    let mut abr_tick = tokio::time::interval(Duration::from_secs(1));
+    abr_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    abr_tick.tick().await;
+
+    let mut interval_write_lat_max_ms: f32 = 0.0;
+    let mut last_runtime_drops: u64 = runtime
+        .lock()
+        .map(|rt| rt.progress.dropped_frames.saturating_add(rt.dropped_input_chunks))
+        .unwrap_or(0);
+
+    let outcome = loop {
+        tokio::select! {
+            _ = &mut live_timer, if !live_promoted => {
+                live_promoted = true;
+                *attempt = 0;
+                if let Ok(mut rt) = runtime.lock() {
+                    rt.state = "live".to_string();
+                    rt.error = None;
+                }
+            }
+            _ = stop_rx.changed() => {
+                if *stop_rx.borrow() {
+                    break ClassicCycleOutcome::Stop;
+                }
+            }
+            Ok(()) = abr_rx.changed() => {
+                abr.update_settings(abr_rx.borrow().clone());
+                sync_abr_runtime(runtime, abr, &cfg.primary_dest_id, None);
+            }
+            maybe_chunk = rx.recv() => {
+                match maybe_chunk {
+                    Some(chunk) => {
+                        if cfg.input_mode == MultistreamInputMode::WebmChunks && cached_init.is_none() {
+                            *cached_init = Some(chunk.clone());
+                        }
+                        if let Some(ref mut w) = stdin {
+                            let write_start = Instant::now();
+                            if let Err(e) = w.write_all(&chunk).await {
+                                break ClassicCycleOutcome::Reconnect(redact_secrets(
+                                    &e.to_string(),
+                                    &secret_refs,
+                                ));
+                            }
+                            let lat_ms = write_start.elapsed().as_secs_f32() * 1000.0;
+                            if lat_ms > interval_write_lat_max_ms {
+                                interval_write_lat_max_ms = lat_ms;
+                            }
+                            if let Ok(mut rt) = runtime.lock() {
+                                rt.bytes_sent = rt.bytes_sent.saturating_add(chunk.len() as u64);
+                            }
+                        }
+                    }
+                    None => break ClassicCycleOutcome::Stop,
+                }
+            }
+            maybe_pcm = recv_opt_audio(audio_rx), if audio_rx.is_some() => {
+                match maybe_pcm {
+                    Some(pcm) => {
+                        if let Some(ref atx) = audio_pipe_tx {
+                            let _ = atx.try_send(pcm);
+                        }
+                    }
+                    None => {
+                        *audio_rx = None;
+                    }
+                }
+            }
+            _ = abr_tick.tick() => {
+                let (observed_kbps, total_drops) = runtime
+                    .lock()
+                    .map(|rt| {
+                        (
+                            rt.progress.bitrate_kbps,
+                            rt.progress.dropped_frames.saturating_add(rt.dropped_input_chunks),
+                        )
+                    })
+                    .unwrap_or((0, last_runtime_drops));
+                let drop_delta = total_drops.saturating_sub(last_runtime_drops);
+                last_runtime_drops = total_drops;
+
+                let sample = CongestionSample {
+                    queue_occupancy: (rx.len() as f32 / CHUNK_QUEUE_CAP as f32).clamp(0.0, 1.0),
+                    write_latency_ms: interval_write_lat_max_ms,
+                    dropped_frames_delta: drop_delta,
+                    observed_bitrate_kbps: observed_kbps,
+                };
+                interval_write_lat_max_ms = 0.0;
+
+                let decision = abr.evaluate(sample, Instant::now());
+                sync_abr_runtime(runtime, abr, &cfg.primary_dest_id, None);
+                if let Some(new_kbps) = decision {
+                    log::info!(
+                        "[abr] ajuste de bitrate em modo FFmpeg clássico ({}): {} -> {} kbps",
+                        cfg.names,
+                        current_bitrate_kbps,
+                        new_kbps
+                    );
+                    break ClassicCycleOutcome::HotSwap(new_kbps);
+                }
+            }
+            status = child.wait() => {
+                let reason = match status {
+                    Ok(st) if st.success() => format!("A transmissão para {} encerrou.", cfg.names),
+                    Ok(st) => format!("FFmpeg encerrou (código {:?})", st.code()),
+                    Err(e) => e.to_string(),
+                };
+                break ClassicCycleOutcome::Reconnect(reason);
+            }
+        }
+    };
+
+    drop(stdin);
+    drop(audio_pipe_tx);
+    terminate_child(&mut child).await;
+    if let Some(t) = stderr_task {
+        let _ = t.await;
+    }
+    if let Some(t) = audio_bridge_task {
+        t.abort();
+    }
+
+    match outcome {
+        ClassicCycleOutcome::Reconnect(_) => {
+            let friendly = log_ring
+                .lock()
+                .map(|r| explain_ffmpeg_error(&r, &cfg.names, &cfg.endpoints))
+                .unwrap_or_else(|_| format!("A transmissão para {} caiu.", cfg.names));
+            ClassicCycleOutcome::Reconnect(friendly)
+        }
+        other => other,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_pipeline_supervisor(
     bin: String,
     encoder: String,
     fps: u32,
-    bitrate_kbps: u32,
+    configured_bitrate_kbps: u32,
+    canvas_size: (u32, u32),
+    input_mode: MultistreamInputMode,
     targets: Vec<ResolvedTarget>,
     runtime: Arc<Mutex<GroupRuntimeState>>,
     mut rx: mpsc::Receiver<Vec<u8>>,
+    mut audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
+    mut abr_rx: watch::Receiver<DynamicBitrateSettings>,
     mut stop_rx: watch::Receiver<bool>,
 ) {
     let endpoints: Vec<String> = targets.iter().map(|t| t.endpoint.clone()).collect();
     let secrets: Vec<String> = targets.iter().map(|t| t.secret.clone()).collect();
-    let secret_refs: Vec<&str> = secrets.iter().map(String::as_str).collect();
     let names = targets
         .iter()
         .map(|t| t.name.as_str())
         .collect::<Vec<_>>()
         .join(" + ");
-    let args = build_ffmpeg_args(&encoder, &endpoints, fps, bitrate_kbps);
+    let primary_dest_id = targets.first().map(|t| t.id.clone()).unwrap_or_default();
 
+    let cfg = SupervisorConfig {
+        bin,
+        encoder,
+        fps,
+        canvas_size,
+        input_mode,
+        targets,
+        endpoints,
+        secrets,
+        names,
+        primary_dest_id,
+    };
+
+    let mut abr =
+        DynamicBitrateController::new(configured_bitrate_kbps, abr_rx.borrow().clone());
+    sync_abr_runtime(&runtime, &abr, &cfg.primary_dest_id, None);
+
+    let mut current_bitrate_kbps = configured_bitrate_kbps;
     let mut attempt: usize = 0;
     let mut cached_init: Option<Vec<u8>> = None;
+    let mut replay_init_next = false;
+    let mut persistent_rtmp_disabled = false;
+    let mut had_ever_published_persistent = false;
 
     loop {
         if *stop_rx.borrow() {
@@ -992,130 +2101,88 @@ async fn run_pipeline_supervisor(
             }
         }
 
-        let mut cmd = Command::new(&bin);
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        configure_no_window(&mut cmd);
+        let settings_now = abr_rx.borrow().clone();
+        abr.update_settings(settings_now.clone());
 
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
+        if settings_now.enabled
+            && settings_now.use_persistent_rtmp
+            && !persistent_rtmp_disabled
+        {
+            match run_persistent_rtmp_group(
+                &cfg,
+                &mut current_bitrate_kbps,
+                &mut abr,
+                &runtime,
+                &mut cached_init,
+                &mut rx,
+                &mut audio_rx,
+                &mut abr_rx,
+                &mut stop_rx,
+                &mut had_ever_published_persistent,
+            )
+            .await
+            {
+                PersistentGroupOutcome::Stopped => break,
+                PersistentGroupOutcome::FallbackClassic(reason) => {
+                    log::warn!(
+                        "[multistream] RTMP persistente indisponível para {} ({reason}); usando FFmpeg direto com ABR.",
+                        cfg.names
+                    );
+                    persistent_rtmp_disabled = true;
+                    replay_init_next = cached_init.is_some();
+                    continue;
+                }
+                PersistentGroupOutcome::Reconnect(reason) => {
+                    attempt += 1;
+                    if let Ok(mut rt) = runtime.lock() {
+                        rt.error = Some(reason);
+                    }
+                    if attempt > RECONNECT_BACKOFF_SECS.len() {
+                        if let Ok(mut rt) = runtime.lock() {
+                            rt.state = "error".to_string();
+                        }
+                        break;
+                    }
+                    continue;
+                }
+            }
+        }
+
+        let cycle = run_classic_ffmpeg_cycle(
+            &cfg,
+            current_bitrate_kbps,
+            &mut abr,
+            &runtime,
+            &mut cached_init,
+            attempt > 0 || replay_init_next,
+            &mut rx,
+            &mut audio_rx,
+            &mut abr_rx,
+            &mut stop_rx,
+            &mut attempt,
+        )
+        .await;
+        replay_init_next = false;
+
+        match cycle {
+            ClassicCycleOutcome::Stop => break,
+            ClassicCycleOutcome::HotSwap(new_kbps) => {
+                current_bitrate_kbps = new_kbps;
+                replay_init_next = true;
+                attempt = 0;
+            }
+            ClassicCycleOutcome::Fatal(err) => {
                 if let Ok(mut rt) = runtime.lock() {
                     rt.state = "error".to_string();
-                    rt.error = Some(format!("Falha ao abrir FFmpeg: {e}"));
+                    rt.error = Some(err);
                 }
                 break;
             }
-        };
-
-        let mut stdin = child.stdin.take();
-        let stderr = child.stderr.take();
-        let log_ring = Arc::new(Mutex::new(VecDeque::<String>::with_capacity(STDERR_RING_CAP)));
-
-        let stderr_task = stderr.map(|err_pipe| {
-            let log_ring = log_ring.clone();
-            let runtime_ref = runtime.clone();
-            let secrets_owned = secrets.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(err_pipe).lines();
-                let mut prog = FfmpegProgress::default();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if parse_progress_line(&line, &mut prog) {
-                        if let Ok(mut rt) = runtime_ref.lock() {
-                            rt.progress = prog.clone();
-                        }
-                        continue;
-                    }
-                    let secret_slices: Vec<&str> =
-                        secrets_owned.iter().map(String::as_str).collect();
-                    let safe = redact_secrets(&line, &secret_slices);
-                    if let Ok(mut ring) = log_ring.lock() {
-                        if ring.len() >= STDERR_RING_CAP {
-                            ring.pop_front();
-                        }
-                        ring.push_back(safe);
-                    }
-                }
-            })
-        });
-
-        // Se for reconexão e já guardamos o init segment, reenvia primeiro para destravar o demuxer WebM.
-        if attempt > 0 {
-            if let (Some(ref init), Some(ref mut w)) = (&cached_init, &mut stdin) {
-                let _ = w.write_all(init).await;
-            }
-        }
-
-        let live_timer = tokio::time::sleep(Duration::from_secs(4));
-        tokio::pin!(live_timer);
-        let mut live_promoted = false;
-
-        let exit_reason: Result<bool, String> = loop {
-            tokio::select! {
-                _ = &mut live_timer, if !live_promoted => {
-                    live_promoted = true;
-                    attempt = 0;
-                    if let Ok(mut rt) = runtime.lock() {
-                        rt.state = "live".to_string();
-                        rt.error = None;
-                    }
-                }
-                _ = stop_rx.changed() => {
-                    if *stop_rx.borrow() {
-                        break Ok(true); // parada intencional
-                    }
-                }
-                maybe_chunk = rx.recv() => {
-                    match maybe_chunk {
-                        Some(chunk) => {
-                            if cached_init.is_none() {
-                                cached_init = Some(chunk.clone());
-                            }
-                            if let Some(ref mut w) = stdin {
-                                if let Err(e) = w.write_all(&chunk).await {
-                                    break Err(redact_secrets(&e.to_string(), &secret_refs));
-                                }
-                                if let Ok(mut rt) = runtime.lock() {
-                                    rt.bytes_sent = rt.bytes_sent.saturating_add(chunk.len() as u64);
-                                }
-                            }
-                        }
-                        None => break Ok(true),
-                    }
-                }
-                status = child.wait() => {
-                    match status {
-                        Ok(st) if st.success() => break Ok(false),
-                        Ok(st) => break Err(format!("FFmpeg encerrou (código {:?})", st.code())),
-                        Err(e) => break Err(e.to_string()),
-                    }
-                }
-            }
-        };
-
-        drop(stdin);
-        terminate_child(&mut child).await;
-        if let Some(t) = stderr_task {
-            let _ = t.await;
-        }
-
-        match exit_reason {
-            Ok(true) => break, // cancelado ou canal fechado
-            Ok(false) | Err(_) => {
+            ClassicCycleOutcome::Reconnect(friendly) => {
                 attempt += 1;
-                let friendly = log_ring
-                    .lock()
-                    .map(|r| explain_ffmpeg_error(&r, &names, &endpoints))
-                    .unwrap_or_else(|_| format!("A transmissão para {names} caiu."));
-
                 if let Ok(mut rt) = runtime.lock() {
                     rt.error = Some(friendly);
                 }
-
-                // Se passou do limite de tentativas consecutivas sem estabilizar, marca error final.
                 if attempt > RECONNECT_BACKOFF_SECS.len() {
                     if let Ok(mut rt) = runtime.lock() {
                         rt.state = "error".to_string();
@@ -1186,6 +2253,161 @@ mod tests {
         assert!(tee_spec.contains("[f=flv:onfail=ignore]rtmp\\://live.twitch.tv/app/k1"));
         assert!(tee_spec.contains("|[f=flv:onfail=ignore]rtmps\\://a.rtmp.youtube.com/live2/k2"));
         assert!(multi.contains(&"+global_header".to_string()));
+    }
+
+    #[test]
+    fn test_build_ffmpeg_flv_pipe_args() {
+        let args = build_ffmpeg_flv_pipe_args("h264_nvenc", 60, 4500);
+        assert!(args.contains(&"pipe:0".to_string()));
+        assert!(args.contains(&"pipe:1".to_string()));
+        assert!(args.contains(&"pipe:2".to_string()));
+        assert!(args.contains(&"no_duration_filesize".to_string()));
+        assert!(args.contains(&"-flush_packets".to_string()));
+        assert!(args.contains(&"4500k".to_string()));
+        assert!(args.contains(&"9000k".to_string()));
+        assert!(!args.contains(&"tee".to_string()));
+    }
+
+    #[test]
+    fn test_build_ffmpeg_native_args() {
+        let flv_args = build_ffmpeg_native_args(
+            "libx264",
+            1920,
+            1080,
+            60,
+            6000,
+            Some("tcp://127.0.0.1:45555"),
+            true,
+            &[],
+        );
+        assert!(flv_args.contains(&"rawvideo".to_string()));
+        assert!(flv_args.contains(&"bgra".to_string()));
+        assert!(flv_args.contains(&"1920x1080".to_string()));
+        assert!(flv_args.contains(&"f32le".to_string()));
+        assert!(flv_args.contains(&"tcp://127.0.0.1:45555".to_string()));
+        assert!(flv_args.contains(&"pipe:1".to_string()));
+        assert!(flv_args.contains(&"1:a:0".to_string()));
+
+        let direct_args = build_ffmpeg_native_args(
+            "h264_qsv",
+            1080,
+            1920,
+            30,
+            3500,
+            None,
+            false,
+            &["rtmp://live.twitch.tv/app/key".to_string()],
+        );
+        assert!(direct_args.contains(&"1080x1920".to_string()));
+        assert!(direct_args
+            .iter()
+            .any(|a| a.starts_with("anullsrc=channel_layout=stereo")));
+        assert!(direct_args.contains(&"rtmp://live.twitch.tv/app/key".to_string()));
+        assert!(!direct_args.contains(&"pipe:1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_abr_telemetry_aggregation_and_summary() {
+        let mut engine = MultistreamEngine::new();
+        assert_eq!(engine.abr_summary(), (false, 0, 0.0));
+        assert!(engine.abr_telemetry().is_empty());
+
+        let mut abr_cfg = DynamicBitrateSettings::default();
+        abr_cfg.min_bitrate_kbps = 1200;
+        engine.set_dynamic_bitrate(abr_cfg.clone());
+        assert_eq!(engine.dynamic_bitrate().min_bitrate_kbps, 1200);
+
+        let rt_h = Arc::new(Mutex::new(GroupRuntimeState {
+            dest_ids: vec!["twitch".to_string(), "youtube".to_string()],
+            orientation: CanvasOrientation::Horizontal,
+            state: "live".to_string(),
+            started_at: Some(Instant::now()),
+            bytes_sent: 100_000,
+            dropped_input_chunks: 0,
+            progress: FfmpegProgress::default(),
+            abr: AbrDestinationTelemetry {
+                id: "twitch".to_string(),
+                configured_bitrate_kbps: 6000,
+                current_bitrate_kbps: 4500,
+                observed_bitrate_kbps: 4480,
+                congestion_level: 0.62,
+                write_latency_ms: 195.0,
+                adjustments: 1,
+                state: "congested".to_string(),
+            },
+            error: None,
+        }));
+        let rt_v = Arc::new(Mutex::new(GroupRuntimeState {
+            dest_ids: vec!["tiktok".to_string()],
+            orientation: CanvasOrientation::Vertical,
+            state: "live".to_string(),
+            started_at: Some(Instant::now()),
+            bytes_sent: 50_000,
+            dropped_input_chunks: 0,
+            progress: FfmpegProgress::default(),
+            abr: AbrDestinationTelemetry {
+                id: "tiktok".to_string(),
+                configured_bitrate_kbps: 3000,
+                current_bitrate_kbps: 3000,
+                observed_bitrate_kbps: 2990,
+                congestion_level: 0.15,
+                write_latency_ms: 22.0,
+                adjustments: 0,
+                state: "nominal".to_string(),
+            },
+            error: None,
+        }));
+
+        let (tx1, _rx1) = mpsc::channel(4);
+        let (tx2, _rx2) = mpsc::channel(4);
+        let (abr_tx1, _abr_rx1) = watch::channel(abr_cfg.clone());
+        let (abr_tx2, _abr_rx2) = watch::channel(abr_cfg);
+        let (stop_tx1, _stop_rx1) = watch::channel(false);
+        let (stop_tx2, _stop_rx2) = watch::channel(false);
+
+        engine.groups.push(PipelineGroup {
+            orientation: CanvasOrientation::Horizontal,
+            input_mode: MultistreamInputMode::WebmChunks,
+            canvas_size: DEFAULT_CANVAS_H,
+            tx: tx1,
+            audio_tx: None,
+            abr_settings_tx: abr_tx1,
+            stop_tx: stop_tx1,
+            task: tokio::spawn(async {}),
+            runtime: rt_h,
+        });
+        engine.groups.push(PipelineGroup {
+            orientation: CanvasOrientation::Vertical,
+            input_mode: MultistreamInputMode::NativeRaw,
+            canvas_size: DEFAULT_CANVAS_V,
+            tx: tx2,
+            audio_tx: None,
+            abr_settings_tx: abr_tx2,
+            stop_tx: stop_tx2,
+            task: tokio::spawn(async {}),
+            runtime: rt_v,
+        });
+        engine.active = true;
+
+        let telemetry = engine.abr_telemetry();
+        assert_eq!(telemetry.len(), 3);
+        let ids: Vec<&str> = telemetry.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"twitch"));
+        assert!(ids.contains(&"youtube"));
+        assert!(ids.contains(&"tiktok"));
+
+        let (abr_active, target_kbps, max_cong) = engine.abr_summary();
+        assert!(abr_active);
+        assert_eq!(target_kbps, 7500);
+        assert!((max_cong - 0.62).abs() < 0.001);
+
+        // Desabilitar ABR mantém target_kbps visível mas marca abr_active = false
+        let mut disabled = engine.dynamic_bitrate().clone();
+        disabled.enabled = false;
+        engine.set_dynamic_bitrate(disabled);
+        let (abr_active_off, target_off, _) = engine.abr_summary();
+        assert!(!abr_active_off);
+        assert_eq!(target_off, 7500);
     }
 
     #[test]

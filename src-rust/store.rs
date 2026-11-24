@@ -43,6 +43,10 @@ pub fn twitch_refresh_secret(destination_id: &str) -> String {
     format!("twitchRefresh:{destination_id}")
 }
 
+pub fn obs_ws_password_secret() -> String {
+    "obsWsPassword".to_string()
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -382,6 +386,7 @@ fn default_main_scene(include_mic: bool) -> Scene {
         name: "Cena principal".to_string(),
         items,
         created_at: now_ms(),
+        transition_override: None,
     }
 }
 

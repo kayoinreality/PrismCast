@@ -10,6 +10,7 @@ export const PROTOCOL_VERSION = 1
 export const DISCOVERY_PORT = 41234
 export const SIGNALING_PORT = 41235
 export const RUST_RPC_PORT = 41236
+export const OBS_WS_DEFAULT_PORT = 4455
 
 export const ANNOUNCE_INTERVAL_MS = 2000
 export const HOST_TTL_MS = 6000
@@ -206,7 +207,38 @@ export interface SourceTransform {
   opacity?: number
 }
 
-export type TransitionType = 'cut' | 'fade' | 'fade-to-black' | 'fade_to_black' | 'slide'
+export type TransitionType =
+  | 'cut'
+  | 'fade'
+  | 'fade-to-black'
+  | 'fade_to_black'
+  | 'slide'
+  | 'stinger'
+  | 'luma-wipe'
+  | 'custom-shader'
+
+export type TransitionEasing = 'linear' | 'ease-in-out' | 'cubic-out' | 'expo-out'
+
+export type CustomShaderPreset = 'zoom-blur' | 'radial-wipe' | 'glitch-cut' | 'swirl' | 'custom-wgsl'
+
+export interface CustomTransitionConfig {
+  stingerPath: string | null
+  stingerTransitionPointMs: number
+  stingerAudioGainDb: number
+  lumaMattePath: string | null
+  lumaPreset: string
+  lumaSoftness: number
+  lumaInvert: boolean
+  shaderPreset: CustomShaderPreset
+  customWgsl: string | null
+  easing: TransitionEasing
+}
+
+export interface SceneTransitionOverride {
+  transitionType: TransitionType
+  durationMs: number
+  custom?: CustomTransitionConfig | null
+}
 
 export interface SceneItem {
   id: string
@@ -229,6 +261,7 @@ export interface Scene {
   name: string
   items: SceneItem[]
   createdAt: number
+  transitionOverride?: SceneTransitionOverride | null
 }
 
 export interface StudioScenesState {
@@ -238,6 +271,7 @@ export interface StudioScenesState {
   studioMode: boolean
   transitionType: TransitionType
   transitionDurationMs: number
+  customTransition?: CustomTransitionConfig
 }
 
 // -------------------------------------- Browser sources (widgets) renderizados fora da tela
@@ -314,6 +348,41 @@ export interface WidgetKit {
 
 // ------------------------------------------------ Mixer de Áudio & Estúdio
 
+export type AudioPluginFormat = 'vst3' | 'clap'
+
+export interface AudioPluginParam {
+  id: number
+  name: string
+  value: number
+  min: number
+  max: number
+  defaultValue: number
+}
+
+export interface AudioPluginSlot {
+  id: string
+  name: string
+  vendor: string
+  format: AudioPluginFormat
+  path: string
+  pluginUid: string
+  enabled: boolean
+  wetDry: number
+  stateB64?: string | null
+  params: Record<string, number>
+}
+
+export interface AudioPluginInfo {
+  name: string
+  vendor: string
+  version: string
+  format: AudioPluginFormat
+  path: string
+  pluginUid: string
+  hasGui: boolean
+  params: AudioPluginParam[]
+}
+
 /**
  * Filtros de uma fonte de áudio, na ordem em que o som passa por eles
  * (como a janela de Filtros do OBS).
@@ -347,6 +416,8 @@ export interface AudioFilters {
   duckingSourceId?: string | null
   duckingAmountDb?: number
   duckingReleaseMs?: number
+  /** Cadeia de plugins VST3 / CLAP por canal */
+  plugins?: AudioPluginSlot[]
 }
 
 export type AudioChannelKind = 'desktop' | 'mic' | 'app' | 'party_voice'
@@ -389,6 +460,95 @@ export interface HotkeyConflict {
   actions: HotkeyAction[]
 }
 
+export type GpuCaptureBackendKind =
+  | 'auto'
+  | 'dxgi-duplication'
+  | 'windows-graphics-capture'
+  | 'pipewire-dmabuf'
+  | 'software-fallback'
+
+export interface GpuPipelineSettings {
+  zeroCopyEnabled: boolean
+  preferWgpu: boolean
+  captureBackend: GpuCaptureBackendKind
+  nativeEncoderPipe: boolean
+}
+
+export interface GpuPipelineStatus {
+  zeroCopyActive: boolean
+  compositorBackend: string
+  captureBackend: string
+  adapterName: string
+  driverInfo: string
+  frameCopyCount: number
+  activeTextures: number
+}
+
+export interface DynamicBitrateSettings {
+  enabled: boolean
+  minBitrateKbps: number
+  stepDownRatio: number
+  stepUpKbps: number
+  stabilityWindowSecs: number
+  usePersistentRtmp: boolean
+}
+
+export interface AbrDestinationTelemetry {
+  id: string
+  configuredBitrateKbps: number
+  currentBitrateKbps: number
+  observedBitrateKbps: number
+  congestionLevel: number
+  writeLatencyMs: number
+  adjustments: number
+  state: 'nominal' | 'congested' | 'recovering' | 'floor'
+}
+
+export interface VirtualCameraSettings {
+  enabled: boolean
+  orientation: CanvasOrientation
+  fps: number
+  deviceName: string
+  linuxDevicePath: string | null
+}
+
+export interface VirtualCameraDevice {
+  id: string
+  name: string
+  backend: string
+  available: boolean
+}
+
+export interface VirtualCameraStatus {
+  active: boolean
+  backend: string
+  device: string
+  orientation: CanvasOrientation
+  width: number
+  height: number
+  fps: number
+  framesSent: number
+  error: string | null
+}
+
+export interface ExternalControlSettings {
+  obsWsEnabled: boolean
+  obsWsPort: number
+  obsWsHasPassword: boolean
+  obsWsAllowLan: boolean
+  rpcExternalEnabled: boolean
+  allowBrowserOrigins: string[]
+}
+
+export interface ExternalControlStatus {
+  obsWsRunning: boolean
+  obsWsPort: number
+  obsWsClients: number
+  rpcWsPort: number
+  rpcWsClients: number
+  error: string | null
+}
+
 export interface TelemetryStats {
   compositorFps: number
   targetFps: number
@@ -399,6 +559,14 @@ export interface TelemetryStats {
   cpuFallback: boolean
   micMutedSpeaking: boolean
   replayBufferedSeconds: number
+  zeroCopyActive?: boolean
+  compositorBackend?: string
+  abrActive?: boolean
+  abrTargetBitrateKbps?: number
+  abrCongestionLevel?: number
+  virtualCamActive?: boolean
+  externalClients?: number
+  audioRuntimeActive?: boolean
 }
 
 /** Estado vivo de um canal (não vai para as preferências). */

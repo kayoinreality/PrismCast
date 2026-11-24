@@ -1,9 +1,26 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { AudioApp, AudioChannel, AudioFilters, AudioMonitorMode } from '@shared/protocol'
+import type {
+  AudioApp,
+  AudioChannel,
+  AudioFilters,
+  AudioMonitorMode,
+  AudioPluginInfo,
+  AudioPluginSlot
+} from '@shared/protocol'
 import { defaultFilters, MIN_DB } from '@shared/audio'
 import { Modal } from '@/components/Modal'
-import { Button, Field, IconButton, Segmented, Slider, TextInput, Toggle } from '@/components/ui'
-import { IconApp, IconRefresh, IconSearch, IconVolume } from '@/components/Icons'
+import { Badge, Button, Field, IconButton, Segmented, Slider, TextInput, Toggle } from '@/components/ui'
+import {
+  IconApp,
+  IconDown,
+  IconExternal,
+  IconPlus,
+  IconRefresh,
+  IconSearch,
+  IconTrash,
+  IconUp,
+  IconVolume
+} from '@/components/Icons'
 import { useEngineState, useStudio } from '@/studio/StudioContext'
 import { studioStore } from '@/studio/StudioStore'
 import { KindIcon, Meter, type useMeterLoop } from './MixerDock'
@@ -76,7 +93,8 @@ function Num({
           {value > 0 && unit === 'dB' && (label.includes('Ganho') || label.includes('Graves') || label.includes('Médios') || label.includes('Agudos'))
             ? '+'
             : ''}
-          {Number.isInteger(step) ? Math.round(value) : value.toFixed(1)} {unit}
+          {Number.isInteger(step) ? Math.round(value) : step < 0.1 ? value.toFixed(2) : value.toFixed(1)}
+          {unit ? ` ${unit}` : ''}
         </span>
       </div>
       <Slider value={value} min={min} max={max} step={step} onChange={onChange} disabled={disabled} />
@@ -265,6 +283,339 @@ const MONITOR_OPTIONS: Array<{ value: AudioMonitorMode; label: string; hint: str
   { value: 'monitor', label: 'Live e fone', hint: 'Ouve no fone o que vai para a live' },
   { value: 'monitor-only', label: 'Só no fone', hint: 'Não vai para a live' }
 ]
+
+function PluginChainCard({
+  channelId,
+  slots,
+  onChangeSlots
+}: {
+  channelId: string
+  slots: AudioPluginSlot[]
+  onChangeSlots: (next: AudioPluginSlot[]) => void
+}): React.JSX.Element {
+  const { toast } = useStudio()
+  const [scanning, setScanning] = useState(false)
+  const [scanned, setScanned] = useState(false)
+  const [discovered, setDiscovered] = useState<AudioPluginInfo[]>([])
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [openingGuiId, setOpeningGuiId] = useState<string | null>(null)
+
+  const scanPlugins = async (): Promise<void> => {
+    const api = window.api.plugins
+    if (!api) {
+      toast('Host de plugins VST3 / CLAP indisponível neste ambiente', 'bad')
+      return
+    }
+    setScanning(true)
+    try {
+      const list = await api.scan()
+      const items = Array.isArray(list) ? list : []
+      setDiscovered(items)
+      setScanned(true)
+      if (items.length === 0) {
+        toast('Nenhum plugin VST3 ou CLAP encontrado nas pastas padrão', 'info')
+      } else {
+        toast(`${items.length} plugin${items.length > 1 ? 's' : ''} VST3/CLAP encontrado${items.length > 1 ? 's' : ''}`, 'good')
+      }
+    } catch (err) {
+      setScanned(true)
+      setDiscovered([])
+      toast(err instanceof Error ? err.message : 'Falha ao escanear plugins', 'bad')
+    } finally {
+      setScanning(false)
+    }
+  }
+
+  const addPlugin = (info: AudioPluginInfo): void => {
+    const params: Record<string, number> = {}
+    for (const p of info.params ?? []) {
+      params[String(p.id)] = p.defaultValue
+    }
+    const slot: AudioPluginSlot = {
+      id: `plug-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      name: info.name,
+      vendor: info.vendor,
+      format: info.format,
+      path: info.path,
+      pluginUid: info.pluginUid,
+      enabled: true,
+      wetDry: 1,
+      stateB64: null,
+      params
+    }
+    onChangeSlots([...slots, slot])
+    if ((info.params ?? []).length > 0) setExpandedId(slot.id)
+  }
+
+  const updateSlot = (slotId: string, patch: Partial<AudioPluginSlot>): void => {
+    onChangeSlots(slots.map((s) => (s.id === slotId ? { ...s, ...patch } : s)))
+  }
+
+  const moveSlot = (idx: number, delta: -1 | 1): void => {
+    const to = idx + delta
+    if (to < 0 || to >= slots.length) return
+    const next = [...slots]
+    const [moved] = next.splice(idx, 1)
+    next.splice(to, 0, moved)
+    onChangeSlots(next)
+  }
+
+  const removeSlot = (slotId: string): void => {
+    onChangeSlots(slots.filter((s) => s.id !== slotId))
+    if (expandedId === slotId) setExpandedId(null)
+  }
+
+  const openGui = async (slot: AudioPluginSlot): Promise<void> => {
+    const api = window.api.plugins
+    if (!api) return
+    setOpeningGuiId(slot.id)
+    try {
+      const res = await api.openGui(channelId, slot.id)
+      if (!res.ok) {
+        toast(res.error || `Não foi possível abrir a interface de ${slot.name}`, 'bad')
+      }
+    } catch (err) {
+      toast(err instanceof Error ? err.message : 'Erro ao abrir UI do plugin', 'bad')
+    } finally {
+      setOpeningGuiId(null)
+    }
+  }
+
+  const setParam = (slot: AudioPluginSlot, paramId: number, value: number): void => {
+    updateSlot(slot.id, {
+      params: {
+        ...slot.params,
+        [String(paramId)]: value
+      }
+    })
+    void window.api.plugins?.setParam(channelId, slot.id, paramId, value).catch(() => {})
+  }
+
+  return (
+    <FilterCard
+      title="Plugins VST3 / CLAP"
+      hint="Processadores externos em cadeia por canal (EQ profissional, de-esser, RNNoise, reverb)"
+      on={slots.some((s) => s.enabled)}
+    >
+      <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <span className="hint">
+          {slots.length === 0
+            ? 'Nenhum plugin ativo neste canal.'
+            : `${slots.length} plugin${slots.length > 1 ? 's' : ''} na cadeia (${slots.filter((s) => s.enabled).length} ativo${slots.filter((s) => s.enabled).length === 1 ? '' : 's'})`}
+        </span>
+        <Button
+          size="sm"
+          variant="subtle"
+          loading={scanning}
+          icon={<IconRefresh size={14} />}
+          onClick={() => void scanPlugins()}
+        >
+          Escanear plugins
+        </Button>
+      </div>
+
+      {slots.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--sp-2)' }}>
+          {slots.map((slot, idx) => {
+            const info = discovered.find(
+              (d) => (d.pluginUid && d.pluginUid === slot.pluginUid) || d.path === slot.path
+            )
+            const paramDefs =
+              info && info.params.length > 0
+                ? info.params
+                : Object.entries(slot.params ?? {}).map(([k, v]) => ({
+                    id: Number(k),
+                    name: `Parâmetro #${k}`,
+                    value: v,
+                    min: 0,
+                    max: 1,
+                    defaultValue: v
+                  }))
+            const isExpanded = expandedId === slot.id
+            const wetPct = Math.round(Math.max(0, Math.min(1, slot.wetDry ?? 1)) * 100)
+
+            return (
+              <div
+                key={slot.id}
+                style={{
+                  padding: '10px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'var(--bg-elevated)',
+                  border: `1px solid ${slot.enabled ? 'var(--accent-line)' : 'var(--border)'}`,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--sp-2)',
+                  opacity: slot.enabled ? 1 : 0.7
+                }}
+              >
+                <div className="row" style={{ alignItems: 'center', gap: 'var(--sp-2)' }}>
+                  <Badge tone={slot.format === 'clap' ? 'live' : 'accent'}>
+                    {slot.format.toUpperCase()}
+                  </Badge>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {slot.name}
+                    </div>
+                    {slot.vendor && (
+                      <div className="hint" style={{ fontSize: 11.5 }}>
+                        {slot.vendor}
+                      </div>
+                    )}
+                  </div>
+                  <Toggle
+                    label=""
+                    ariaLabel={slot.enabled ? `Ignorar ${slot.name}` : `Ativar ${slot.name}`}
+                    checked={slot.enabled}
+                    onChange={(v) => updateSlot(slot.id, { enabled: v })}
+                  />
+                  <IconButton
+                    label="Subir na cadeia"
+                    disabled={idx === 0}
+                    onClick={() => moveSlot(idx, -1)}
+                  >
+                    <IconUp size={14} />
+                  </IconButton>
+                  <IconButton
+                    label="Descer na cadeia"
+                    disabled={idx === slots.length - 1}
+                    onClick={() => moveSlot(idx, 1)}
+                  >
+                    <IconDown size={14} />
+                  </IconButton>
+                  <IconButton
+                    label={`Remover ${slot.name}`}
+                    variant="danger"
+                    onClick={() => removeSlot(slot.id)}
+                  >
+                    <IconTrash size={14} />
+                  </IconButton>
+                </div>
+
+                <Num
+                  label="Mix Wet / Dry"
+                  value={wetPct}
+                  min={0}
+                  max={100}
+                  step={1}
+                  unit="%"
+                  disabled={!slot.enabled}
+                  onChange={(v) => updateSlot(slot.id, { wetDry: v / 100 })}
+                />
+
+                <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                  <Button
+                    size="sm"
+                    variant="subtle"
+                    loading={openingGuiId === slot.id}
+                    icon={<IconExternal size={13} />}
+                    onClick={() => void openGui(slot)}
+                  >
+                    Abrir UI
+                  </Button>
+                  {paramDefs.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setExpandedId(isExpanded ? null : slot.id)}
+                    >
+                      {isExpanded ? 'Ocultar parâmetros' : `Parâmetros (${paramDefs.length})`}
+                    </Button>
+                  )}
+                </div>
+
+                {isExpanded && paramDefs.length > 0 && (
+                  <div className="filter-grid" style={{ paddingTop: 'var(--sp-2)', borderTop: '1px solid var(--border)' }}>
+                    {paramDefs.map((p) => {
+                      const rawVal = slot.params?.[String(p.id)] ?? p.value ?? p.defaultValue
+                      const span = Math.max(0.001, p.max - p.min)
+                      const step = span <= 2 ? 0.01 : span <= 20 ? 0.1 : 1
+                      return (
+                        <Num
+                          key={p.id}
+                          label={p.name}
+                          value={rawVal}
+                          min={p.min}
+                          max={p.max}
+                          step={step}
+                          unit=""
+                          disabled={!slot.enabled}
+                          onChange={(v) => setParam(slot, p.id, v)}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+
+      {discovered.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <div className="hint" style={{ fontWeight: 600 }}>
+            Plugins descobertos ({discovered.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 190, overflowY: 'auto' }}>
+            {discovered.map((p) => (
+              <div
+                key={`${p.format}-${p.pluginUid || p.path}`}
+                className="row"
+                style={{
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 'var(--sp-2)',
+                  padding: '6px 9px',
+                  borderRadius: 'var(--r-sm)',
+                  background: 'var(--bg)',
+                  border: '1px solid var(--border)'
+                }}
+              >
+                <div className="row" style={{ alignItems: 'center', gap: 'var(--sp-2)', minWidth: 0, flex: 1 }}>
+                  <Badge tone={p.format === 'clap' ? 'live' : 'accent'}>
+                    {p.format.toUpperCase()}
+                  </Badge>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 560, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {p.name}
+                    </div>
+                    <div className="hint" style={{ fontSize: 11 }}>
+                      {p.vendor || 'Fabricante desconhecido'}{p.version ? ` · v${p.version}` : ''}
+                    </div>
+                  </div>
+                </div>
+                <Button size="sm" variant="subtle" icon={<IconPlus size={13} />} onClick={() => addPlugin(p)}>
+                  Adicionar
+                </Button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(discovered.length === 0 && (!scanned || slots.length === 0)) && (
+        <div
+          className="hint"
+          style={{
+            padding: '8px 10px',
+            borderRadius: 'var(--r-sm)',
+            background: 'var(--bg)',
+            border: '1px dashed var(--border)'
+          }}
+        >
+          {scanned
+            ? 'Nenhum plugin .vst3 ou .clap encontrado. Instale seus plugins nas pastas padrão e clique em Escanear novamente:'
+            : 'Clique em “Escanear plugins” para procurar efeitos instalados nas pastas padrão:'}
+          <div className="mono" style={{ fontSize: 11, marginTop: 4, color: 'var(--text-muted)' }}>
+            Windows: C:\Program Files\Common Files\VST3 · C:\Program Files\Common Files\CLAP
+            <br />
+            Linux: ~/.vst3, /usr/lib/vst3 · ~/.clap, /usr/lib/clap
+          </div>
+        </div>
+      )}
+    </FilterCard>
+  )
+}
 
 /** Propriedades e filtros de uma fonte de áudio (o "Filtros" do OBS numa tela só). */
 export function AudioPropertiesModal({
@@ -628,6 +979,12 @@ export function AudioPropertiesModal({
           >
             <Num label="Ganho" value={f.gainDb} min={-24} max={24} unit="dB" onChange={(v) => setF({ gainDb: v })} />
           </FilterCard>
+
+          <PluginChainCard
+            channelId={ch.id}
+            slots={f.plugins ?? []}
+            onChangeSlots={(plugins) => setF({ plugins })}
+          />
 
           <FilterCard
             title="Limitador"

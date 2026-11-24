@@ -14,21 +14,29 @@
 //! - `hotkeys`: atalhos globais nativos ligados a `AppSettings.hotkeys`.
 //! - `rpc`: `AppEngine` unificado + servidor WebSocket autenticado com frames binários.
 
+pub mod abr;
 pub mod audio_mixer;
+pub mod audio_runtime;
 pub mod auth_twitch;
 pub mod capture;
 pub mod compositor;
 pub mod discovery;
 pub mod firewall;
+pub mod gpu_capture;
+pub mod gpu_compositor;
 pub mod hotkeys;
 pub mod kit;
 pub mod multichat;
 pub mod multistream;
 pub mod net;
+pub mod obs_ws;
 pub mod protocol;
 pub mod recorder;
 pub mod rpc;
 pub mod rtc_host;
+pub mod rtmp_publisher;
 pub mod signaling;
 pub mod store;
 pub mod tauri_app;
+pub mod virtual_cam;
+pub mod vst_host;

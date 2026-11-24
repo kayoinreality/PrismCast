@@ -4,10 +4,12 @@
 
 import type { QualitySettings, PresetId } from './quality'
 import type {
+  AbrDestinationTelemetry,
   AudioApp,
   AudioChannelStatus,
   AudioLevelSample,
   AudioMixerSettings,
+  AudioPluginInfo,
   BrowserSourceFrame,
   ChatSettings,
   BrowserSourceSpec,
@@ -16,6 +18,11 @@ import type {
   ConnectedViewer,
   Destination,
   DiscoveredHost,
+  DynamicBitrateSettings,
+  ExternalControlSettings,
+  ExternalControlStatus,
+  GpuPipelineSettings,
+  GpuPipelineStatus,
   HostToViewer,
   HotkeyAction,
   HotkeyBindings,
@@ -38,6 +45,9 @@ import type {
   TwitchCategory,
   TwitchLoginState,
   ViewerToHost,
+  VirtualCameraDevice,
+  VirtualCameraSettings,
+  VirtualCameraStatus,
   WidgetKit
 } from './protocol'
 
@@ -131,6 +141,10 @@ export interface AppSettings {
   /** título e categoria da próxima live */
   live: LiveInfo
   chat: ChatSettings
+  gpuPipeline?: GpuPipelineSettings
+  dynamicBitrate?: DynamicBitrateSettings
+  virtualCamera?: VirtualCameraSettings
+  externalControl?: ExternalControlSettings
 }
 
 export interface ViewerClosedInfo {
@@ -192,6 +206,33 @@ export interface Api {
     onPcm(cb: (id: string, pcm: Float32Array) => void): Unsubscribe
     onStatus(cb: (status: AudioChannelStatus[]) => void): Unsubscribe
     onLevels?(cb: (levels: AudioLevelSample[]) => void): Unsubscribe
+    listDevices?(): Promise<Array<{ id: string; name: string; kind: 'input' | 'output'; isDefault: boolean }>>
+  }
+  plugins?: {
+    scan(): Promise<AudioPluginInfo[]>
+    openGui(channelId: string, slotId: string): Promise<OkResult>
+    setParam(channelId: string, slotId: string, paramId: number, value: number): Promise<OkResult>
+  }
+  gpu?: {
+    status(): Promise<GpuPipelineStatus>
+  }
+  abr?: {
+    status(): Promise<AbrDestinationTelemetry[]>
+    onUpdate(cb: (telemetry: AbrDestinationTelemetry[]) => void): Unsubscribe
+  }
+  virtualCam?: {
+    status(): Promise<VirtualCameraStatus>
+    devices(): Promise<VirtualCameraDevice[]>
+    start(orientation?: CanvasOrientation): Promise<VirtualCameraStatus>
+    stop(): Promise<VirtualCameraStatus>
+    pushFrame?(width: number, height: number, bgra: Uint8Array): void
+    onStatus(cb: (status: VirtualCameraStatus) => void): Unsubscribe
+  }
+  externalControl?: {
+    status(): Promise<ExternalControlStatus>
+    setObsPassword(password: string): Promise<OkResult>
+    restart(): Promise<ExternalControlStatus>
+    onStatus(cb: (status: ExternalControlStatus) => void): Unsubscribe
   }
   telemetry?: {
     get(): Promise<TelemetryStats>
@@ -220,6 +261,7 @@ export interface Api {
   files: {
     pickImage(): Promise<string | null>
     pickHtml(): Promise<string | null>
+    pickMedia?(): Promise<string | null>
     readImage(path: string): Promise<string | null>
   }
   host: {
