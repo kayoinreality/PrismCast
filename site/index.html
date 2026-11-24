@@ -25,7 +25,7 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <header class="site-header">
+    <header class="site-header" id="site-header">
       <div class="wrap header-inner">
         <a class="brand" href="#topo" aria-label="PrismCast Studio, voltar ao topo">
           <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -38,11 +38,13 @@
           <span class="version-tag" data-release-version>v2.4.0</span>
         </a>
 
-        <nav class="site-nav" aria-label="Navegação principal">
+        <nav class="site-nav" id="site-nav" aria-label="Navegação principal">
           <a href="#estudio">Estúdio</a>
+          <a href="#fluxo">Fluxo</a>
           <a href="#recursos">Recursos</a>
-          <a href="#atalhos">Atalhos &amp; Segurança</a>
+          <a href="#atalhos">Atalhos</a>
           <a href="#baixar">Download</a>
+          <span class="nav-indicator" id="nav-indicator" aria-hidden="true"></span>
         </nav>
 
         <div class="header-actions">
@@ -51,11 +53,12 @@
             href="https://github.com/kayoinreality/PrismCast"
             target="_blank"
             rel="noreferrer"
-            >GitHub <span aria-hidden="true">↗</span></a
+            >GitHub <span class="arrow-inline" aria-hidden="true">↗</span></a
           >
           <a class="btn btn-primary btn-sm" href="#baixar">Baixar</a>
         </div>
       </div>
+      <div class="scroll-progress" id="scroll-progress" aria-hidden="true"></div>
     </header>
 
     <main id="topo">
@@ -65,22 +68,27 @@
           <div class="hero-grid">
             <div>
               <h1 class="hero-title">
-                O estúdio de live em Rust, sem o peso do navegador<span class="tally-mark">.</span>
+                <span class="line-mask"><span style="--line-delay: 40ms">O estúdio de live</span></span>
+                <span class="line-mask"><span style="--line-delay: 120ms">em Rust, sem o peso</span></span>
+                <span class="line-mask"><span style="--line-delay: 200ms">do navegador<span class="tally-mark">.</span></span></span>
               </h1>
             </div>
-            <div class="hero-aside">
+            <div class="hero-aside" data-reveal style="--reveal-delay: 180ms">
               <p class="hero-lead">
                 Monte cenas em 16:9 e 9:16 ao mesmo tempo, isole o áudio de um único jogo ou programa e transmita para
                 Twitch, YouTube, Kick, TikTok ou pela rede local — num binário nativo em Rust + Tauri v2.
               </p>
               <div class="hero-cta-row">
-                <a class="btn btn-primary" id="hero-download-btn" href="#baixar">Baixar para Windows</a>
+                <a class="btn btn-primary" id="hero-download-btn" href="#baixar">
+                  <span id="hero-download-label">Baixar para Windows</span>
+                  <span class="btn-arrow" aria-hidden="true">↓</span>
+                </a>
                 <a
                   class="btn btn-secondary"
                   href="https://github.com/kayoinreality/PrismCast"
                   target="_blank"
                   rel="noreferrer"
-                  >Código-fonte</a
+                  >Código-fonte <span class="btn-arrow" aria-hidden="true">↗</span></a
                 >
               </div>
               <p class="hero-footnote" id="hero-download-note">
@@ -90,19 +98,19 @@
           </div>
 
           <div class="spec-strip" aria-label="Especificações principais">
-            <div class="spec-cell">
+            <div class="spec-cell" data-reveal style="--reveal-delay: 220ms">
               <span class="spec-k">Rust + Tauri v2</span>
               <span class="spec-v">Sem Electron nem Chromium duplicado</span>
             </div>
-            <div class="spec-cell">
+            <div class="spec-cell" data-reveal style="--reveal-delay: 280ms">
               <span class="spec-k">Dual Output 16:9 + 9:16</span>
               <span class="spec-v">Posição própria de cada fonte no vertical</span>
             </div>
-            <div class="spec-cell">
+            <div class="spec-cell" data-reveal style="--reveal-delay: 340ms">
               <span class="spec-k">Mixer DSP 48 kHz f32</span>
               <span class="spec-v">EQ 3 bandas, Gate, Ducking, WASAPI e PipeWire</span>
             </div>
-            <div class="spec-cell">
+            <div class="spec-cell" data-reveal style="--reveal-delay: 400ms">
               <span class="spec-k">Windows &amp; Linux</span>
               <span class="spec-v">Portable, NSIS, MSI, AppImage, deb e rpm</span>
             </div>
@@ -113,7 +121,7 @@
       <!-- Interactive Studio Console Showcase -->
       <section class="stage-section" id="estudio" aria-label="Demonstração interativa do estúdio">
         <div class="wrap">
-          <div class="console-frame">
+          <div class="console-frame" id="console-frame">
             <div class="console-titlebar">
               <div class="console-titlebar-left">
                 <span class="tally-indicator"><span class="tally-dot" aria-hidden="true"></span> NO AR</span>
@@ -121,8 +129,8 @@
                 <span class="mono" id="active-scene-readout">Gameplay + Cam</span>
               </div>
               <div class="console-telemetry">
-                <span><strong>60 FPS</strong> · 1080p</span>
-                <span><strong>6000 kbps</strong> · NVENC</span>
+                <span><strong id="telemetry-fps">60.0 FPS</strong> · 1080p</span>
+                <span><strong id="telemetry-bitrate">6000 kbps</strong> · NVENC</span>
                 <span><strong>48 kHz</strong> · f32</span>
               </div>
             </div>
@@ -194,7 +202,7 @@
                     <span>KK</span>
                   </span>
                 </div>
-                <div class="chat-feed">
+                <div class="chat-feed" id="chat-feed">
                   <div class="chat-msg">
                     <span class="chat-src">TW</span>
                     <span class="chat-user">mikael_r</span>
@@ -296,25 +304,301 @@
         </div>
       </section>
 
-      <!-- Editorial Technical Index -->
+      <!-- Seamless Ecosystem Marquee -->
+      <div class="marquee-band" aria-label="Protocolos e integrações suportados">
+        <div class="marquee-viewport">
+          <div class="marquee-track">
+            <span class="marquee-item">Twitch IRC &amp; Helix</span>
+            <span class="marquee-item">YouTube Live</span>
+            <span class="marquee-item">Kick RTMPS</span>
+            <span class="marquee-item">TikTok 9:16</span>
+            <span class="marquee-item">NVENC · AMF · QSV</span>
+            <span class="marquee-item">WASAPI Loopback</span>
+            <span class="marquee-item">PipeWire &amp; PulseAudio</span>
+            <span class="marquee-item">7TV · BTTV · FFZ</span>
+            <span class="marquee-item">Kits OBS Estáticos</span>
+            <span class="marquee-item">StreamElements</span>
+            <span class="marquee-item">WebRTC LAN P2P</span>
+            <span class="marquee-item">Replay Buffer EBML</span>
+            <span class="marquee-item">Rust + Tauri v2</span>
+          </div>
+          <div class="marquee-track" aria-hidden="true">
+            <span class="marquee-item">Twitch IRC &amp; Helix</span>
+            <span class="marquee-item">YouTube Live</span>
+            <span class="marquee-item">Kick RTMPS</span>
+            <span class="marquee-item">TikTok 9:16</span>
+            <span class="marquee-item">NVENC · AMF · QSV</span>
+            <span class="marquee-item">WASAPI Loopback</span>
+            <span class="marquee-item">PipeWire &amp; PulseAudio</span>
+            <span class="marquee-item">7TV · BTTV · FFZ</span>
+            <span class="marquee-item">Kits OBS Estáticos</span>
+            <span class="marquee-item">StreamElements</span>
+            <span class="marquee-item">WebRTC LAN P2P</span>
+            <span class="marquee-item">Replay Buffer EBML</span>
+            <span class="marquee-item">Rust + Tauri v2</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Interactive 4-Step Workflow -->
+      <section class="workflow-section" id="fluxo">
+        <div class="wrap">
+          <div class="workflow-head" data-reveal>
+            <div>
+              <p class="section-kicker">Como funciona na prática</p>
+              <h2 class="section-title">Do zero ao ar em quatro etapas.</h2>
+            </div>
+            <p class="workflow-sub">
+              Clique em cada etapa ou acompanhe o ciclo automático para ver como o motor Rust coordena destinos,
+              compositor, áudio e rede.
+            </p>
+          </div>
+
+          <div class="workflow-grid" id="workflow-root">
+            <div class="wf-steps" role="tablist" aria-label="Etapas do estúdio">
+              <button class="wf-step is-active" type="button" data-wf-step="0" role="tab" aria-selected="true">
+                <span class="wf-step-rail"><span class="wf-step-fill"></span></span>
+                <div class="wf-step-top">
+                  <span class="wf-num">01</span>
+                  <h3 class="wf-title">Conecte destinos no cofre nativo</h3>
+                </div>
+                <div class="wf-desc-wrap">
+                  <div class="wf-desc-inner">
+                    <p class="wf-desc">
+                      Entre com a Twitch via Device Flow ou salve chaves de YouTube, Kick e TikTok com validação de
+                      formato e criptografia local (DPAPI / Secret Service).
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              <button class="wf-step" type="button" data-wf-step="1" role="tab" aria-selected="false">
+                <span class="wf-step-rail"><span class="wf-step-fill"></span></span>
+                <div class="wf-step-top">
+                  <span class="wf-num">02</span>
+                  <h3 class="wf-title">Monte cenas em 16:9 e 9:16 juntos</h3>
+                </div>
+                <div class="wf-desc-wrap">
+                  <div class="wf-desc-inner">
+                    <p class="wf-desc">
+                      Importe sua pasta de kit OBS ou arraste telas, janelas e câmera com encaixe nas bordas e enquadre
+                      independente para a saída vertical.
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              <button class="wf-step" type="button" data-wf-step="2" role="tab" aria-selected="false">
+                <span class="wf-step-rail"><span class="wf-step-fill"></span></span>
+                <div class="wf-step-top">
+                  <span class="wf-num">03</span>
+                  <h3 class="wf-title">Isole e processe o áudio em 48 kHz</h3>
+                </div>
+                <div class="wf-desc-wrap">
+                  <div class="wf-desc-inner">
+                    <p class="wf-desc">
+                      Capture somente o jogo ou o Spotify sem vazar notificações e ajuste Passa-alta, Noise Gate, EQ de
+                      3 bandas, Compressor e Ducking em tempo real.
+                    </p>
+                  </div>
+                </div>
+              </button>
+
+              <button class="wf-step" type="button" data-wf-step="3" role="tab" aria-selected="false">
+                <span class="wf-step-rail"><span class="wf-step-fill"></span></span>
+                <div class="wf-step-top">
+                  <span class="wf-num">04</span>
+                  <h3 class="wf-title">Transmita com hardware ou na LAN P2P</h3>
+                </div>
+                <div class="wf-desc-wrap">
+                  <div class="wf-desc-inner">
+                    <p class="wf-desc">
+                      Cada plataforma sobe em processo FFmpeg isolado (NVENC/AMF/QSV/x264) enquanto a rede local recebe
+                      o sinal direto via WebRTC protegido por PIN.
+                    </p>
+                  </div>
+                </div>
+              </button>
+            </div>
+
+            <div class="wf-stage" data-reveal style="--reveal-delay: 100ms">
+              <div class="wf-stage-bar">
+                <span id="wf-stage-label">ETAPA 01 · AUTENTICAÇÃO &amp; COFRE</span>
+                <span class="wf-stage-counter" id="wf-stage-counter">1 / 4</span>
+              </div>
+
+              <div class="wf-stage-body">
+                <!-- Panel 0: OAuth + Vault -->
+                <div class="wf-panel is-active" data-wf-panel="0">
+                  <div class="oauth-box">
+                    <div>
+                      <div class="oauth-code">K9X4-PRSM</div>
+                      <div class="oauth-sub">twitch.tv/activate · OAuth Device Flow</div>
+                    </div>
+                    <span class="vault-status">DPAPI / Secret Service</span>
+                  </div>
+                  <div class="route-pills">
+                    <div class="route-pill">
+                      <div>
+                        <strong>Twitch</strong>
+                        <div class="rp-meta">16:9 · 6000 kbps · chave validada</div>
+                      </div>
+                      <span class="rp-dot" aria-hidden="true"></span>
+                    </div>
+                    <div class="route-pill">
+                      <div>
+                        <strong>YouTube Live</strong>
+                        <div class="rp-meta">16:9 · 9000 kbps · pronto</div>
+                      </div>
+                      <span class="rp-dot" aria-hidden="true"></span>
+                    </div>
+                    <div class="route-pill">
+                      <div>
+                        <strong>Kick</strong>
+                        <div class="rp-meta">RTMPS · 8000 kbps · pronto</div>
+                      </div>
+                      <span class="rp-dot" aria-hidden="true"></span>
+                    </div>
+                    <div class="route-pill">
+                      <div>
+                        <strong>TikTok Live</strong>
+                        <div class="rp-meta">9:16 · 4500 kbps · vertical</div>
+                      </div>
+                      <span class="rp-dot" aria-hidden="true"></span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Panel 1: Dual Canvas Snapping -->
+                <div class="wf-panel" data-wf-panel="1">
+                  <div class="dual-wireframe">
+                    <div class="wf-canvas-box w16">
+                      <div class="wf-snap-box wf-snap-game">16:9 · TELA / JOGO (1920×1080)</div>
+                      <div class="wf-snap-box wf-snap-cam">CAM PiP</div>
+                    </div>
+                    <div class="wf-canvas-box w9">
+                      <div class="wf-snap-box wf-snap-game">9:16<br />CROP</div>
+                      <div class="wf-snap-box wf-snap-cam">CAM<br />BASE</div>
+                    </div>
+                  </div>
+                  <div class="eq-badges">
+                    <span>Snap magnético</span>
+                    <span>Z-index 9:16 independente</span>
+                    <span>Parser estático config.js</span>
+                  </div>
+                </div>
+
+                <!-- Panel 2: Live DSP EQ & Gate -->
+                <div class="wf-panel" data-wf-panel="2">
+                  <div class="eq-svg-box">
+                    <svg class="eq-svg" viewBox="0 0 420 150" aria-label="Curva de equalização 3 bandas e limiar do Noise Gate">
+                      <defs>
+                        <linearGradient id="eq-fill-grad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stop-color="#f1ede4" stop-opacity="0.16" />
+                          <stop offset="100%" stop-color="#f1ede4" stop-opacity="0" />
+                        </linearGradient>
+                      </defs>
+                      <line x1="0" y1="75" x2="420" y2="75" stroke="#2e2d28" stroke-width="1" />
+                      <line x1="105" y1="0" x2="105" y2="150" stroke="#242420" stroke-width="1" />
+                      <line x1="210" y1="0" x2="210" y2="150" stroke="#242420" stroke-width="1" />
+                      <line x1="315" y1="0" x2="315" y2="150" stroke="#242420" stroke-width="1" />
+                      <line class="eq-gate-line" x1="0" y1="112" x2="420" y2="112" />
+                      <path
+                        id="eq-area-path"
+                        fill="url(#eq-fill-grad)"
+                        d="M 0 112 C 58 106, 85 52, 145 64 C 205 76, 250 48, 315 58 C 365 66, 392 48, 420 54 L 420 150 L 0 150 Z"
+                      />
+                      <path
+                        id="eq-curve-path"
+                        class="eq-curve"
+                        d="M 0 112 C 58 106, 85 52, 145 64 C 205 76, 250 48, 315 58 C 365 66, 392 48, 420 54"
+                      />
+                      <text x="10" y="16" fill="#a19b8e" font-family="IBM Plex Mono, monospace" font-size="10">
+                        HPF 80 Hz · LOW +2.5 dB · MID -1.0 dB · HIGH +3.0 dB
+                      </text>
+                      <text x="410" y="16" text-anchor="end" fill="#6cd699" font-family="IBM Plex Mono, monospace" font-size="10" id="eq-peak-readout">
+                        -14.2 dBFS
+                      </text>
+                      <text x="410" y="131" text-anchor="end" fill="#ff6959" font-family="IBM Plex Mono, monospace" font-size="10">
+                        NOISE GATE · -38 dB
+                      </text>
+                    </svg>
+                  </div>
+                  <div class="eq-badges">
+                    <span>PCM f32 · 48 kHz estéreo</span>
+                    <span>Sidechain Ducking</span>
+                    <span>Limitador -1 dBFS</span>
+                  </div>
+                </div>
+
+                <!-- Panel 3: Multi-RTMP + LAN Router -->
+                <div class="wf-panel" data-wf-panel="3">
+                  <div class="router-diagram">
+                    <div class="router-row">
+                      <span>TWITCH 16:9</span>
+                      <div class="router-pipe"><span class="router-pulse"></span></div>
+                      <span class="router-rate" id="wf-rate-tw">6000 kbps</span>
+                    </div>
+                    <div class="router-row">
+                      <span>YOUTUBE 16:9</span>
+                      <div class="router-pipe"><span class="router-pulse"></span></div>
+                      <span class="router-rate" id="wf-rate-yt">9000 kbps</span>
+                    </div>
+                    <div class="router-row">
+                      <span>TIKTOK 9:16</span>
+                      <div class="router-pipe"><span class="router-pulse"></span></div>
+                      <span class="router-rate" id="wf-rate-tt">4500 kbps</span>
+                    </div>
+                    <div class="router-row">
+                      <span>LAN P2P · PIN</span>
+                      <div class="router-pipe"><span class="router-pulse"></span></div>
+                      <span class="router-rate" id="wf-rate-lan">1.8 ms RTT</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Editorial Technical Index (Scroll-Linked Active Deck) -->
       <section class="capabilities" id="recursos">
         <div class="wrap cap-layout">
           <div class="cap-sticky">
-            <p class="section-kicker">Arquitetura &amp; Recursos</p>
+            <p class="section-kicker" data-reveal>Arquitetura &amp; Recursos</p>
             <h2 class="section-title">Feito para quem abre live todo dia.</h2>
             <p class="section-copy">
               Tudo o que normalmente exige cinco plugins separados no OBS já vem integrado no motor em Rust — sem
               scripts frágeis e sem desperdiçar RAM enquanto o jogo roda.
             </p>
-            <div class="arch-note">
-              Core: prismcast_core (Rust 2021)<br />
-              Interface: Tauri v2 + WebView do sistema<br />
-              Codificação: FFmpeg HW (NVENC / AMF / QSV / x264)
+
+            <div class="cap-monitor" aria-live="polite">
+              <div class="cap-monitor-head">
+                <span>INSPEÇÃO DO MÓDULO</span>
+                <span class="cap-monitor-index" id="cap-mon-index">01 / 06</span>
+              </div>
+              <div class="cap-monitor-body" id="cap-mon-body">
+                <div class="cap-monitor-title" id="cap-mon-title">compositor.rs · Dual Output</div>
+                <div class="cap-monitor-lines" id="cap-mon-lines">
+                  <div class="cap-monitor-line"><span>Canvas horizontal</span><strong>1920×1080 @ 60fps</strong></div>
+                  <div class="cap-monitor-line"><span>Canvas vertical</span><strong>1080×1920 independente</strong></div>
+                  <div class="cap-monitor-line"><span>Transições</span><strong>Cut · Fade · Black · Slide</strong></div>
+                </div>
+              </div>
+              <div class="cap-monitor-segs" id="cap-mon-segs" aria-hidden="true">
+                <span class="is-on"></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
             </div>
           </div>
 
-          <ol class="cap-list">
-            <li class="cap-item">
+          <ol class="cap-list" id="cap-list">
+            <li class="cap-item is-active" data-cap-idx="0" data-reveal>
               <span class="cap-num">01</span>
               <div class="cap-body">
                 <h3>Palco editável e Dual Output real (16:9 + 9:16)</h3>
@@ -331,7 +615,7 @@
               </div>
             </li>
 
-            <li class="cap-item">
+            <li class="cap-item" data-cap-idx="1" data-reveal>
               <span class="cap-num">02</span>
               <div class="cap-body">
                 <h3>Multistreaming isolado por destino</h3>
@@ -348,7 +632,7 @@
               </div>
             </li>
 
-            <li class="cap-item">
+            <li class="cap-item" data-cap-idx="2" data-reveal>
               <span class="cap-num">03</span>
               <div class="cap-body">
                 <h3>Mixer DSP 48 kHz e captura de áudio por programa</h3>
@@ -365,7 +649,7 @@
               </div>
             </li>
 
-            <li class="cap-item">
+            <li class="cap-item" data-cap-idx="3" data-reveal>
               <span class="cap-num">04</span>
               <div class="cap-body">
                 <h3>MultiChat unificado com emotes e janela popout</h3>
@@ -382,7 +666,7 @@
               </div>
             </li>
 
-            <li class="cap-item">
+            <li class="cap-item" data-cap-idx="4" data-reveal>
               <span class="cap-num">05</span>
               <div class="cap-body">
                 <h3>Kits de overlay OBS e widgets HTML</h3>
@@ -399,7 +683,7 @@
               </div>
             </li>
 
-            <li class="cap-item">
+            <li class="cap-item" data-cap-idx="5" data-reveal>
               <span class="cap-num">06</span>
               <div class="cap-body">
                 <h3>Transmissão LAN P2P, Gravação MP4 e Replay Buffer</h3>
@@ -419,66 +703,93 @@
         </div>
       </section>
 
-      <!-- Matte Hardware Band: Shortcuts & Engineering/Privacy -->
+      <!-- Matte Hardware Band: Animated Engineering Metrics, Interactive Shortcuts & Privacy -->
       <section class="hardware-band" id="atalhos">
-        <div class="wrap hardware-grid">
-          <div>
-            <p class="section-kicker">Controle sem sair do jogo</p>
-            <h2 class="section-title">Atalhos globais de estúdio</h2>
-            <table class="shortcut-table" aria-label="Atalhos globais padrão do PrismCast Studio">
-              <tbody>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>M</kbd></td>
-                  <td>Mutar ou ligar microfone</td>
-                </tr>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>D</kbd></td>
-                  <td>Mutar ou ligar áudio do PC</td>
-                </tr>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>P</kbd></td>
-                  <td>Ativar Tela de Pausa (Volto já)</td>
-                </tr>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>S</kbd></td>
-                  <td>Salvar clipe do Replay Buffer</td>
-                </tr>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>V</kbd></td>
-                  <td>Ligar ou desligar saída vertical 9:16</td>
-                </tr>
-                <tr>
-                  <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>C</kbd></td>
-                  <td>Ligar ou desligar câmera e molduras</td>
-                </tr>
-              </tbody>
-            </table>
+        <div class="wrap">
+          <div class="metrics-strip" aria-label="Números de engenharia do motor">
+            <div class="metric-cell" data-reveal>
+              <span class="metric-val"><span data-counter="48">48</span><span class="unit">kHz</span></span>
+              <span class="metric-label">Pipeline DSP estéreo em ponto flutuante (f32)</span>
+            </div>
+            <div class="metric-cell" data-reveal style="--reveal-delay: 70ms">
+              <span class="metric-val"><span data-counter="2">2</span><span class="unit">×</span></span>
+              <span class="metric-label">Canvas simultâneos independentes (16:9 + 9:16)</span>
+            </div>
+            <div class="metric-cell" data-reveal style="--reveal-delay: 140ms">
+              <span class="metric-val"><span data-counter="256">256</span><span class="unit">bit</span></span>
+              <span class="metric-label">Autenticação RPC local + cofre nativo do SO</span>
+            </div>
+            <div class="metric-cell" data-reveal style="--reveal-delay: 210ms">
+              <span class="metric-val"><span data-counter="0">0</span><span class="unit">hops</span></span>
+              <span class="metric-label">Servidores externos na transmissão LAN P2P</span>
+            </div>
           </div>
 
-          <div>
-            <p class="section-kicker">Engenharia &amp; Privacidade</p>
-            <h2 class="section-title">Seus segredos ficam na sua máquina</h2>
-            <div class="eng-notes">
-              <div class="eng-row">
-                <h3>Cofre nativo do sistema operacional</h3>
-                <p>
-                  Chaves RTMP e tokens OAuth são armazenados com DPAPI no Windows e Secret Service (com fallback
-                  restrito <code>0600</code>) no Linux. As chaves nunca voltam em texto claro para a interface.
-                </p>
+          <div class="hardware-grid">
+            <div data-reveal>
+              <p class="section-kicker">Controle sem sair do jogo · clique numa linha para testar</p>
+              <h2 class="section-title">Atalhos globais de estúdio</h2>
+
+              <div class="shortcut-feedback" id="shortcut-feedback" aria-live="polite">
+                <span>Clique em um atalho abaixo para testar a resposta do console</span>
+                <span>PRONTO</span>
               </div>
-              <div class="eng-row">
-                <h3>Login Twitch sem servidor intermediário</h3>
-                <p>
-                  Usa OAuth Device Flow diretamente contra a API oficial da Twitch: você autoriza em
-                  <code>twitch.tv/activate</code> e o estúdio obtém nome, categoria e stream key sem intermediários.
-                </p>
-              </div>
-              <div class="eng-row">
-                <h3>Código aberto, sem telemetria oculta</h3>
-                <p>
-                  Licença MIT, builds automatizadas no GitHub Actions diretamente a partir do código-fonte público e
-                  tráfego LAN estritamente local com autenticação por token de 256 bits.
-                </p>
+
+              <table class="shortcut-table" aria-label="Atalhos globais padrão do PrismCast Studio">
+                <tbody>
+                  <tr data-hotkey-test="mic" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>M</kbd></td>
+                    <td>Mutar ou ligar microfone</td>
+                  </tr>
+                  <tr data-hotkey-test="desktop" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>D</kbd></td>
+                    <td>Mutar ou ligar áudio do PC</td>
+                  </tr>
+                  <tr data-hotkey-test="brb" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>P</kbd></td>
+                    <td>Ativar Tela de Pausa (Volto já)</td>
+                  </tr>
+                  <tr data-hotkey-test="replay" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>S</kbd></td>
+                    <td>Salvar clipe do Replay Buffer</td>
+                  </tr>
+                  <tr data-hotkey-test="dual" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>V</kbd></td>
+                    <td>Ligar ou desligar saída vertical 9:16</td>
+                  </tr>
+                  <tr data-hotkey-test="camera" tabindex="0">
+                    <td><kbd>Ctrl</kbd><span class="plus">+</span><kbd>Shift</kbd><span class="plus">+</span><kbd>C</kbd></td>
+                    <td>Ligar ou desligar câmera e molduras</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div data-reveal style="--reveal-delay: 100ms">
+              <p class="section-kicker">Engenharia &amp; Privacidade</p>
+              <h2 class="section-title">Seus segredos ficam na sua máquina</h2>
+              <div class="eng-notes">
+                <div class="eng-row">
+                  <h3>Cofre nativo do sistema operacional</h3>
+                  <p>
+                    Chaves RTMP e tokens OAuth são armazenados com DPAPI no Windows e Secret Service (com fallback
+                    restrito <code>0600</code>) no Linux. As chaves nunca voltam em texto claro para a interface.
+                  </p>
+                </div>
+                <div class="eng-row">
+                  <h3>Login Twitch sem servidor intermediário</h3>
+                  <p>
+                    Usa OAuth Device Flow diretamente contra a API oficial da Twitch: você autoriza em
+                    <code>twitch.tv/activate</code> e o estúdio obtém nome, categoria e stream key sem intermediários.
+                  </p>
+                </div>
+                <div class="eng-row">
+                  <h3>Código aberto, sem telemetria oculta</h3>
+                  <p>
+                    Licença MIT, builds automatizadas no GitHub Actions diretamente a partir do código-fonte público e
+                    tráfego LAN estritamente local com autenticação por token de 256 bits.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
@@ -488,13 +799,14 @@
       <!-- Downloads Matrix -->
       <section class="downloads" id="baixar">
         <div class="wrap">
-          <div class="downloads-head">
+          <div class="downloads-head" data-reveal>
             <div>
               <p class="section-kicker">Download direto · <span data-release-version>v2.4.0</span></p>
               <h2 class="section-title">Escolha o pacote do seu sistema</h2>
             </div>
 
-            <div class="os-tabs" role="tablist" aria-label="Sistema operacional">
+            <div class="os-tabs" id="os-tabs" data-active="windows" role="tablist" aria-label="Sistema operacional">
+              <span class="os-tab-slider" aria-hidden="true"></span>
               <button
                 class="os-tab"
                 type="button"
@@ -543,7 +855,7 @@
                 href="https://github.com/kayoinreality/PrismCast/releases/latest"
                 target="_blank"
                 rel="noreferrer"
-                >Baixar .exe</a
+                >Baixar .exe <span class="btn-arrow" aria-hidden="true">↓</span></a
               >
             </div>
 
@@ -610,7 +922,7 @@
                 href="https://github.com/kayoinreality/PrismCast/releases/latest"
                 target="_blank"
                 rel="noreferrer"
-                >Baixar AppImage</a
+                >Baixar AppImage <span class="btn-arrow" aria-hidden="true">↓</span></a
               >
             </div>
 
@@ -672,11 +984,109 @@
             </div>
           </div>
 
-          <div class="dl-prereq">
+          <div class="dl-prereq" data-reveal>
             <span>
               <strong>Requisito para multistream RTMP/RTMPS e gravação:</strong> FFmpeg disponível no PATH.
             </span>
-            <code id="dl-ffmpeg-cmd">winget install ffmpeg</code>
+            <div class="cmd-copy-wrap">
+              <code id="dl-ffmpeg-cmd">winget install ffmpeg</code>
+              <button class="copy-cmd-btn" id="copy-ffmpeg-btn" type="button">Copiar</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- FAQ Accordion -->
+      <section class="faq-section" id="faq">
+        <div class="wrap faq-layout">
+          <div data-reveal>
+            <p class="section-kicker">Perguntas frequentes</p>
+            <h2 class="section-title">Dúvidas diretas antes de baixar.</h2>
+            <p class="section-copy">
+              Tudo que você precisa saber sobre encoders, login das plataformas, áudio por aplicativo e suporte ao Linux.
+            </p>
+          </div>
+
+          <div class="faq-list" data-reveal style="--reveal-delay: 80ms">
+            <div class="faq-item is-open">
+              <button class="faq-trigger" type="button" aria-expanded="true">
+                <span>O PrismCast Studio é gratuito e de código aberto?</span>
+                <span class="faq-icon" aria-hidden="true"></span>
+              </button>
+              <div class="faq-body">
+                <div class="faq-body-inner">
+                  <p>
+                    Sim. Todo o motor em Rust, a interface Tauri v2 e o empacotamento de Windows e Linux são licenciados
+                    sob licença MIT no GitHub, sem planos pagos, sem marca d'água e sem limite de plataformas no
+                    multistream.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="faq-item">
+              <button class="faq-trigger" type="button" aria-expanded="false">
+                <span>Funciona sem placa de vídeo NVIDIA?</span>
+                <span class="faq-icon" aria-hidden="true"></span>
+              </button>
+              <div class="faq-body">
+                <div class="faq-body-inner">
+                  <p>
+                    Sim. Ao iniciar a transmissão, o motor testa os encoders reais disponíveis no seu FFmpeg na ordem
+                    NVENC (NVIDIA) → AMF (AMD) → QSV (Intel) e cai automaticamente para x264 por CPU se nenhum encoder
+                    de hardware responder.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="faq-item">
+              <button class="faq-trigger" type="button" aria-expanded="false">
+                <span>Preciso criar um aplicativo na Twitch para fazer login?</span>
+                <span class="faq-icon" aria-hidden="true"></span>
+              </button>
+              <div class="faq-body">
+                <div class="faq-body-inner">
+                  <p>
+                    Não. O PrismCast já traz seu Client ID público embutido usando OAuth Device Flow: você confirma o
+                    código em <code>twitch.tv/activate</code> e o app puxa nome, avatar, título, categoria e stream key
+                    direto da API Helix. Se preferir usar um app próprio, há opção em Destinos → Avançado.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="faq-item">
+              <button class="faq-trigger" type="button" aria-expanded="false">
+                <span>Como funciona a captura de áudio de um único aplicativo?</span>
+                <span class="faq-icon" aria-hidden="true"></span>
+              </button>
+              <div class="faq-body">
+                <div class="faq-body-inner">
+                  <p>
+                    No Windows 10 (2004+) e Windows 11, o PrismCast usa loopback WASAPI por processo. No Linux, integra
+                    com PipeWire e PulseAudio via monitor de stream. Se o jogo ou player ainda estiver fechado, o canal
+                    aguarda e conecta automaticamente assim que ele abrir.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div class="faq-item">
+              <button class="faq-trigger" type="button" aria-expanded="false">
+                <span>Por que o app migrou de Electron para Rust + Tauri v2?</span>
+                <span class="faq-icon" aria-hidden="true"></span>
+              </button>
+              <div class="faq-body">
+                <div class="faq-body-inner">
+                  <p>
+                    Em vez de carregar uma cópia inteira do Chromium e do Node.js na RAM enquanto você joga, o núcleo
+                    roda nativamente em Rust (mixer DSP, compositor, WebRTC LAN, MultiChat, cofre e FFmpeg) e o Tauri v2
+                    usa a WebView nativa do sistema — reduzindo o pacote de ~100 MB para menos de 10 MB no .deb/.rpm.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
