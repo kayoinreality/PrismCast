@@ -44,6 +44,9 @@ import type {
   TwitchCapabilities,
   TwitchCategory,
   TwitchLoginState,
+  UpdateInstallResult,
+  UpdaterSettings,
+  UpdateStatus,
   ViewerToHost,
   VirtualCameraDevice,
   VirtualCameraSettings,
@@ -145,6 +148,7 @@ export interface AppSettings {
   dynamicBitrate?: DynamicBitrateSettings
   virtualCamera?: VirtualCameraSettings
   externalControl?: ExternalControlSettings
+  updater?: UpdaterSettings
 }
 
 export interface ViewerClosedInfo {
@@ -316,6 +320,14 @@ export interface Api {
   firewall: {
     status(): Promise<FirewallStatus>
     authorize(): Promise<{ ok: boolean; error?: string }>
+  }
+  updater?: {
+    status(): Promise<UpdateStatus>
+    check(includePrereleases?: boolean): Promise<UpdateStatus>
+    download(): Promise<UpdateStatus>
+    cancel(): Promise<UpdateStatus>
+    install(): Promise<UpdateInstallResult>
+    onStatus(cb: (status: UpdateStatus) => void): Unsubscribe
   }
   settings: {
     get(): Promise<AppSettings>

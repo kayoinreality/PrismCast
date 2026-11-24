@@ -38,5 +38,6 @@ pub mod rtmp_publisher;
 pub mod signaling;
 pub mod store;
 pub mod tauri_app;
+pub mod updater;
 pub mod virtual_cam;
 pub mod vst_host;

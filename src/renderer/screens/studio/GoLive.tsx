@@ -197,7 +197,8 @@ export function GoLiveModal({
   const { engine, settings, update, toast } = useStudio()
   const state = useEngineState()
   const caps = useTwitchCaps()
-  const [info, setInfo] = useState<LiveInfo>(settings.live)
+  const safeLive: LiveInfo = settings.live ?? { title: '', categoryId: '', categoryName: '' }
+  const [info, setInfo] = useState<LiveInfo>(safeLive)
   const [enabled, setEnabled] = useState<Set<string>>(new Set())
   const [camera, setCamera] = useState(settings.studio.cameraEnabled)
   const [sceneId, setSceneId] = useState(settings.scenes.activeSceneId)
@@ -205,7 +206,8 @@ export function GoLiveModal({
 
   useEffect(() => {
     if (!open) return
-    setInfo(settings.live)
+    const curLive: LiveInfo = settings.live ?? { title: '', categoryId: '', categoryName: '' }
+    setInfo(curLive)
     setEnabled(
       new Set(
         settings.destinations
@@ -215,7 +217,7 @@ export function GoLiveModal({
     )
     setCamera(settings.studio.cameraEnabled)
     setSceneId(settings.scenes.activeSceneId)
-    if (!settings.live.title) {
+    if (!curLive.title) {
       let alive = true
       void window.api.twitch
         .getChannelInfo()

@@ -15,7 +15,13 @@ import { useSettings } from '@/hooks/useSettings'
 import { useHostBroadcast } from '@/hooks/useHostBroadcast'
 import { useViewerStream, type ConnectTarget } from '@/hooks/useViewerStream'
 import { StudioProvider, useStudio } from '@/studio/StudioContext'
-import { useLiveSlice, useRecorderSlice, useLanSlice, studioStore } from '@/studio/StudioStore'
+import {
+  useLiveSlice,
+  useRecorderSlice,
+  useLanSlice,
+  useUpdateStatusSlice,
+  studioStore
+} from '@/studio/StudioStore'
 import { LiveStatus } from '@/components/LiveStatus'
 import { ensureBridge } from '@/bridge'
 import './App.css'
@@ -71,6 +77,142 @@ function TitlebarStatus({
       lanViewers={lanActive ? viewers.length : null}
       onClick={onClick}
     />
+  )
+}
+
+/** Banner discreto no topo quando houver nova build disponível no GitHub Releases. */
+function UpdateBanner({
+  busy,
+  onOpenSettings
+}: {
+  busy: boolean
+  onOpenSettings: () => void
+}): React.JSX.Element | null {
+  const { settings, update, toast } = useStudio()
+  const upd = useUpdateStatusSlice()
+  const [dismissed, setDismissed] = useState(false)
+  const [acting, setActing] = useState(false)
+
+  const latest = upd.latestVersion
+  const skipped = settings.updater?.skippedVersion ?? null
+  if (
+    dismissed ||
+    !latest ||
+    (upd.state !== 'available' && upd.state !== 'downloading' && upd.state !== 'ready') ||
+    (upd.state === 'available' && skipped === latest)
+  ) {
+    return null
+  }
+
+  const startDownload = async (): Promise<void> => {
+    const api = ensureBridge().updater
+    if (!api) return
+    setActing(true)
+    try {
+      const res = await api.download()
+      studioStore.setUpdateStatus(res)
+      if (res.state === 'error' && res.error) toast(res.error, 'bad')
+      else if (res.state === 'ready') toast(`v${latest} baixada e pronta para instalar`, 'good')
+    } finally {
+      setActing(false)
+    }
+  }
+
+  const installNow = async (): Promise<void> => {
+    if (busy) {
+      toast('Encerre a live ou gravação antes de instalar a atualização.', 'bad')
+      return
+    }
+    const api = ensureBridge().updater
+    if (!api) return
+    setActing(true)
+    try {
+      const res = await api.install()
+      if (!res.ok) toast(res.error || 'Falha ao iniciar instalação', 'bad')
+      else if (res.message) toast(res.message, 'good')
+    } finally {
+      setActing(false)
+    }
+  }
+
+  return (
+    <div className="update-banner" role="status">
+      <div className="update-banner-info">
+        <strong>PrismCast Studio v{latest} disponível</strong>
+        {upd.state === 'downloading' && (
+          <span className="mono">
+            · baixando {Math.round(upd.progressPercent)}%
+          </span>
+        )}
+        {upd.state === 'ready' && (
+          <span>
+            · pronto para instalar{upd.verifiedSha256 ? ' (SHA-256 verificado)' : ''}
+          </span>
+        )}
+        {upd.state === 'available' && upd.asset && (
+          <span className="hint">{upd.asset.name}</span>
+        )}
+      </div>
+      <div className="update-banner-actions">
+        <Button size="sm" variant="ghost" onClick={onOpenSettings}>
+          Detalhes
+        </Button>
+        {upd.state === 'available' && upd.asset && (
+          <Button size="sm" variant="primary" loading={acting} onClick={() => void startDownload()}>
+            Baixar atualização
+          </Button>
+        )}
+        {upd.state === 'available' && !upd.asset && upd.releaseUrl && (
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={() => ensureBridge().app.openExternal(upd.releaseUrl!)}
+          >
+            Abrir no GitHub
+          </Button>
+        )}
+        {upd.state === 'downloading' && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => void ensureBridge().updater?.cancel()}
+          >
+            Cancelar
+          </Button>
+        )}
+        {upd.state === 'ready' && (
+          <Button
+            size="sm"
+            variant="primary"
+            loading={acting}
+            disabled={busy}
+            title={busy ? 'Encerre a live/gravação para atualizar' : 'Instalar e reiniciar'}
+            onClick={() => void installNow()}
+          >
+            Instalar e reiniciar
+          </Button>
+        )}
+        {upd.state === 'available' && (
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              setDismissed(true)
+              update({
+                updater: {
+                  autoCheck: settings.updater?.autoCheck ?? true,
+                  autoDownload: settings.updater?.autoDownload ?? false,
+                  includePrereleases: settings.updater?.includePrereleases ?? false,
+                  skippedVersion: latest
+                }
+              })
+            }}
+          >
+            Depois
+          </Button>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -234,6 +376,7 @@ function Shell(): React.JSX.Element {
         onRequestClose={requestClose}
         center={<TitlebarStatus lanActive={broadcast.info !== null} onClick={() => setPage('studio')} />}
       />
+      <UpdateBanner busy={isBusyLiveOrRec} onOpenSettings={() => setPage('settings')} />
       <div className="shell">
         <Rail
           page={page}

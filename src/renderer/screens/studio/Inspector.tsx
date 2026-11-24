@@ -141,16 +141,25 @@ function CaptureSection({
       <Field label={window_ ? 'Janela' : 'Tela'}>
         <div className="insp-capture">
           <span className="insp-capture-name">{cap?.label || item.settings.captureName || 'Monitor principal'}</span>
-          <span className={`insp-state is-${cap?.state ?? 'loading'}`}>
-            {cap?.state === 'live' ? 'capturando' : cap?.state === 'loading' ? 'abrindo…' : 'indisponível'}
+          <span className={`insp-state is-${cap?.state ?? 'idle'}`}>
+            {cap?.state === 'live'
+              ? 'capturando'
+              : cap?.state === 'loading'
+                ? 'aguardando seleção…'
+                : cap?.state === 'idle' || !cap
+                  ? 'aguardando início'
+                  : 'indisponível'}
           </span>
         </div>
       </Field>
-      <div className="row" style={{ gap: 'var(--sp-2)' }}>
-        <Button size="sm" onClick={() => setPicking(true)}>
-          Trocar {window_ ? 'janela' : 'tela'}
+      <div className="row" style={{ gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <Button size="sm" variant={cap?.state === 'live' ? 'subtle' : 'primary'} onClick={() => void engine.startCapture(item)}>
+          {cap?.state === 'live' ? `Trocar ${window_ ? 'janela' : 'tela'}` : `Iniciar captura`}
         </Button>
-        {cap && cap.state !== 'live' && (
+        <Button size="sm" variant="ghost" onClick={() => setPicking(true)}>
+          Escolher na lista
+        </Button>
+        {cap && cap.state !== 'live' && cap.state !== 'idle' && (
           <Button size="sm" variant="ghost" icon={<IconRefresh size={14} />} onClick={() => engine.retryCapture(item)}>
             Tentar de novo
           </Button>
@@ -175,11 +184,14 @@ function CaptureSection({
         onClose={() => setPicking(false)}
         onPick={(src) => {
           setPicking(false)
+          const nextType = src.kind === 'screen' ? 'screen_capture' : 'window_capture'
+          const nextSettings = { ...item.settings, captureId: src.id, captureName: src.name }
           onPatch({
-            type: src.kind === 'screen' ? 'screen_capture' : 'window_capture',
+            type: nextType,
             name: item.name === item.settings.captureName || !item.settings.captureName ? src.name : item.name,
             settings: { captureId: src.id, captureName: src.name }
           })
+          void engine.startCapture({ ...item, type: nextType, settings: nextSettings })
         }}
       />
     </div>

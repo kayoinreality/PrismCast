@@ -549,6 +549,56 @@ export interface ExternalControlStatus {
   error: string | null
 }
 
+export interface UpdaterSettings {
+  autoCheck: boolean
+  autoDownload: boolean
+  includePrereleases: boolean
+  skippedVersion: string | null
+}
+
+export type UpdateState =
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'downloading'
+  | 'ready'
+  | 'installing'
+  | 'error'
+
+export interface UpdateAssetInfo {
+  name: string
+  downloadUrl: string
+  sizeBytes: number
+  sha256: string | null
+}
+
+export interface UpdateStatus {
+  state: UpdateState
+  currentVersion: string
+  latestVersion: string | null
+  releaseName: string | null
+  releaseNotes: string | null
+  releaseUrl: string | null
+  publishedAt: string | null
+  installKind: string
+  asset: UpdateAssetInfo | null
+  downloadedBytes: number
+  totalBytes: number
+  progressPercent: number
+  downloadedPath: string | null
+  verifiedSha256: boolean
+  lastCheckedAt: number | null
+  error: string | null
+}
+
+export interface UpdateInstallResult {
+  ok: boolean
+  shouldExit: boolean
+  message?: string
+  error?: string | null
+}
+
 export interface TelemetryStats {
   compositorFps: number
   targetFps: number

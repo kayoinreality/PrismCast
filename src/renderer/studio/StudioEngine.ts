@@ -14,7 +14,7 @@ import type {
 import { ensureBridge } from '@/bridge'
 import { AudioMixerEngine, type AudioLevels } from './AudioMixerEngine'
 import { BrowserSourceCanvases } from './BrowserSourceCanvases'
-import { CaptureManager, type Capture } from './CaptureManager'
+import { CaptureManager, type Capture, type SyncCaptureSpec } from './CaptureManager'
 import { Compositor } from './Compositor'
 import { OutputManager } from './OutputManager'
 import { DEFAULT_VIRTUAL_CAM_STATUS, studioStore } from './StudioStore'
@@ -83,7 +83,6 @@ export class StudioEngine {
   private offVirtualCamStatus: (() => void) | null = null
   private transitionKeepAliveTimer: number | null = null
   private lastBrowserSpecs = ''
-  private systemAudioRequested = false
   private kit: WidgetKit | null = null
   private lastProgramId: string | null = null
   private liveVertical = false
@@ -166,11 +165,40 @@ export class StudioEngine {
     return key ? this.captures.get(key) : null
   }
 
-  retryCapture(item: SceneItem): void {
+  /** Inicia captura de tela, janela ou câmera a partir de ação explícita do usuário. */
+  async startCapture(item: SceneItem): Promise<void> {
     const key = captureKeyOf(item)
     if (!key) return
-    this.captures.retry(key)
-    this.syncMedia()
+    const s = item.settings
+    if (item.type === 'screen_capture' || item.type === 'window_capture') {
+      const wantsDesktop =
+        this.settings.audioMixer.channels.some((c) => c.kind === 'desktop') &&
+        !this.captures.hasSystemAudio()
+      await this.captures.start(
+        key,
+        this.captures.openDisplay(s.captureId, s.captureName, {
+          withAudio: wantsDesktop,
+          onAudioStream: (stream) => this.mixer.setSystemStream(stream)
+        }),
+        s.captureName || item.name
+      )
+    } else if (item.type === 'camera_input') {
+      await this.captures.start(key, this.captures.openCamera(s.deviceId), s.deviceLabel || item.name)
+    }
+  }
+
+  retryCapture(item: SceneItem): void {
+    void this.startCapture(item)
+  }
+
+  /** Ativa a captura de áudio do PC via seletor de mídia apenas quando o usuário solicitar. */
+  async requestSystemAudio(): Promise<boolean> {
+    const stream = await this.captures.acquireSystemAudio()
+    if (stream) {
+      this.mixer.setSystemStream(stream)
+      return true
+    }
+    return false
   }
 
   browserIdOf(item: SceneItem): string {
@@ -268,14 +296,6 @@ export class StudioEngine {
     this.mixer.setSceneMics(sceneMics(nextProg), used)
     void this.mixer.applyConfig(settings.audioMixer)
 
-    const wantsDesktop = settings.audioMixer.channels.some((c) => c.kind === 'desktop')
-    if (wantsDesktop && !this.systemAudioRequested) {
-      this.systemAudioRequested = true
-      void this.captures.acquireSystemAudio().then((s) => {
-        if (s) this.mixer.setSystemStream(s)
-        else this.systemAudioRequested = false
-      })
-    }
     this.syncVirtualCamPump()
     this.syncMedia()
     this.restartOnShow()
@@ -301,17 +321,27 @@ export class StudioEngine {
     ].filter((s): s is Scene => s !== null)
     const items = scenes.flatMap((s) => s.items)
 
-    const wanted = new Map<string, () => Promise<{ stream: MediaStream; label: string } | null>>()
+    const wanted = new Map<string, SyncCaptureSpec>()
     const specs = new Map<string, BrowserSourceSpec>()
     const activeImages = new Set<string>()
 
     for (const item of items) {
       const s = item.settings
       if (item.type === 'screen_capture' || item.type === 'window_capture') {
-        wanted.set(captureKeyOf(item)!, this.captures.openDisplay(s.captureId, s.captureName))
+        // No Tauri/WebView2, getDisplayMedia exige escolha explícita do usuário:
+        // registra em estado `idle` para abrir o estúdio limpo sem popup automático.
+        wanted.set(captureKeyOf(item)!, {
+          open: this.captures.openDisplay(s.captureId, s.captureName),
+          autoStart: false,
+          initialLabel: s.captureName || item.name
+        })
       } else if (item.type === 'camera_input') {
         if (this.settings.studio.cameraEnabled) {
-          wanted.set(captureKeyOf(item)!, this.captures.openCamera(s.deviceId))
+          wanted.set(captureKeyOf(item)!, {
+            open: this.captures.openCamera(s.deviceId),
+            autoStart: true,
+            initialLabel: s.deviceLabel || item.name
+          })
         }
       } else if (item.type === 'browser_source' && s.url) {
         if (!this.settings.studio.cameraEnabled && hiddenWithoutCamera(item, this.kit)) continue

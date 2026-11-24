@@ -272,7 +272,7 @@ export class AudioMixerEngine {
           this.setLocalStatus(
             ch.id,
             hasAudio ? 'ok' : 'waiting',
-            hasAudio ? null : 'Aguardando captura de áudio do PC'
+            hasAudio ? null : 'Clique para capturar áudio do PC'
           )
         }
       } else if (ch.kind === 'app') {
