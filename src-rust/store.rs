@@ -76,13 +76,36 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 // ------------------------------------------------------------------ SecretVault
 
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "macos"
+))]
+fn os_keyring_is_persistent() -> bool {
+    matches!(
+        keyring::default::default_credential_builder().persistence(),
+        keyring::credential::CredentialPersistence::UntilDelete
+    )
+}
+
 pub struct SecretVault {
     secrets_path: PathBuf,
     cache: Mutex<HashMap<String, String>>,
+    #[cfg_attr(windows, allow(dead_code))]
+    use_os_keyring: bool,
 }
 
 impl SecretVault {
     pub fn new(base_dir: &Path) -> Self {
+        Self::with_keyring(base_dir, true)
+    }
+
+    pub fn new_file_only(base_dir: &Path) -> Self {
+        Self::with_keyring(base_dir, false)
+    }
+
+    fn with_keyring(base_dir: &Path, use_os_keyring: bool) -> Self {
         let secrets_path = base_dir.join(SECRETS_FILE);
         let initial = fs::read_to_string(&secrets_path)
             .ok()
@@ -91,12 +114,18 @@ impl SecretVault {
         Self {
             secrets_path,
             cache: Mutex::new(initial),
+            use_os_keyring,
         }
     }
 
     pub fn get(&self, name: &str) -> Option<String> {
-        #[cfg(not(windows))]
-        {
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "macos"
+        ))]
+        if self.use_os_keyring && os_keyring_is_persistent() {
             if let Ok(entry) = keyring::Entry::new("prismcast-studio", name) {
                 if let Ok(secret) = entry.get_password() {
                     if !secret.is_empty() {
@@ -120,9 +149,16 @@ impl SecretVault {
         match value.filter(|v| !v.is_empty()) {
             None => {
                 guard.remove(name);
-                #[cfg(not(windows))]
-                if let Ok(entry) = keyring::Entry::new("prismcast-studio", name) {
-                    let _ = entry.delete_credential();
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "macos"
+                ))]
+                if self.use_os_keyring && os_keyring_is_persistent() {
+                    if let Ok(entry) = keyring::Entry::new("prismcast-studio", name) {
+                        let _ = entry.delete_credential();
+                    }
                 }
             }
             Some(plain) => {
@@ -131,16 +167,33 @@ impl SecretVault {
                     let encrypted = dpapi_protect(plain.as_bytes())?;
                     guard.insert(name.to_string(), format!("dpapi:{}", BASE64.encode(encrypted)));
                 }
-                #[cfg(not(windows))]
+                #[cfg(any(
+                    target_os = "linux",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "macos"
+                ))]
                 {
-                    let saved_in_keyring = keyring::Entry::new("prismcast-studio", name)
-                        .and_then(|entry| entry.set_password(plain))
-                        .is_ok();
+                    let saved_in_keyring = self.use_os_keyring
+                        && os_keyring_is_persistent()
+                        && keyring::Entry::new("prismcast-studio", name)
+                            .and_then(|entry| entry.set_password(plain))
+                            .is_ok();
                     if saved_in_keyring {
                         guard.remove(name);
                     } else {
                         guard.insert(name.to_string(), format!("raw:{plain}"));
                     }
+                }
+                #[cfg(not(any(
+                    windows,
+                    target_os = "linux",
+                    target_os = "freebsd",
+                    target_os = "openbsd",
+                    target_os = "macos"
+                )))]
+                {
+                    guard.insert(name.to_string(), format!("raw:{plain}"));
                 }
             }
         }
@@ -671,13 +724,17 @@ impl SettingsStore {
         let base = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("PrismCast");
-        Self::with_dir(base)
+        Self::with_dir_and_vault(base.clone(), SecretVault::new(&base))
     }
 
     pub fn with_dir(base: PathBuf) -> Self {
+        let vault = SecretVault::new_file_only(&base);
+        Self::with_dir_and_vault(base, vault)
+    }
+
+    fn with_dir_and_vault(base: PathBuf, vault: SecretVault) -> Self {
         let path = base.join(SETTINGS_FILE);
         let legacy_path = base.join(LEGACY_SETTINGS_FILE);
-        let vault = SecretVault::new(&base);
 
         let raw_text = fs::read_to_string(&path)
             .ok()
@@ -985,6 +1042,21 @@ mod tests {
 
         store.set_secret("streamKey:twitch-main", None).unwrap();
         assert_eq!(store.get_secret("streamKey:twitch-main"), None);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_vault_os_keyring_or_fallback_roundtrip() {
+        let dir = temp_test_dir("vault-keyring");
+        let vault = SecretVault::new(&dir);
+        let key = format!("test-prismcast-vault-{}-{}", std::process::id(), now_ms());
+
+        vault.set(&key, Some("live_888_fallbackOK")).unwrap();
+        assert_eq!(vault.get(&key).as_deref(), Some("live_888_fallbackOK"));
+
+        vault.set(&key, None).unwrap();
+        assert_eq!(vault.get(&key), None);
 
         let _ = fs::remove_dir_all(&dir);
     }

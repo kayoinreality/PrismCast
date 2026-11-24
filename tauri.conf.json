@@ -7,7 +7,8 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:5173",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "./dist"
+    "frontendDist": "./dist",
+    "features": ["tauri-app"]
   },
   "app": {
     "windows": [
@@ -30,6 +31,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "kayor",
+    "category": "Video",
+    "shortDescription": "Estúdio de transmissão LAN P2P, Dual Output e Multistreaming",
+    "longDescription": "PrismCast Studio - Motor nativo em Rust + Tauri v2 para transmissão LAN P2P Ultra-Low Latency, Dual Output (16:9 + 9:16), Multistreaming (Twitch/YouTube/Kick/TikTok), Widgets HTML e Multichat.",
     "icon": [
       "build/icon.png",
       "build/icon.ico"
