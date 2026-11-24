@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(not(debug_assertions), feature = "tauri-app"),
+    windows_subsystem = "windows"
+)]
+
 use prismcast_core::{
     protocol::RUST_RPC_PORT,
     rpc::{generate_session_token, run_rpc_server, AppEngine, RpcServerConfig},
