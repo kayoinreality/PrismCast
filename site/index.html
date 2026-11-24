@@ -19,12 +19,20 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- Spectral light field: soft dispersed beams that give the glass surfaces something to refract -->
+    <div class="spectrum-field" aria-hidden="true">
+      <span class="beam beam-red"></span>
+      <span class="beam beam-amber"></span>
+      <span class="beam beam-teal"></span>
+      <span class="beam beam-blue"></span>
+    </div>
+
     <header class="site-header" id="site-header">
       <div class="wrap header-inner">
         <a class="brand" href="#topo" aria-label="PrismCast Studio, voltar ao topo">
@@ -74,60 +82,133 @@
           >
           <a class="btn btn-primary btn-sm" href="#baixar">Baixar</a>
         </div>
+        <div class="scroll-progress" id="scroll-progress" aria-hidden="true"></div>
       </div>
-      <div class="scroll-progress" id="scroll-progress" aria-hidden="true"></div>
     </header>
 
     <main id="topo">
-      <!-- Editorial Hero -->
+      <!-- Hero: copy + 3D refracting prism stage -->
       <section class="hero">
         <div class="wrap">
           <div class="hero-grid">
-            <div>
+            <div class="hero-copy">
               <h1 class="hero-title">
                 <span class="line-mask"><span style="--line-delay: 40ms">O estúdio de live</span></span>
                 <span class="line-mask"><span style="--line-delay: 120ms">em Rust, sem o peso</span></span>
                 <span class="line-mask"><span style="--line-delay: 200ms">do navegador<span class="tally-mark">.</span></span></span>
               </h1>
-            </div>
-            <div class="hero-aside" data-reveal style="--reveal-delay: 180ms">
-              <p class="hero-lead">
-                Monte cenas em 16:9 e 9:16 ao mesmo tempo, isole o áudio de um único jogo ou programa e transmita para
-                Twitch, YouTube, Kick, TikTok ou pela rede local — num binário nativo em Rust + Tauri v2.
-              </p>
-              <div class="hero-cta-row">
-                <a class="btn btn-primary" id="hero-download-btn" href="#baixar">
-                  <span id="hero-download-label">Baixar para Windows</span>
-                  <span class="btn-arrow" aria-hidden="true">↓</span>
-                </a>
-                <a
-                  class="btn btn-secondary"
-                  href="https://github.com/kayoinreality/PrismCast"
-                  target="_blank"
-                  rel="noreferrer"
-                  >Código-fonte <span class="btn-arrow" aria-hidden="true">↗</span></a
-                >
+              <div class="hero-aside" data-reveal style="--reveal-delay: 180ms">
+                <p class="hero-lead">
+                  Monte cenas em 16:9 e 9:16 ao mesmo tempo, isole o áudio de um único jogo ou programa e transmita
+                  para Twitch, YouTube, Kick, TikTok ou pela rede local — num binário nativo em Rust + Tauri v2.
+                </p>
+                <div class="hero-cta-row">
+                  <a class="btn btn-primary" id="hero-download-btn" href="#baixar">
+                    <span id="hero-download-label">Baixar para Windows</span>
+                    <span class="btn-arrow" aria-hidden="true">↓</span>
+                  </a>
+                  <a
+                    class="btn btn-secondary"
+                    href="https://github.com/kayoinreality/PrismCast"
+                    target="_blank"
+                    rel="noreferrer"
+                    >Código-fonte <span class="btn-arrow" aria-hidden="true">↗</span></a
+                  >
+                </div>
+                <p class="hero-footnote" id="hero-download-note">
+                  Windows 10 e 11 (64 bits) · Portátil .exe, NSIS e MSI · Licença MIT
+                </p>
               </div>
-              <p class="hero-footnote" id="hero-download-note">
-                Windows 10 e 11 (64 bits) · Portátil .exe, NSIS e MSI · Licença MIT
-              </p>
+            </div>
+
+            <div class="hero-visual" id="hero-visual" aria-hidden="true">
+              <div class="prism-box">
+                <svg class="prism-layer prism-beam" data-depth="0.35" viewBox="0 0 480 460" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="beam-grad" x1="0" y1="0" x2="214" y2="0" gradientUnits="userSpaceOnUse">
+                      <stop offset="0%" stop-color="#ffffff" stop-opacity="0" />
+                      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.95" />
+                    </linearGradient>
+                  </defs>
+                  <polygon points="0,262 0,280 214,236 214,232" fill="url(#beam-grad)" />
+                  <polygon points="0,252 0,290 214,240 214,228" fill="url(#beam-grad)" opacity="0.18" />
+                </svg>
+
+                <svg class="prism-layer prism-rays" data-depth="0.6" viewBox="0 0 480 460" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="ray-red" x1="268" y1="0" x2="480" y2="0" gradientUnits="userSpaceOnUse">
+                      <stop offset="0%" stop-color="#ff3e52" stop-opacity="0.95" />
+                      <stop offset="100%" stop-color="#ff3e52" stop-opacity="0.05" />
+                    </linearGradient>
+                    <linearGradient id="ray-amber" x1="268" y1="0" x2="480" y2="0" gradientUnits="userSpaceOnUse">
+                      <stop offset="0%" stop-color="#ffae2b" stop-opacity="0.95" />
+                      <stop offset="100%" stop-color="#ffae2b" stop-opacity="0.05" />
+                    </linearGradient>
+                    <linearGradient id="ray-teal" x1="268" y1="0" x2="480" y2="0" gradientUnits="userSpaceOnUse">
+                      <stop offset="0%" stop-color="#18dcb8" stop-opacity="0.95" />
+                      <stop offset="100%" stop-color="#18dcb8" stop-opacity="0.05" />
+                    </linearGradient>
+                    <linearGradient id="ray-blue" x1="268" y1="0" x2="480" y2="0" gradientUnits="userSpaceOnUse">
+                      <stop offset="0%" stop-color="#3892ff" stop-opacity="0.95" />
+                      <stop offset="100%" stop-color="#3892ff" stop-opacity="0.05" />
+                    </linearGradient>
+                  </defs>
+                  <polygon points="268,214 270,221 480,112 480,168" fill="url(#ray-red)" />
+                  <polygon points="270,221 271,229 480,176 480,230" fill="url(#ray-amber)" />
+                  <polygon points="271,229 272,237 480,238 480,294" fill="url(#ray-teal)" />
+                  <polygon points="272,237 273,246 480,302 480,364" fill="url(#ray-blue)" />
+                </svg>
+
+                <div class="prism-floor"></div>
+
+                <div class="prism-layer prism-scene" data-depth="1">
+                  <div class="prism-tilt" id="prism-tilt">
+                    <div class="prism-3d">
+                      <span class="prism-face face-1"></span>
+                      <span class="prism-face face-2"></span>
+                      <span class="prism-face face-3"></span>
+                      <span class="prism-cap cap-top"></span>
+                      <span class="prism-cap cap-bottom"></span>
+                    </div>
+                  </div>
+                  <span class="prism-core"></span>
+                </div>
+
+                <div class="prism-hud">
+                  <span>REFRAÇÃO · 1 ENTRADA → 4 SAÍDAS</span>
+                  <span class="mono">RTMP · RTMPS · WebRTC</span>
+                </div>
+              </div>
+
+              <div class="glass-chip chip-live" data-depth="1.7">
+                <span class="tally-dot"></span>
+                <span><strong>NO AR</strong> · 1080p60 · NVENC</span>
+              </div>
+              <div class="glass-chip chip-dual" data-depth="1.3">
+                <span class="chip-ratio"><i class="r-wide"></i><i class="r-tall"></i></span>
+                <span><strong>Dual Output</strong><br />16:9 + 9:16</span>
+              </div>
+              <div class="glass-chip chip-meter" data-depth="2">
+                <span class="chip-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+                <span class="mono">-14.2 dBFS</span>
+              </div>
             </div>
           </div>
 
-          <div class="spec-strip" aria-label="Especificações principais">
-            <div class="spec-cell" data-reveal style="--reveal-delay: 220ms">
+          <div class="spec-strip" aria-label="Especificações principais" data-reveal style="--reveal-delay: 260ms">
+            <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Rust + Tauri v2</span>
               <span class="spec-v">Sem Electron nem Chromium duplicado</span>
             </div>
-            <div class="spec-cell" data-reveal style="--reveal-delay: 280ms">
+            <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Dual Output 16:9 + 9:16</span>
               <span class="spec-v">Posição própria de cada fonte no vertical</span>
             </div>
-            <div class="spec-cell" data-reveal style="--reveal-delay: 340ms">
+            <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Mixer DSP 48 kHz f32</span>
               <span class="spec-v">EQ 3 bandas, Gate, Ducking, WASAPI e PipeWire</span>
             </div>
-            <div class="spec-cell" data-reveal style="--reveal-delay: 400ms">
+            <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Windows &amp; Linux</span>
               <span class="spec-v">Portable, NSIS, MSI, AppImage, deb e rpm</span>
             </div>
@@ -138,7 +219,9 @@
       <!-- Interactive Studio Console Showcase -->
       <section class="stage-section" id="estudio" aria-label="Demonstração interativa do estúdio">
         <div class="wrap">
-          <div class="console-frame" id="console-frame">
+          <div class="console-stage">
+            <div class="console-bezel" id="console-frame">
+              <div class="console-frame">
             <div class="console-titlebar">
               <div class="console-titlebar-left">
                 <span class="tally-indicator"><span class="tally-dot" aria-hidden="true"></span> NO AR</span>
@@ -312,6 +395,8 @@
                 </div>
               </div>
             </div>
+              </div>
+            </div>
           </div>
 
           <div class="console-caption">
@@ -438,7 +523,8 @@
               </button>
             </div>
 
-            <div class="wf-stage" data-reveal style="--reveal-delay: 100ms">
+            <div class="wf-stage-wrap" data-reveal style="--reveal-delay: 100ms">
+            <div class="wf-stage tilt tilt-soft" data-tilt>
               <div class="wf-stage-bar">
                 <span id="wf-stage-label">ETAPA 01 · AUTENTICAÇÃO &amp; COFRE</span>
                 <span class="wf-stage-counter" id="wf-stage-counter">1 / 4</span>
@@ -530,13 +616,13 @@
                         class="eq-curve"
                         d="M 0 112 C 58 106, 85 52, 145 64 C 205 76, 250 48, 315 58 C 365 66, 392 48, 420 54"
                       />
-                      <text x="10" y="16" fill="#a19b8e" font-family="IBM Plex Mono, monospace" font-size="10">
+                      <text x="10" y="16" fill="#a19b8e" font-family="JetBrains Mono, monospace" font-size="10">
                         HPF 80 Hz · LOW +2.5 dB · MID -1.0 dB · HIGH +3.0 dB
                       </text>
-                      <text x="410" y="16" text-anchor="end" fill="#6cd699" font-family="IBM Plex Mono, monospace" font-size="10" id="eq-peak-readout">
+                      <text x="410" y="16" text-anchor="end" fill="#6cd699" font-family="JetBrains Mono, monospace" font-size="10" id="eq-peak-readout">
                         -14.2 dBFS
                       </text>
-                      <text x="410" y="131" text-anchor="end" fill="#ff6959" font-family="IBM Plex Mono, monospace" font-size="10">
+                      <text x="410" y="131" text-anchor="end" fill="#ff6959" font-family="JetBrains Mono, monospace" font-size="10">
                         NOISE GATE · -38 dB
                       </text>
                     </svg>
@@ -575,11 +661,12 @@
                 </div>
               </div>
             </div>
+            </div>
           </div>
         </div>
       </section>
 
-      <!-- Editorial Technical Index (Scroll-Linked Active Deck) -->
+      <!-- Technical Index (Scroll-Linked Glass Deck) -->
       <section class="capabilities" id="recursos">
         <div class="wrap cap-layout">
           <div class="cap-sticky">
@@ -590,7 +677,7 @@
               scripts frágeis e sem desperdiçar RAM enquanto o jogo roda.
             </p>
 
-            <div class="cap-monitor" aria-live="polite">
+            <div class="cap-monitor tilt tilt-soft" data-tilt aria-live="polite">
               <div class="cap-monitor-head">
                 <span>INSPEÇÃO DO MÓDULO</span>
                 <span class="cap-monitor-index" id="cap-mon-index">01 / 06</span>
@@ -615,7 +702,7 @@
           </div>
 
           <ol class="cap-list" id="cap-list">
-            <li class="cap-item is-active" data-cap-idx="0" data-reveal>
+            <li class="cap-item glass is-active" data-cap-idx="0" data-reveal>
               <span class="cap-num">01</span>
               <div class="cap-body">
                 <h3>Palco editável e Dual Output real (16:9 + 9:16)</h3>
@@ -632,7 +719,7 @@
               </div>
             </li>
 
-            <li class="cap-item" data-cap-idx="1" data-reveal>
+            <li class="cap-item glass" data-cap-idx="1" data-reveal>
               <span class="cap-num">02</span>
               <div class="cap-body">
                 <h3>Multistreaming isolado por destino</h3>
@@ -649,7 +736,7 @@
               </div>
             </li>
 
-            <li class="cap-item" data-cap-idx="2" data-reveal>
+            <li class="cap-item glass" data-cap-idx="2" data-reveal>
               <span class="cap-num">03</span>
               <div class="cap-body">
                 <h3>Mixer DSP 48 kHz e captura de áudio por programa</h3>
@@ -666,7 +753,7 @@
               </div>
             </li>
 
-            <li class="cap-item" data-cap-idx="3" data-reveal>
+            <li class="cap-item glass" data-cap-idx="3" data-reveal>
               <span class="cap-num">04</span>
               <div class="cap-body">
                 <h3>MultiChat unificado com emotes e janela popout</h3>
@@ -683,7 +770,7 @@
               </div>
             </li>
 
-            <li class="cap-item" data-cap-idx="4" data-reveal>
+            <li class="cap-item glass" data-cap-idx="4" data-reveal>
               <span class="cap-num">05</span>
               <div class="cap-body">
                 <h3>Kits de overlay OBS e widgets HTML</h3>
@@ -700,7 +787,7 @@
               </div>
             </li>
 
-            <li class="cap-item" data-cap-idx="5" data-reveal>
+            <li class="cap-item glass" data-cap-idx="5" data-reveal>
               <span class="cap-num">06</span>
               <div class="cap-body">
                 <h3>Transmissão LAN P2P, Gravação MP4 e Replay Buffer</h3>
@@ -722,28 +809,29 @@
 
       <!-- Matte Hardware Band: Animated Engineering Metrics, Interactive Shortcuts & Privacy -->
       <section class="hardware-band" id="atalhos">
+        <div class="hw-glow" aria-hidden="true"></div>
         <div class="wrap">
           <div class="metrics-strip" aria-label="Números de engenharia do motor">
-            <div class="metric-cell" data-reveal>
+            <div class="metric-cell glass-dark" data-reveal>
               <span class="metric-val"><span data-counter="48">48</span><span class="unit">kHz</span></span>
               <span class="metric-label">Pipeline DSP estéreo em ponto flutuante (f32)</span>
             </div>
-            <div class="metric-cell" data-reveal style="--reveal-delay: 70ms">
+            <div class="metric-cell glass-dark" data-reveal style="--reveal-delay: 70ms">
               <span class="metric-val"><span data-counter="2">2</span><span class="unit">×</span></span>
               <span class="metric-label">Canvas simultâneos independentes (16:9 + 9:16)</span>
             </div>
-            <div class="metric-cell" data-reveal style="--reveal-delay: 140ms">
+            <div class="metric-cell glass-dark" data-reveal style="--reveal-delay: 140ms">
               <span class="metric-val"><span data-counter="256">256</span><span class="unit">bit</span></span>
               <span class="metric-label">Autenticação RPC local + cofre nativo do SO</span>
             </div>
-            <div class="metric-cell" data-reveal style="--reveal-delay: 210ms">
+            <div class="metric-cell glass-dark" data-reveal style="--reveal-delay: 210ms">
               <span class="metric-val"><span data-counter="0">0</span><span class="unit">hops</span></span>
               <span class="metric-label">Servidores externos na transmissão LAN P2P</span>
             </div>
           </div>
 
           <div class="hardware-grid">
-            <div data-reveal>
+            <div class="hw-panel glass-dark" data-reveal>
               <p class="section-kicker">Controle sem sair do jogo · clique numa linha para testar</p>
               <h2 class="section-title">Atalhos globais de estúdio</h2>
 
@@ -782,7 +870,7 @@
               </table>
             </div>
 
-            <div data-reveal style="--reveal-delay: 100ms">
+            <div class="hw-panel glass-dark" data-reveal style="--reveal-delay: 100ms">
               <p class="section-kicker">Engenharia &amp; Privacidade</p>
               <h2 class="section-title">Seus segredos ficam na sua máquina</h2>
               <div class="eng-notes">
@@ -822,7 +910,7 @@
               <h2 class="section-title">Escolha o pacote do seu sistema</h2>
             </div>
 
-            <div class="os-tabs" id="os-tabs" data-active="windows" role="tablist" aria-label="Sistema operacional">
+            <div class="os-tabs glass" id="os-tabs" data-active="windows" role="tablist" aria-label="Sistema operacional">
               <span class="os-tab-slider" aria-hidden="true"></span>
               <button
                 class="os-tab"
@@ -851,7 +939,7 @@
 
           <!-- Windows Panel -->
           <div
-            class="dl-panel"
+            class="dl-panel glass"
             id="panel-windows"
             role="tabpanel"
             aria-labelledby="tab-windows"
@@ -917,7 +1005,7 @@
 
           <!-- Linux Panel -->
           <div
-            class="dl-panel"
+            class="dl-panel glass"
             id="panel-linux"
             role="tabpanel"
             aria-labelledby="tab-linux"
@@ -1001,7 +1089,7 @@
             </div>
           </div>
 
-          <div class="dl-prereq" data-reveal>
+          <div class="dl-prereq glass" data-reveal>
             <span>
               <strong>Requisito para multistream RTMP/RTMPS e gravação:</strong> FFmpeg disponível no PATH.
             </span>
@@ -1024,7 +1112,7 @@
             </p>
           </div>
 
-          <div class="faq-list" data-reveal style="--reveal-delay: 80ms">
+          <div class="faq-list glass" data-reveal style="--reveal-delay: 80ms">
             <div class="faq-item is-open">
               <button class="faq-trigger" type="button" aria-expanded="true">
                 <span>O PrismCast Studio é gratuito e de código aberto?</span>

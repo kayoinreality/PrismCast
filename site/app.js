@@ -191,15 +191,18 @@
       headerEl.classList.toggle('is-scrolled', y > 14);
     }
 
-    // Subtle hardware console scale settle on scroll into view
+    // Subtle 3D hardware console pitch & scale settle on scroll into view
     if (consoleFrame && !reducedMotion) {
       const rect = consoleFrame.getBoundingClientRect();
       const vh = window.innerHeight;
-      const enter = Math.max(0, Math.min(1, (vh - rect.top) / (vh * 0.55)));
-      const scale = 0.976 + enter * 0.024;
-      const shift = (1 - enter) * 14;
+      const enter = Math.max(0, Math.min(1, (vh - rect.top) / (vh * 0.6)));
+      const eased = 1 - Math.pow(1 - enter, 2);
+      const scale = 0.968 + eased * 0.032;
+      const shift = (1 - eased) * 18;
+      const tilt = (1 - eased) * 8.5;
       consoleFrame.style.setProperty('--console-scale', scale.toFixed(4));
       consoleFrame.style.setProperty('--console-y', `${shift.toFixed(1)}px`);
+      consoleFrame.style.setProperty('--console-tilt', `${tilt.toFixed(2)}deg`);
     }
 
     // Active section nav tracking
@@ -358,7 +361,7 @@
 
     if (!compact) {
       ctx.fillStyle = 'rgba(241, 237, 228, 0.78)';
-      ctx.font = '500 9px "IBM Plex Mono", monospace';
+      ctx.font = '500 9px "JetBrains Mono", monospace';
       ctx.fillText('CAM 01 · 1080p', x + 15, y + 12);
     }
     ctx.restore();
@@ -432,7 +435,7 @@
       }
 
       ctx.fillStyle = 'rgba(241, 237, 228, 0.75)';
-      ctx.font = `600 ${isVertical ? 9 : 11}px "IBM Plex Mono", monospace`;
+      ctx.font = `600 ${isVertical ? 9 : 11}px "JetBrains Mono", monospace`;
       ctx.fillText('248 KM/H · LAP 04', 14, 22);
 
       if (state.cameraOn) {
@@ -449,7 +452,7 @@
       ctx.fillStyle = '#d63626';
       ctx.fillRect(14, tagY - 12, 3, 22);
       ctx.fillStyle = '#f1ede4';
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
+      ctx.font = '500 10px "JetBrains Mono", monospace';
       ctx.fillText(state.cameraOn ? 'OVERLAY · GAMEPLAY + CAM' : 'OVERLAY · SEM MOLDURA', 24, tagY + 2);
     } else if (state.scene === 'chatting') {
       ctx.fillStyle = '#171613';
@@ -459,10 +462,10 @@
         if (isVertical) {
           drawWebcamPip(ctx, 14, 22, w - 28, h * 0.56, false);
           ctx.fillStyle = '#f1ede4';
-          ctx.font = '600 11px "IBM Plex Mono", monospace';
+          ctx.font = '600 11px "JetBrains Mono", monospace';
           ctx.fillText('SÓ CONVERSANDO', 14, h * 0.56 + 48);
           ctx.fillStyle = '#9a9488';
-          ctx.font = '400 10px "IBM Plex Sans", sans-serif';
+          ctx.font = '400 10px "Archivo", sans-serif';
           ctx.fillText('Bate-papo ao vivo + Multichat', 14, h * 0.56 + 66);
         } else {
           drawWebcamPip(ctx, 22, 24, w * 0.62, h - 48, false);
@@ -470,10 +473,10 @@
           ctx.fillStyle = '#d63626';
           ctx.fillRect(rx, 28, 26, 3);
           ctx.fillStyle = '#f1ede4';
-          ctx.font = '700 18px "Bricolage Grotesque", sans-serif';
+          ctx.font = '700 18px "Archivo", sans-serif';
           ctx.fillText('Só conversando', rx, 56);
           ctx.fillStyle = '#9a9488';
-          ctx.font = '400 11px "IBM Plex Mono", monospace';
+          ctx.font = '400 11px "JetBrains Mono", monospace';
           ctx.fillText('TWITCH · YT · KICK', rx, 78);
           ctx.strokeStyle = 'rgba(241, 237, 228, 0.14)';
           ctx.beginPath();
@@ -481,7 +484,7 @@
           ctx.lineTo(w - 22, 94);
           ctx.stroke();
           ctx.fillStyle = '#c8c3b8';
-          ctx.font = '400 11px "IBM Plex Sans", sans-serif';
+          ctx.font = '400 11px "Archivo", sans-serif';
           ctx.fillText('Tópico da live:', rx, 118);
           ctx.fillStyle = '#f1ede4';
           ctx.fillText('Testando motor Rust', rx, 136);
@@ -494,10 +497,10 @@
         ctx.fillRect(w * 0.5 - 16, h * 0.42 - 22, 32, 3);
         ctx.fillStyle = '#f1ede4';
         ctx.textAlign = 'center';
-        ctx.font = `700 ${isVertical ? 18 : 26}px "Bricolage Grotesque", sans-serif`;
+        ctx.font = `700 ${isVertical ? 18 : 26}px "Archivo", sans-serif`;
         ctx.fillText('Só conversando', w * 0.5, h * 0.46 + 4);
         ctx.fillStyle = '#9a9488';
-        ctx.font = '400 11px "IBM Plex Mono", monospace';
+        ctx.font = '400 11px "JetBrains Mono", monospace';
         ctx.fillText('MODO SEM CÂMERA (CTRL+SHIFT+C)', w * 0.5, h * 0.46 + 26);
         ctx.textAlign = 'left';
       }
@@ -510,18 +513,18 @@
 
       ctx.textAlign = 'center';
       ctx.fillStyle = '#9a9488';
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
+      ctx.font = '500 10px "JetBrains Mono", monospace';
       ctx.fillText('COMEÇANDO EM BREVE', w * 0.5, h * 0.38);
 
       ctx.fillStyle = '#f1ede4';
-      ctx.font = `700 ${isVertical ? 40 : 62}px "IBM Plex Mono", monospace`;
+      ctx.font = `700 ${isVertical ? 40 : 62}px "JetBrains Mono", monospace`;
       ctx.fillText(formatCountdown(state.countdownSec), w * 0.5, h * 0.55);
 
       ctx.fillStyle = '#d63626';
       ctx.fillRect(w * 0.5 - 24, h * 0.63, 48, 2);
 
       ctx.fillStyle = '#a19b8e';
-      ctx.font = '400 11px "IBM Plex Sans", sans-serif';
+      ctx.font = '400 11px "Archivo", sans-serif';
       ctx.fillText('Kit OBS · Timer sincronizado ao entrar no ar', w * 0.5, h * 0.72);
       ctx.textAlign = 'left';
     } else if (state.scene === 'brb') {
@@ -539,11 +542,11 @@
 
       ctx.textAlign = 'center';
       ctx.fillStyle = '#f1ede4';
-      ctx.font = `700 ${isVertical ? 22 : 34}px "Bricolage Grotesque", sans-serif`;
+      ctx.font = `700 ${isVertical ? 22 : 34}px "Archivo", sans-serif`;
       ctx.fillText('Volto já', w * 0.5, h * 0.48);
 
       ctx.fillStyle = '#9a9488';
-      ctx.font = '400 10.5px "IBM Plex Mono", monospace';
+      ctx.font = '400 10.5px "JetBrains Mono", monospace';
       ctx.fillText('TELA DE PAUSA ATIVA · CTRL+SHIFT+P', w * 0.5, h * 0.48 + 26);
       ctx.textAlign = 'left';
     }
@@ -561,7 +564,7 @@
 
     if (!isVertical) {
       ctx.fillStyle = 'rgba(241, 237, 228, 0.65)';
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
+      ctx.font = '500 10px "JetBrains Mono", monospace';
       ctx.textAlign = 'right';
       ctx.fillText(`TC ${formatTimecode(5412 + t)}`, w - 14, 22);
       ctx.textAlign = 'left';
@@ -1225,6 +1228,111 @@
       });
     }
   }
+
+  // ------------------------------------------------------- 3D Hero Prism Parallax
+  (() => {
+    const stage = document.getElementById('hero-visual');
+    const prismTilt = document.getElementById('prism-tilt');
+    const coarse = window.matchMedia('(pointer: coarse)').matches;
+    if (!stage || reducedMotion || coarse) return;
+
+    const layers = Array.from(stage.querySelectorAll('[data-depth]')).map((el) => ({
+      el,
+      depth: parseFloat(el.getAttribute('data-depth') || '1')
+    }));
+
+    let targetX = 0;
+    let targetY = 0;
+    let curX = 0;
+    let curY = 0;
+    let rafId = 0;
+
+    function animate() {
+      curX += (targetX - curX) * 0.1;
+      curY += (targetY - curY) * 0.1;
+
+      if (prismTilt) {
+        const rx = -14 - curY * 14;
+        const ry = -24 + curX * 20;
+        prismTilt.style.setProperty('--prism-rx', `${rx.toFixed(2)}deg`);
+        prismTilt.style.setProperty('--prism-ry', `${ry.toFixed(2)}deg`);
+      }
+
+      for (const { el, depth } of layers) {
+        const px = curX * depth * 11;
+        const py = curY * depth * 9;
+        el.style.setProperty('--px', `${px.toFixed(2)}px`);
+        el.style.setProperty('--py', `${py.toFixed(2)}px`);
+      }
+
+      if (Math.abs(targetX - curX) > 0.002 || Math.abs(targetY - curY) > 0.002) {
+        rafId = requestAnimationFrame(animate);
+      } else {
+        rafId = 0;
+      }
+    }
+
+    function kick() {
+      if (!rafId) rafId = requestAnimationFrame(animate);
+    }
+
+    stage.addEventListener(
+      'pointermove',
+      (ev) => {
+        const rect = stage.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        targetX = Math.max(-1, Math.min(1, ((ev.clientX - rect.left) / rect.width - 0.5) * 2));
+        targetY = Math.max(-1, Math.min(1, ((ev.clientY - rect.top) / rect.height - 0.5) * 2));
+        kick();
+      },
+      { passive: true }
+    );
+
+    stage.addEventListener('pointerleave', () => {
+      targetX = 0;
+      targetY = 0;
+      kick();
+    });
+  })();
+
+  // ------------------------------------------------------- 3D Specular Card Tilt
+  (() => {
+    const coarse = window.matchMedia('(pointer: coarse)').matches;
+    if (reducedMotion || coarse) return;
+
+    const tiltEls = document.querySelectorAll('[data-tilt]');
+    tiltEls.forEach((el) => {
+      const maxDeg = el.classList.contains('tilt-soft') ? 3.8 : 7.5;
+
+      el.addEventListener('pointerenter', () => {
+        el.classList.add('is-tilting');
+      });
+
+      el.addEventListener(
+        'pointermove',
+        (ev) => {
+          const rect = el.getBoundingClientRect();
+          if (!rect.width || !rect.height) return;
+          const nx = (ev.clientX - rect.left) / rect.width;
+          const ny = (ev.clientY - rect.top) / rect.height;
+          const rx = (0.5 - ny) * maxDeg * 2;
+          const ry = (nx - 0.5) * maxDeg * 2;
+
+          el.style.setProperty('--rx', `${rx.toFixed(2)}deg`);
+          el.style.setProperty('--ry', `${ry.toFixed(2)}deg`);
+          el.style.setProperty('--gx', `${(nx * 100).toFixed(1)}%`);
+          el.style.setProperty('--gy', `${(ny * 100).toFixed(1)}%`);
+        },
+        { passive: true }
+      );
+
+      el.addEventListener('pointerleave', () => {
+        el.classList.remove('is-tilting');
+        el.style.setProperty('--rx', '0deg');
+        el.style.setProperty('--ry', '0deg');
+      });
+    });
+  })();
 
   hydrateRelease();
   void smoothScroll;
