@@ -25,11 +25,11 @@ jobs:
       - name: Baixar o código
         uses: actions/checkout@v4
 
-      - name: Instalar dependências de sistema Linux (Tauri v2 / WebKitGTK)
+      - name: Instalar dependências de sistema Linux (X11 / Wayland / Vulkan / OpenSSL)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf
+          sudo apt-get install -y pkg-config libssl-dev libxkbcommon-dev libwayland-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libdbus-1-dev
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -37,29 +37,17 @@ jobs:
       - name: Cache de dependências do Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Instalar dependências Node
-        run: npm ci
-
-      - name: Verificar tipos TypeScript e compilar frontend
-        run: npm run build
-
       - name: Rodar testes unitários em Rust (headless)
+        run: cargo test --no-default-features --verbose
+
+      - name: Rodar testes unitários com UI nativa Rust (egui + wgpu)
         run: cargo test --verbose
 
-      - name: Rodar testes unitários e verificar integração Tauri v2
-        run: cargo test --features tauri-app --verbose
-
-      - name: Verificar todos os alvos Rust com Tauri v2
-        run: cargo check --all-targets --features tauri-app
+      - name: Verificar todos os alvos Rust (binários + testes)
+        run: cargo check --all-targets
 
   build-windows:
-    name: Build Windows (Tauri v2 — Portable .exe, NSIS, MSI)
+    name: Build Windows (100% Rust — Portable .exe & Instalador NSIS)
     needs: validate-and-test
     runs-on: windows-latest
 
@@ -73,35 +61,29 @@ jobs:
       - name: Cache de dependências do Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - name: Compilar binários nativos Windows (Release)
+        run: cargo build --release --bins
 
-      - name: Instalar dependências Node
-        run: npm ci
-
-      - name: Gerar instaladores e executável Windows (Tauri v2 + Rust)
-        run: npm run dist:win
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Preparar artefatos Windows para publicação
+      - name: Gerar Portable .exe e Instalador NSIS
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = node -p "require('./package.json').version"
+          $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
           New-Item -ItemType Directory -Force -Path release-windows | Out-Null
+
           Copy-Item "target/release/prismcast.exe" "release-windows/PrismCast-Studio-$version-windows-x64-portable.exe"
-          $nsis = @(Get-ChildItem "target/release/bundle/nsis/*.exe")
-          $msi = @(Get-ChildItem "target/release/bundle/msi/*.msi")
-          if ($nsis.Count -eq 0) { throw "Nenhum instalador NSIS encontrado em target/release/bundle/nsis" }
-          if ($msi.Count -eq 0) { throw "Nenhum instalador MSI encontrado em target/release/bundle/msi" }
-          foreach ($item in ($nsis + $msi)) {
-            $safeName = $item.Name -replace ' ', '-'
-            Copy-Item $item.FullName "release-windows/$safeName"
+          Compress-Archive -Path "target/release/prismcast.exe","target/release/prismcast-audio.exe" -DestinationPath "release-windows/PrismCast-Studio-$version-windows-x64-portable.zip" -Force
+
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+          if (-not $makensis -and (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
+            $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
           }
+          if (-not $makensis) {
+            choco install nsis -y --no-progress | Out-Host
+            $makensis = "C:\Program Files (x86)\NSIS\makensis.exe"
+          }
+          & $makensis "/DAPP_VERSION=$version" "build/installer/prismcast.nsi"
+          if ($LASTEXITCODE -ne 0) { throw "makensis falhou com código $LASTEXITCODE" }
           Get-ChildItem release-windows/
 
       - name: Publicar artefatos Windows
@@ -112,7 +94,7 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    name: Build Linux (Tauri v2 — AppImage, deb, rpm, tar.gz)
+    name: Build Linux (100% Rust — .deb & .tar.gz)
     needs: validate-and-test
     runs-on: ubuntu-latest
 
@@ -120,10 +102,10 @@ jobs:
       - name: Baixar o código
         uses: actions/checkout@v4
 
-      - name: Instalar dependências Tauri v2 e empacotamento Linux
+      - name: Instalar dependências de build Linux
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev patchelf rpm libarchive-tools squashfs-tools libfuse2
+          sudo apt-get install -y pkg-config libssl-dev libxkbcommon-dev libwayland-dev libx11-dev libxcb-shape0-dev libxcb-xfixes0-dev libdbus-1-dev dpkg
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -131,29 +113,54 @@ jobs:
       - name: Cache de dependências do Rust
         uses: Swatinem/rust-cache@v2
 
-      - name: Configurar Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
+      - name: Compilar binários nativos Linux (Release)
+        run: cargo build --release --bins
 
-      - name: Instalar dependências Node
-        run: npm ci
-
-      - name: Gerar pacotes Linux (AppImage, .deb, .rpm)
-        run: npm run dist:linux
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Preparar artefatos Linux para publicação
+      - name: Empacotar .deb e .tar.gz
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
           mkdir -p release-linux
-          for f in target/release/bundle/appimage/*.AppImage target/release/bundle/deb/*.deb target/release/bundle/rpm/*.rpm; do
-            base=$(basename "$f")
-            cp "$f" "release-linux/${base// /-}"
-          done
+
+          # Pacote .tar.gz portátil
           tar -czf "release-linux/PrismCast-Studio-${VERSION}-linux-x64.tar.gz" -C target/release prismcast prismcast-audio
+
+          # Pacote .deb nativo com ícone e atalho de menu
+          PKG_DIR="target/deb-pkg"
+          rm -rf "${PKG_DIR}"
+          mkdir -p "${PKG_DIR}/DEBIAN" \
+                   "${PKG_DIR}/usr/bin" \
+                   "${PKG_DIR}/usr/share/applications" \
+                   "${PKG_DIR}/usr/share/icons/hicolor/256x256/apps"
+
+          install -m 755 target/release/prismcast "${PKG_DIR}/usr/bin/prismcast"
+          install -m 755 target/release/prismcast-audio "${PKG_DIR}/usr/bin/prismcast-audio"
+          install -m 644 build/128x128@2x.png "${PKG_DIR}/usr/share/icons/hicolor/256x256/apps/prismcast.png"
+
+          cat > "${PKG_DIR}/usr/share/applications/prismcast-studio.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=PrismCast Studio
+          Comment=Estúdio de transmissão 100% nativo em Rust (egui + wgpu)
+          Exec=/usr/bin/prismcast
+          Icon=prismcast
+          Terminal=false
+          Type=Application
+          Categories=AudioVideo;Video;Recorder;
+          EOF
+
+          cat > "${PKG_DIR}/DEBIAN/control" <<EOF
+          Package: prismcast-studio
+          Version: ${VERSION}
+          Section: video
+          Priority: optional
+          Architecture: amd64
+          Maintainer: kayor <kayor@users.noreply.github.com>
+          Description: PrismCast Studio — Estúdio de transmissão 100% nativo em Rust
+           Estúdio desktop nativo em Rust (egui + wgpu) com captura nativa sem WebView,
+           Dual Output 16:9 + 9:16, Multistreaming RTMP, Mixer DSP 48 kHz e LAN P2P.
+          EOF
+
+          dpkg-deb --build "${PKG_DIR}" "release-linux/PrismCast-Studio-${VERSION}-amd64.deb"
           ls -lh release-linux/
 
       - name: Publicar artefatos Linux
@@ -191,7 +198,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          VERSION=$(node -p "require('./package.json').version")
+          VERSION=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/version = "([^"]+)"/\1/')
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             TAG="${GITHUB_REF_NAME}"
           else

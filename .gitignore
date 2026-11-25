@@ -1,8 +1,5 @@
-node_modules/
-out/
-dist/
 target/
-gen/
-*.tsbuildinfo
+release-windows/
+release-linux/
 *.log
 .DS_Store

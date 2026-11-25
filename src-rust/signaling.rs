@@ -555,10 +555,19 @@ impl SignalingServer {
                         }
                     }
 
-                    // Garante flush de mensagens finais (ex: Rejected/Kicked) antes de abortar write_task.
+                    // Garante flush de mensagens finais (ex: Rejected/Kicked) e aguarda o close
+                    // handshake do peer brevemente para evitar TCP RST no Winsock (Windows) antes
+                    // do cliente ler o frame final.
                     conn_cancel.cancel();
-                    if tokio::time::timeout(FLUSH_TIMEOUT, write_task).await.is_err() {
-                        // timeout expirado
+                    if tokio::time::timeout(FLUSH_TIMEOUT, write_task).await.is_ok() {
+                        let _ = tokio::time::timeout(Duration::from_millis(150), async {
+                            while let Some(Ok(frame)) = ws_read.next().await {
+                                if matches!(frame, Message::Close(_)) {
+                                    break;
+                                }
+                            }
+                        })
+                        .await;
                     }
 
                     if let Some(vid) = current_viewer_id {

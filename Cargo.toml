@@ -1,20 +1,19 @@
 [package]
 name = "prismcast"
-version = "2.5.1"
+version = "3.0.0"
 edition = "2021"
 authors = ["kayor"]
-description = "PrismCast Studio — Motor nativo em Rust para transmissão LAN P2P, Multistreaming (Twitch, YouTube, Kick, TikTok), Dual Output (16:9 + 9:16), Replay Buffer e Widgets"
+description = "PrismCast Studio — Estúdio de transmissão 100% nativo em Rust (egui + wgpu) com captura nativa sem WebView, Dual Output (16:9 + 9:16), Multistreaming, Mixer DSP e LAN P2P"
 license = "MIT"
 default-run = "prismcast"
 build = "src-rust/build.rs"
 
 [features]
-default = []
-tauri-app = [
-    "dep:tauri",
-    "dep:tauri-build",
-    "dep:tauri-plugin-dialog",
-    "dep:tauri-plugin-opener",
+default = ["native-ui"]
+native-ui = [
+    "dep:eframe",
+    "dep:egui",
+    "dep:rfd",
 ]
 
 [[bin]]
@@ -59,12 +58,14 @@ wgpu = "24"
 rml_rtmp = "0.8"
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
-tauri = { version = "2", optional = true, features = [] }
-tauri-plugin-dialog = { version = "2", optional = true }
-tauri-plugin-opener = { version = "2", optional = true }
+open = "5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+eframe = { version = "0.31", optional = true, default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
+egui = { version = "0.31", optional = true }
+rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "tokio"] }
 
-[build-dependencies]
-tauri-build = { version = "2", optional = true, features = [] }
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))'.dependencies]
 keyring = { version = "3.6", features = ["async-secret-service", "async-io", "crypto-rust"] }
@@ -83,6 +84,7 @@ windows = { version = "0.62", features = [
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",
     "Win32_Security_Cryptography",

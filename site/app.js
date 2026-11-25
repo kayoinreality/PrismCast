@@ -840,7 +840,7 @@
       lines: [
         ['Plataformas', 'Twitch · YouTube · Kick'],
         ['Emotes nativos', '7TV · BTTV · FFZ'],
-        ['Janela popout', 'Sempre no topo (Tauri v2)']
+        ['Interface', '100% Rust Nativo (egui + wgpu)']
       ]
     },
     {

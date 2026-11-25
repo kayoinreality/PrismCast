@@ -5,16 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="PrismCast Studio — Estúdio de transmissão nativo em Rust e Tauri v2 para Windows e Linux. Dual Output 16:9 + 9:16, multistreaming RTMP com aceleração de hardware, mixer DSP 48 kHz com áudio por aplicativo, MultiChat e LAN P2P."
+      content="PrismCast Studio — Estúdio de transmissão 100% nativo em Rust (egui + wgpu) para Windows e Linux. Captura nativa sem WebView, Dual Output 16:9 + 9:16, multistreaming RTMP com aceleração de hardware, mixer DSP 48 kHz com áudio por aplicativo, MultiChat e LAN P2P."
     />
     <meta name="theme-color" content="#f3efe6" />
     <meta property="og:type" content="website" />
-    <meta property="og:title" content="PrismCast Studio — Estúdio de transmissão nativo em Rust" />
+    <meta property="og:title" content="PrismCast Studio — Estúdio de transmissão 100% nativo em Rust" />
     <meta
       property="og:description"
       content="Dual Output 16:9 + 9:16, multistreaming para Twitch, YouTube, Kick e TikTok, áudio isolado por programa e LAN P2P. Para Windows e Linux."
     />
-    <title>PrismCast Studio — Estúdio de transmissão em Rust para Windows e Linux</title>
+    <title>PrismCast Studio — Estúdio de transmissão 100% nativo em Rust</title>
     <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -60,7 +60,7 @@
             <rect x="3" y="3" width="58" height="58" rx="13.5" stroke="#363F58" stroke-width="1.4" />
           </svg>
           <span>PrismCast Studio</span>
-          <span class="version-tag" data-release-version>v2.5.0</span>
+          <span class="version-tag" data-release-version>v3.0.0</span>
         </a>
 
         <nav class="site-nav" id="site-nav" aria-label="Navegação principal">
@@ -100,7 +100,7 @@
               <div class="hero-aside" data-reveal style="--reveal-delay: 180ms">
                 <p class="hero-lead">
                   Monte cenas em 16:9 e 9:16 ao mesmo tempo, isole o áudio de um único jogo ou programa e transmita
-                  para Twitch, YouTube, Kick, TikTok ou pela rede local — num binário nativo em Rust + Tauri v2.
+                  para Twitch, YouTube, Kick, TikTok ou pela rede local — num binário 100% nativo em Rust (egui + wgpu).
                 </p>
                 <div class="hero-cta-row">
                   <a class="btn btn-primary" id="hero-download-btn" href="#baixar">
@@ -116,7 +116,7 @@
                   >
                 </div>
                 <p class="hero-footnote" id="hero-download-note">
-                  Windows 10 e 11 (64 bits) · Portátil .exe, NSIS e MSI · Licença MIT
+                  Windows 10 e 11 (64 bits) · Portátil .exe e Instalador NSIS · Licença MIT
                 </p>
               </div>
             </div>
@@ -197,8 +197,8 @@
 
           <div class="spec-strip" aria-label="Especificações principais" data-reveal style="--reveal-delay: 260ms">
             <div class="spec-cell glass tilt" data-tilt>
-              <span class="spec-k">Rust + Tauri v2</span>
-              <span class="spec-v">Sem Electron nem Chromium duplicado</span>
+              <span class="spec-k">100% Rust Nativo</span>
+              <span class="spec-v">egui + wgpu 24 — zero Electron, zero Tauri/WebView</span>
             </div>
             <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Dual Output 16:9 + 9:16</span>
@@ -210,7 +210,7 @@
             </div>
             <div class="spec-cell glass tilt" data-tilt>
               <span class="spec-k">Windows &amp; Linux</span>
-              <span class="spec-v">Portable, NSIS, MSI, AppImage, deb e rpm</span>
+              <span class="spec-v">Portable .exe, NSIS, .deb e .tar.gz</span>
             </div>
           </div>
         </div>
@@ -422,7 +422,7 @@
             <span class="marquee-item">StreamElements</span>
             <span class="marquee-item">WebRTC LAN P2P</span>
             <span class="marquee-item">Replay Buffer EBML</span>
-            <span class="marquee-item">Rust + Tauri v2</span>
+            <span class="marquee-item">100% Rust Nativo (egui + wgpu)</span>
           </div>
           <div class="marquee-track" aria-hidden="true">
             <span class="marquee-item">Twitch IRC &amp; Helix</span>
@@ -437,7 +437,7 @@
             <span class="marquee-item">StreamElements</span>
             <span class="marquee-item">WebRTC LAN P2P</span>
             <span class="marquee-item">Replay Buffer EBML</span>
-            <span class="marquee-item">Rust + Tauri v2</span>
+            <span class="marquee-item">100% Rust Nativo (egui + wgpu)</span>
           </div>
         </div>
       </div>
@@ -906,7 +906,7 @@
         <div class="wrap">
           <div class="downloads-head" data-reveal>
             <div>
-              <p class="section-kicker">Download direto · <span data-release-version>v2.5.0</span></p>
+              <p class="section-kicker">Download direto · <span data-release-version>v3.0.0</span></p>
               <h2 class="section-title">Escolha o pacote do seu sistema</h2>
             </div>
 
@@ -1121,9 +1121,9 @@
               <div class="faq-body">
                 <div class="faq-body-inner">
                   <p>
-                    Sim. Todo o motor em Rust, a interface Tauri v2 e o empacotamento de Windows e Linux são licenciados
-                    sob licença MIT no GitHub, sem planos pagos, sem marca d'água e sem limite de plataformas no
-                    multistream.
+                    Sim. Todo o motor em Rust, a interface desktop nativa (egui + wgpu) e o empacotamento de Windows e
+                    Linux são licenciados sob licença MIT no GitHub, sem planos pagos, sem marca d'água e sem limite de
+                    plataformas no multistream.
                   </p>
                 </div>
               </div>
@@ -1179,15 +1179,15 @@
 
             <div class="faq-item">
               <button class="faq-trigger" type="button" aria-expanded="false">
-                <span>Por que o app migrou de Electron para Rust + Tauri v2?</span>
+                <span>Por que o app é 100% nativo em Rust sem Electron nem Tauri/WebView?</span>
                 <span class="faq-icon" aria-hidden="true"></span>
               </button>
               <div class="faq-body">
                 <div class="faq-body-inner">
                   <p>
-                    Em vez de carregar uma cópia inteira do Chromium e do Node.js na RAM enquanto você joga, o núcleo
-                    roda nativamente em Rust (mixer DSP, compositor, WebRTC LAN, MultiChat, cofre e FFmpeg) e o Tauri v2
-                    usa a WebView nativa do sistema — reduzindo o pacote de ~100 MB para menos de 10 MB no .deb/.rpm.
+                    Para eliminar popups de compartilhamento de navegador, barras flutuantes e consumo extra de RAM:
+                    toda a interface (egui + wgpu 24), a captura de telas/janelas com miniaturas reais (DXGI /
+                    PrintWindow / PipeWire), o compositor, o mixer DSP 48 kHz e o multistream rodam 100% em Rust nativo.
                   </p>
                 </div>
               </div>
@@ -1200,7 +1200,7 @@
     <footer class="site-footer">
       <div class="wrap footer-inner">
         <div>
-          <strong>PrismCast Studio</strong> · Rust + Tauri v2 · Licença MIT
+          <strong>PrismCast Studio</strong> · 100% Rust Nativo (egui + wgpu) · Licença MIT
         </div>
         <div class="footer-links">
           <a href="https://github.com/kayoinreality/PrismCast/releases" target="_blank" rel="noreferrer">Todas as releases</a>
