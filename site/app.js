@@ -11,149 +11,28 @@
     document.body.classList.add('is-loaded');
   });
 
-  // ------------------------------------------------------- Inertial Smooth Scroll
-  const smoothScroll = (() => {
-    const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
-    const enabled = !reducedMotion && !isCoarsePointer;
-    let currentY = window.scrollY;
-    let targetY = window.scrollY;
-    let active = false;
-    let lastTime = performance.now();
+  const isCoarsePointer = window.matchMedia('(pointer: coarse)').matches;
 
-    function maxScroll() {
-      return Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-    }
-
-    function hasScrollableAncestor(el, deltaY) {
-      let node = el;
-      while (node && node !== document.body && node !== document.documentElement) {
-        const style = window.getComputedStyle(node);
-        const overflowY = style.overflowY;
-        if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
-          if ((deltaY < 0 && node.scrollTop > 0) || (deltaY > 0 && node.scrollTop + node.clientHeight < node.scrollHeight)) {
-            return true;
-          }
-        }
-        node = node.parentElement;
-      }
-      return false;
-    }
-
-    function step(now) {
-      const dt = Math.min(0.05, Math.max(0.001, (now - lastTime) / 1000));
-      lastTime = now;
-
-      const diff = targetY - currentY;
-      if (Math.abs(diff) < 0.35) {
-        currentY = targetY;
-        window.scrollTo(0, Math.round(currentY));
-        active = false;
-        return;
-      }
-
-      // Frame-rate independent exponential smoothing (silky on 60Hz/120Hz/144Hz)
-      const factor = 1 - Math.exp(-9.6 * dt);
-      currentY += diff * factor;
-      window.scrollTo(0, currentY);
-      requestAnimationFrame(step);
-    }
-
-    function start() {
-      if (!active) {
-        active = true;
-        lastTime = performance.now();
-        requestAnimationFrame(step);
-      }
-    }
-
-    function cancel() {
-      if (active) {
-        active = false;
-        currentY = window.scrollY;
-        targetY = currentY;
-      }
-    }
-
-    if (enabled) {
-      window.addEventListener(
-        'wheel',
-        (ev) => {
-          if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-          if (hasScrollableAncestor(ev.target, ev.deltaY)) return;
-
-          ev.preventDefault();
-          let delta = ev.deltaY;
-          if (ev.deltaMode === 1) delta *= 36;
-          else if (ev.deltaMode === 2) delta *= window.innerHeight * 0.85;
-
-          // Keep native sync if user dragged scrollbar or used keyboard
-          if (!active) {
-            currentY = window.scrollY;
-            targetY = currentY;
-          }
-          targetY = Math.max(0, Math.min(maxScroll(), targetY + delta));
-          start();
-        },
-        { passive: false }
+  // ------------------------------------------------------- Native Smooth Anchor Navigation
+  // Avoid hijacking wheel events with non-passive listeners so the browser's
+  // compositor thread handles 60/120/144Hz scrolling with zero main-thread jank.
+  document.querySelectorAll('a[href^="#"]').forEach((link) => {
+    link.addEventListener('click', (ev) => {
+      const id = link.getAttribute('href');
+      if (!id || id === '#') return;
+      const target = document.querySelector(id);
+      if (!target) return;
+      ev.preventDefault();
+      const headerOffset = 72;
+      const y = Math.max(
+        0,
+        target.getBoundingClientRect().top + window.scrollY - (id === '#topo' ? 0 : headerOffset)
       );
-
-      // Immediately yield to keyboard scroll keys, scrollbar drags, or touch
-      window.addEventListener(
-        'keydown',
-        (ev) => {
-          if (['ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', 'Home', 'End', ' '].includes(ev.key)) {
-            cancel();
-          }
-        },
-        { passive: true }
-      );
-      window.addEventListener('pointerdown', (ev) => {
-        if (ev.clientX >= document.documentElement.clientWidth) cancel();
-      }, { passive: true });
-      window.addEventListener('touchstart', cancel, { passive: true });
-
-      // Resync when native scrollbar drag or keyboard navigation moves viewport
-      window.addEventListener(
-        'scroll',
-        () => {
-          if (!active) {
-            currentY = window.scrollY;
-            targetY = currentY;
-          }
-        },
-        { passive: true }
-      );
-    }
-
-    function scrollToY(y) {
-      const clamped = Math.max(0, Math.min(maxScroll(), y));
-      if (!enabled) {
-        window.scrollTo({ top: clamped, behavior: reducedMotion ? 'auto' : 'smooth' });
-        return;
-      }
-      currentY = window.scrollY;
-      targetY = clamped;
-      start();
-    }
-
-    // Intercept anchor links for smooth offset gliding
-    document.querySelectorAll('a[href^="#"]').forEach((link) => {
-      link.addEventListener('click', (ev) => {
-        const id = link.getAttribute('href');
-        if (!id || id === '#') return;
-        const target = document.querySelector(id);
-        if (!target) return;
-        ev.preventDefault();
-        const headerOffset = 72;
-        const y = target.getBoundingClientRect().top + window.scrollY - (id === '#topo' ? 0 : headerOffset);
-        scrollToY(y);
-      });
+      window.scrollTo({ top: y, behavior: reducedMotion ? 'auto' : 'smooth' });
     });
+  });
 
-    return { scrollToY };
-  })();
-
-  // ------------------------------------------------------- Scroll Choreography
+  // ------------------------------------------------------- Scroll Choreography (Zero Layout Thrash)
   const headerEl = document.getElementById('site-header');
   const progressBar = document.getElementById('scroll-progress');
   const consoleFrame = document.getElementById('console-frame');
@@ -161,8 +40,35 @@
   const navIndicator = document.getElementById('nav-indicator');
   const navLinks = navEl ? Array.from(navEl.querySelectorAll('a[href^="#"]')) : [];
   const navSections = navLinks
-    .map((a) => ({ link: a, el: document.querySelector(a.getAttribute('href')) }))
+    .map((a) => ({ link: a, el: document.querySelector(a.getAttribute('href')), top: 0 }))
     .filter((item) => item.el);
+
+  const layoutCache = {
+    maxScroll: 1,
+    vh: window.innerHeight || 800,
+    consoleTop: 0,
+    consoleBottom: 0
+  };
+  let lastActiveLink = null;
+  let lastScrolledState = false;
+  let lastConsoleSettled = false;
+
+  function measureLayout() {
+    const scrollY = window.scrollY;
+    layoutCache.vh = window.innerHeight || 800;
+    layoutCache.maxScroll = Math.max(1, document.documentElement.scrollHeight - layoutCache.vh);
+    if (consoleFrame) {
+      const r = consoleFrame.getBoundingClientRect();
+      layoutCache.consoleTop = r.top + scrollY;
+      layoutCache.consoleBottom = r.bottom + scrollY;
+    }
+    for (const item of navSections) {
+      item.top = item.el.getBoundingClientRect().top + scrollY;
+    }
+    if (lastActiveLink) {
+      updateNavIndicator(lastActiveLink);
+    }
+  }
 
   function updateNavIndicator(activeLink) {
     if (!navIndicator || !navEl) return;
@@ -181,39 +87,45 @@
   function onScrollFrame() {
     scrollScheduled = false;
     const y = window.scrollY;
-    const max = Math.max(1, document.documentElement.scrollHeight - window.innerHeight);
-    const ratio = Math.max(0, Math.min(1, y / max));
+    const ratio = Math.max(0, Math.min(1, y / layoutCache.maxScroll));
 
     if (progressBar) {
       progressBar.style.transform = `scaleX(${ratio.toFixed(4)})`;
     }
-    if (headerEl) {
-      headerEl.classList.toggle('is-scrolled', y > 14);
+    const isScrolled = y > 14;
+    if (headerEl && isScrolled !== lastScrolledState) {
+      lastScrolledState = isScrolled;
+      headerEl.classList.toggle('is-scrolled', isScrolled);
     }
 
-    // Subtle 3D hardware console pitch & scale settle on scroll into view
-    if (consoleFrame && !reducedMotion) {
-      const rect = consoleFrame.getBoundingClientRect();
-      const vh = window.innerHeight;
-      const enter = Math.max(0, Math.min(1, (vh - rect.top) / (vh * 0.6)));
-      const eased = 1 - Math.pow(1 - enter, 2);
-      const scale = 0.968 + eased * 0.032;
-      const shift = (1 - eased) * 18;
-      const tilt = (1 - eased) * 8.5;
-      consoleFrame.style.setProperty('--console-scale', scale.toFixed(4));
-      consoleFrame.style.setProperty('--console-y', `${shift.toFixed(1)}px`);
-      consoleFrame.style.setProperty('--console-tilt', `${tilt.toFixed(2)}deg`);
+    // Subtle 3D hardware console pitch & scale settle on desktop only (using cached top)
+    if (consoleFrame && !reducedMotion && !isCoarsePointer) {
+      const rectTop = layoutCache.consoleTop - y;
+      const enter = Math.max(0, Math.min(1, (layoutCache.vh - rectTop) / (layoutCache.vh * 0.6)));
+      const settled = enter >= 0.999;
+      if (!settled || !lastConsoleSettled) {
+        lastConsoleSettled = settled;
+        const eased = 1 - Math.pow(1 - enter, 2);
+        const scale = 0.968 + eased * 0.032;
+        const shift = (1 - eased) * 18;
+        const tilt = (1 - eased) * 8.5;
+        consoleFrame.style.setProperty('--console-scale', scale.toFixed(4));
+        consoleFrame.style.setProperty('--console-y', `${shift.toFixed(1)}px`);
+        consoleFrame.style.setProperty('--console-tilt', `${tilt.toFixed(2)}deg`);
+      }
     }
 
-    // Active section nav tracking
+    // Active section nav tracking using cached offsets (zero reflow!)
     let current = null;
-    const probe = y + window.innerHeight * 0.34;
+    const probe = y + layoutCache.vh * 0.34;
     for (const item of navSections) {
-      const top = item.el.getBoundingClientRect().top + y;
-      if (probe >= top) current = item.link;
+      if (probe >= item.top) current = item.link;
     }
-    navLinks.forEach((a) => a.classList.toggle('is-current', a === current));
-    updateNavIndicator(current);
+    if (current !== lastActiveLink) {
+      lastActiveLink = current;
+      navLinks.forEach((a) => a.classList.toggle('is-current', a === current));
+      updateNavIndicator(current);
+    }
   }
 
   window.addEventListener(
@@ -226,7 +138,19 @@
     },
     { passive: true }
   );
-  window.addEventListener('resize', () => requestAnimationFrame(onScrollFrame), { passive: true });
+  window.addEventListener(
+    'resize',
+    () => {
+      measureLayout();
+      requestAnimationFrame(onScrollFrame);
+    },
+    { passive: true }
+  );
+  window.addEventListener('load', () => {
+    measureLayout();
+    requestAnimationFrame(onScrollFrame);
+  });
+  measureLayout();
   requestAnimationFrame(onScrollFrame);
 
   // ------------------------------------------------------- Scroll Reveal Observer
@@ -306,10 +230,10 @@
 
   function setupCanvas(canvas, w, h) {
     if (!canvas) return null;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = isCoarsePointer ? 1 : Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { alpha: false });
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     return { ctx, w, h };
   }
@@ -578,24 +502,36 @@
     ctx.restore();
   }
 
-  // ------------------------------------------------------- Stereo VU Meters
+  // ------------------------------------------------------- Stereo VU Meters (Zero Per-Frame Reflow)
   const meterEls = {
     desktop: document.getElementById('meter-desktop'),
     mic: document.getElementById('meter-mic'),
     app: document.getElementById('meter-app')
   };
+  const meterCache = {};
 
-  function drawMeter(canvas, level, peak, muted) {
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const w = Math.max(120, Math.round(rect.width));
-    const h = 12;
-    if (canvas.width !== w || canvas.height !== h) {
-      canvas.width = w;
-      canvas.height = h;
-    }
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, w, h);
+  function resizeMeters() {
+    Object.entries(meterEls).forEach(([id, canvas]) => {
+      if (!canvas) return;
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(120, Math.round(rect.width || 200));
+      const h = 12;
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+      }
+      meterCache[id] = { ctx: canvas.getContext('2d', { alpha: false }), w, h };
+    });
+  }
+  resizeMeters();
+  window.addEventListener('resize', resizeMeters, { passive: true });
+
+  function drawMeter(id, level, peak, muted) {
+    const entry = meterCache[id];
+    if (!entry) return;
+    const { ctx, w, h } = entry;
+    ctx.fillStyle = '#141412';
+    ctx.fillRect(0, 0, w, h);
 
     const segments = 34;
     const gap = 2;
@@ -968,11 +904,16 @@
     });
   });
 
-  // ------------------------------------------------------- Animation Loop (Console + Workflow + EQ)
+  // ------------------------------------------------------- Visibility-Gated Animation Loop (30fps cap)
   const telBitrate = document.getElementById('telemetry-bitrate');
   const telFps = document.getElementById('telemetry-fps');
   let lastTs = performance.now();
+  let lastRenderTs = 0;
   let lastTelUpdate = 0;
+  let loopRafId = 0;
+  let consoleVisible = true;
+  let workflowVisible = false;
+  const FRAME_INTERVAL_MS = isCoarsePointer ? 42 : 33;
 
   function renderOnce(t) {
     drawSceneFrame(wide, t, false);
@@ -980,106 +921,146 @@
     ['desktop', 'mic', 'app'].forEach((id) => {
       const ch = state.channels[id];
       const gain = dbToGain(ch.db);
-      drawMeter(meterEls[id], ch.muted ? 0 : Math.min(0.92, ch.level * gain), ch.peak * gain, ch.muted);
+      drawMeter(id, ch.muted ? 0 : Math.min(0.92, ch.level * gain), ch.peak * gain, ch.muted);
     });
   }
 
+  function shouldRunLoop() {
+    return !reducedMotion && !document.hidden && (consoleVisible || workflowVisible);
+  }
+
+  function ensureLoopRunning() {
+    if (shouldRunLoop() && !loopRafId) {
+      lastTs = performance.now();
+      loopRafId = requestAnimationFrame(tick);
+    }
+  }
+
   function tick(now) {
+    loopRafId = 0;
+    if (!shouldRunLoop()) return;
+
+    if (now - lastRenderTs < FRAME_INTERVAL_MS) {
+      loopRafId = requestAnimationFrame(tick);
+      return;
+    }
+    lastRenderTs = now;
+
     const dt = Math.min(0.1, (now - lastTs) / 1000);
     lastTs = now;
     const t = now / 1000;
 
-    if (state.transitionAlpha < 1) {
-      state.transitionAlpha = Math.min(1, state.transitionAlpha + dt * 4.5);
-    }
+    if (consoleVisible) {
+      if (state.transitionAlpha < 1) {
+        state.transitionAlpha = Math.min(1, state.transitionAlpha + dt * 4.5);
+      }
 
-    if (state.scene === 'starting') {
-      state.countdownSec -= dt;
-      if (state.countdownSec <= 0) state.countdownSec = 300;
+      if (state.scene === 'starting') {
+        state.countdownSec -= dt;
+        if (state.countdownSec <= 0) state.countdownSec = 300;
+      }
+
+      // Audio meters + realistic sidechain ducking
+      const micVoice =
+        Math.max(0, Math.sin(t * 3.1) * 0.5 + Math.sin(t * 7.4) * 0.28 + Math.sin(t * 13.2) * 0.16);
+      const micActive = !state.channels.mic.muted && dbToGain(state.channels.mic.db) > 0.1 && micVoice > 0.25;
+      const duckFactor = micActive ? 0.68 : 1.0;
+
+      const rawLevels = {
+        desktop: (0.34 + Math.abs(Math.sin(t * 2.2) * 0.22 + Math.cos(t * 5.7) * 0.14)) * duckFactor,
+        mic: 0.12 + micVoice * 0.72,
+        app: 0.24 + Math.abs(Math.sin(t * 1.6 + 1.2) * 0.24 + Math.sin(t * 4.3) * 0.12)
+      };
+
+      ['desktop', 'mic', 'app'].forEach((id) => {
+        const ch = state.channels[id];
+        const gain = dbToGain(ch.db);
+        const target = ch.muted ? 0 : Math.min(0.96, rawLevels[id] * gain);
+        ch.level += (target - ch.level) * Math.min(1, dt * 14);
+        if (ch.level > ch.peak) ch.peak = ch.level;
+        else ch.peak = Math.max(ch.level, ch.peak - dt * 0.35);
+        drawMeter(id, ch.level, ch.peak, ch.muted);
+      });
+
+      drawSceneFrame(wide, t, false);
+      if (state.dualOutput) drawSceneFrame(vert, t, true);
     }
 
     // Subtle live telemetry readout
     if (now - lastTelUpdate > 900) {
       lastTelUpdate = now;
-      if (telBitrate) {
-        const kbps = 5975 + Math.round(Math.sin(t * 1.7) * 24 + Math.cos(t * 3.1) * 14);
-        telBitrate.textContent = `${kbps} kbps`;
+      if (consoleVisible) {
+        if (telBitrate) {
+          const kbps = 5975 + Math.round(Math.sin(t * 1.7) * 24 + Math.cos(t * 3.1) * 14);
+          telBitrate.textContent = `${kbps} kbps`;
+        }
+        if (telFps) {
+          const fps = (59.9 + Math.abs(Math.sin(t * 0.9)) * 0.1).toFixed(1);
+          telFps.textContent = `${fps} FPS`;
+        }
       }
-      if (telFps) {
-        const fps = (59.9 + Math.abs(Math.sin(t * 0.9)) * 0.1).toFixed(1);
-        telFps.textContent = `${fps} FPS`;
-      }
-      if (wfActive === 2 && eqPeakReadout) {
-        const dbfs = (-14.8 + Math.sin(t * 2.1) * 1.8).toFixed(1);
-        eqPeakReadout.textContent = `${dbfs} dBFS`;
-      }
-      if (wfActive === 3) {
-        if (wfRateTw) wfRateTw.textContent = `${5982 + Math.round(Math.sin(t * 1.9) * 22)} kbps`;
-        if (wfRateYt) wfRateYt.textContent = `${8976 + Math.round(Math.cos(t * 1.4) * 32)} kbps`;
-        if (wfRateTt) wfRateTt.textContent = `${4490 + Math.round(Math.sin(t * 2.3) * 18)} kbps`;
-        if (wfRateLan) wfRateLan.textContent = `${(1.7 + Math.abs(Math.sin(t * 1.2)) * 0.3).toFixed(1)} ms RTT`;
-      }
-    }
-
-    // Audio meters + realistic sidechain ducking
-    const micVoice =
-      Math.max(0, Math.sin(t * 3.1) * 0.5 + Math.sin(t * 7.4) * 0.28 + Math.sin(t * 13.2) * 0.16);
-    const micActive = !state.channels.mic.muted && dbToGain(state.channels.mic.db) > 0.1 && micVoice > 0.25;
-    const duckFactor = micActive ? 0.68 : 1.0;
-
-    const rawLevels = {
-      desktop: (0.34 + Math.abs(Math.sin(t * 2.2) * 0.22 + Math.cos(t * 5.7) * 0.14)) * duckFactor,
-      mic: 0.12 + micVoice * 0.72,
-      app: 0.24 + Math.abs(Math.sin(t * 1.6 + 1.2) * 0.24 + Math.sin(t * 4.3) * 0.12)
-    };
-
-    ['desktop', 'mic', 'app'].forEach((id) => {
-      const ch = state.channels[id];
-      const gain = dbToGain(ch.db);
-      const target = ch.muted ? 0 : Math.min(0.96, rawLevels[id] * gain);
-      ch.level += (target - ch.level) * Math.min(1, dt * 14);
-      if (ch.level > ch.peak) ch.peak = ch.level;
-      else ch.peak = Math.max(ch.level, ch.peak - dt * 0.35);
-      drawMeter(meterEls[id], ch.level, ch.peak, ch.muted);
-    });
-
-    drawSceneFrame(wide, t, false);
-    if (state.dualOutput) drawSceneFrame(vert, t, true);
-
-    // Workflow auto-advance progress rail
-    if (!wfPaused && wfSteps.length) {
-      wfElapsed += dt;
-      if (wfElapsed >= WF_DURATION) {
-        setWorkflowStep(wfActive + 1, true);
-      } else {
-        const activeBtn = wfSteps[wfActive];
-        const fill = activeBtn && activeBtn.querySelector('.wf-step-fill');
-        if (fill) {
-          fill.style.transform = `scaleY(${Math.min(1, wfElapsed / WF_DURATION).toFixed(4)})`;
+      if (workflowVisible) {
+        if (wfActive === 2 && eqPeakReadout) {
+          const dbfs = (-14.8 + Math.sin(t * 2.1) * 1.8).toFixed(1);
+          eqPeakReadout.textContent = `${dbfs} dBFS`;
+        }
+        if (wfActive === 3) {
+          if (wfRateTw) wfRateTw.textContent = `${5982 + Math.round(Math.sin(t * 1.9) * 22)} kbps`;
+          if (wfRateYt) wfRateYt.textContent = `${8976 + Math.round(Math.cos(t * 1.4) * 32)} kbps`;
+          if (wfRateTt) wfRateTt.textContent = `${4490 + Math.round(Math.sin(t * 2.3) * 18)} kbps`;
+          if (wfRateLan) wfRateLan.textContent = `${(1.7 + Math.abs(Math.sin(t * 1.2)) * 0.3).toFixed(1)} ms RTT`;
         }
       }
     }
 
-    // Subtle live EQ curve & area fill breathing when step 3 is active
-    if (eqCurvePath && wfActive === 2) {
-      const l = 52 + Math.sin(t * 2.4) * 5;
-      const m = 66 + Math.cos(t * 1.9) * 4;
-      const h = 48 + Math.sin(t * 3.1 + 1) * 5;
-      const curveD = `M 0 112 C 58 106, 85 ${l.toFixed(1)}, 145 ${m.toFixed(1)} C 205 ${(m + 10).toFixed(1)}, 250 ${h.toFixed(1)}, 315 ${(h + 8).toFixed(1)} C 365 ${(h + 12).toFixed(1)}, 392 ${h.toFixed(1)}, 420 ${(h + 5).toFixed(1)}`;
-      eqCurvePath.setAttribute('d', curveD);
-      if (eqAreaPath) {
-        eqAreaPath.setAttribute('d', `${curveD} L 420 150 L 0 150 Z`);
+    // Workflow auto-advance & live EQ only when workflow section is visible
+    if (workflowVisible) {
+      if (!wfPaused && wfSteps.length) {
+        wfElapsed += dt;
+        if (wfElapsed >= WF_DURATION) {
+          setWorkflowStep(wfActive + 1, true);
+        } else {
+          const activeBtn = wfSteps[wfActive];
+          const fill = activeBtn && activeBtn.querySelector('.wf-step-fill');
+          if (fill) {
+            fill.style.transform = `scaleY(${Math.min(1, wfElapsed / WF_DURATION).toFixed(4)})`;
+          }
+        }
+      }
+
+      if (eqCurvePath && wfActive === 2) {
+        const l = 52 + Math.sin(t * 2.4) * 5;
+        const m = 66 + Math.cos(t * 1.9) * 4;
+        const h = 48 + Math.sin(t * 3.1 + 1) * 5;
+        const curveD = `M 0 112 C 58 106, 85 ${l.toFixed(1)}, 145 ${m.toFixed(1)} C 205 ${(m + 10).toFixed(1)}, 250 ${h.toFixed(1)}, 315 ${(h + 8).toFixed(1)} C 365 ${(h + 12).toFixed(1)}, 392 ${h.toFixed(1)}, 420 ${(h + 5).toFixed(1)}`;
+        eqCurvePath.setAttribute('d', curveD);
+        if (eqAreaPath) {
+          eqAreaPath.setAttribute('d', `${curveD} L 420 150 L 0 150 Z`);
+        }
       }
     }
 
-    requestAnimationFrame(tick);
+    loopRafId = requestAnimationFrame(tick);
   }
 
-  if (reducedMotion) {
-    renderOnce(0);
-  } else {
-    requestAnimationFrame(tick);
+  if ('IntersectionObserver' in window) {
+    const visObs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.target === consoleFrame) consoleVisible = entry.isIntersecting;
+          if (entry.target === wfRoot) workflowVisible = entry.isIntersecting;
+        });
+        ensureLoopRunning();
+      },
+      { rootMargin: '120px 0px' }
+    );
+    if (consoleFrame) visObs.observe(consoleFrame);
+    if (wfRoot) visObs.observe(wfRoot);
   }
+  document.addEventListener('visibilitychange', ensureLoopRunning);
+
+  renderOnce(0);
+  ensureLoopRunning();
 
   // ------------------------------------------------------- OS Tabs, Copy & GitHub Releases
   function detectOs() {
@@ -1335,5 +1316,4 @@
   })();
 
   hydrateRelease();
-  void smoothScroll;
 })();

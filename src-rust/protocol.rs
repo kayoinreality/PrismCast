@@ -1611,6 +1611,88 @@ impl Default for UpdateStatus {
     }
 }
 
+// ------------------------------------------------------------------ Aparência & Tema (egui-prismglass)
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiThemePreset {
+    #[default]
+    PrismCarbon,
+    Onyx,
+    Glacial,
+    Frost,
+    MinimalDark,
+    MinimalLight,
+}
+
+impl UiThemePreset {
+    pub const ALL: [Self; 6] = [
+        Self::PrismCarbon,
+        Self::Onyx,
+        Self::Glacial,
+        Self::Frost,
+        Self::MinimalDark,
+        Self::MinimalLight,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::PrismCarbon => "Prism Carbon",
+            Self::Onyx => "Onyx Dark",
+            Self::Glacial => "Glacial Glass",
+            Self::Frost => "Frost Light",
+            Self::MinimalDark => "Minimal Dark",
+            Self::MinimalLight => "Minimal Light",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::PrismCarbon => Self::Onyx,
+            Self::Onyx => Self::Glacial,
+            Self::Glacial => Self::Frost,
+            Self::Frost => Self::MinimalDark,
+            Self::MinimalDark => Self::MinimalLight,
+            Self::MinimalLight => Self::PrismCarbon,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct UiAppearanceSettings {
+    pub preset: UiThemePreset,
+    pub glass_opacity: f32,
+    pub specular_intensity: f32,
+    pub radius_scale: f32,
+    pub backdrop_intensity: f32,
+    pub animate_backdrop: bool,
+    pub sidebar_collapsed: bool,
+}
+
+impl Default for UiAppearanceSettings {
+    fn default() -> Self {
+        Self {
+            preset: UiThemePreset::PrismCarbon,
+            glass_opacity: 1.0,
+            specular_intensity: 1.0,
+            radius_scale: 1.0,
+            backdrop_intensity: 1.0,
+            animate_backdrop: true,
+            sidebar_collapsed: false,
+        }
+    }
+}
+
+impl UiAppearanceSettings {
+    pub fn normalize(&mut self) {
+        self.glass_opacity = self.glass_opacity.clamp(0.45, 1.55);
+        self.specular_intensity = self.specular_intensity.clamp(0.0, 1.8);
+        self.radius_scale = self.radius_scale.clamp(0.5, 1.4);
+        self.backdrop_intensity = self.backdrop_intensity.clamp(0.0, 1.4);
+    }
+}
+
 // ------------------------------------------------------------------ Preferências Globais (AppSettings Schema v3)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1643,6 +1725,7 @@ pub struct AppSettings {
     pub virtual_camera: VirtualCameraSettings,
     pub external_control: ExternalControlSettings,
     pub updater: UpdaterSettings,
+    pub ui_appearance: UiAppearanceSettings,
 }
 
 impl Default for AppSettings {
@@ -1678,6 +1761,7 @@ impl Default for AppSettings {
             virtual_camera: VirtualCameraSettings::default(),
             external_control: ExternalControlSettings::default(),
             updater: UpdaterSettings::default(),
+            ui_appearance: UiAppearanceSettings::default(),
         }
     }
 }
@@ -1698,6 +1782,7 @@ impl AppSettings {
         self.dynamic_bitrate.normalize();
         self.virtual_camera.normalize();
         self.external_control.normalize();
+        self.ui_appearance.normalize();
         for dest in &mut self.destinations {
             dest.normalize();
         }
@@ -2003,5 +2088,28 @@ mod tests {
         )
         .expect("deserialize legacy liveInfo");
         assert_eq!(legacy.live_info.title, "Legado");
+        assert_eq!(legacy.ui_appearance.preset, UiThemePreset::PrismCarbon);
+    }
+
+    #[test]
+    fn test_ui_appearance_normalization_and_cycle() {
+        let mut settings = AppSettings::default();
+        settings.ui_appearance.glass_opacity = 99.0;
+        settings.ui_appearance.specular_intensity = -5.0;
+        settings.ui_appearance.radius_scale = 0.1;
+        settings.ui_appearance.backdrop_intensity = 4.0;
+        settings.normalize();
+
+        assert_eq!(settings.ui_appearance.glass_opacity, 1.55);
+        assert_eq!(settings.ui_appearance.specular_intensity, 0.0);
+        assert_eq!(settings.ui_appearance.radius_scale, 0.5);
+        assert_eq!(settings.ui_appearance.backdrop_intensity, 1.4);
+
+        let mut p = UiThemePreset::PrismCarbon;
+        for _ in 0..UiThemePreset::ALL.len() {
+            p = p.next();
+        }
+        assert_eq!(p, UiThemePreset::PrismCarbon);
     }
 }
+

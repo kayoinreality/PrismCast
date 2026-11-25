@@ -22,10 +22,11 @@ use crate::protocol::{
     KitInfo, MultiChatEvent, MultiChatMessage, MultistreamEngineStatus, PlatformId,
     RecorderStatus, Scene, SceneItem, SourceKind, SourceSettings, SourceTransform, SourceType,
     StudioScenesState, TelemetryStats, TransitionType, TwitchCapabilities, TwitchLoginState,
-    UpdateStatus, VirtualCameraStatus,
+    UiAppearanceSettings, UpdateStatus, VirtualCameraStatus,
 };
 use crate::rpc::{AppEngine, RpcEvent};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2, ViewportCommand};
+use egui_prismglass::PrismTheme;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -88,6 +89,8 @@ pub struct PrismCastNativeApp {
     pub pump: NativeStudioPump,
 
     pub settings: AppSettings,
+    pub prism_theme: PrismTheme,
+    applied_appearance: Option<UiAppearanceSettings>,
     pub undo_stack: Vec<StudioScenesState>,
 
     pub active_tab: NavTab,
@@ -156,13 +159,14 @@ impl PrismCastNativeApp {
         engine: Arc<AppEngine>,
         rt: tokio::runtime::Handle,
     ) -> Self {
-        theme::apply_prismcast_theme(&cc.egui_ctx);
-
         let mut settings = engine.store.snapshot();
         ensure_default_scene(&mut settings);
         let _ = engine
             .store
             .apply_patch(json!({ "scenes": settings.scenes }));
+
+        let prism_theme = theme::apply_prismcast_theme(&cc.egui_ctx, &settings.ui_appearance);
+        let applied_appearance = Some(settings.ui_appearance.clone());
 
         // Ativa modo nativo no MultistreamEngine (sem MediaRecorder!)
         if let Ok(mut ms) = engine.multistream.try_lock() {
@@ -189,6 +193,8 @@ impl PrismCastNativeApp {
             rt: rt.clone(),
             pump,
             settings,
+            prism_theme,
+            applied_appearance,
             undo_stack: Vec::new(),
             active_tab: NavTab::Studio,
             right_tab: RightTab::Properties,
@@ -302,6 +308,19 @@ impl PrismCastNativeApp {
     pub fn persist_destinations(&self) {
         if let Ok(val) = serde_json::to_value(&self.settings.destinations) {
             self.persist_settings(json!({ "destinations": val }));
+        }
+    }
+
+    pub fn persist_appearance(&self) {
+        if let Ok(val) = serde_json::to_value(&self.settings.ui_appearance) {
+            self.persist_settings(json!({ "uiAppearance": val }));
+        }
+    }
+
+    pub fn sync_theme(&mut self, ctx: &Context) {
+        if self.applied_appearance.as_ref() != Some(&self.settings.ui_appearance) {
+            self.prism_theme = theme::apply_prismcast_theme(ctx, &self.settings.ui_appearance);
+            self.applied_appearance = Some(self.settings.ui_appearance.clone());
         }
     }
 
@@ -969,7 +988,7 @@ impl PrismCastNativeApp {
     }
 
     fn handle_global_shortcuts(&mut self, ctx: &Context) {
-        if self.picker.open || ctx.wants_keyboard_input() {
+        if self.picker.open || ctx.egui_wants_keyboard_input() {
             return;
         }
         let undo_pressed = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Z));
@@ -1025,7 +1044,9 @@ impl PrismCastNativeApp {
 }
 
 impl eframe::App for PrismCastNativeApp {
-    fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+
         // Intercepta fechamento acidental durante live/gravação
         if ctx.input(|i| i.viewport().close_requested()) && !self.force_close && self.engine.is_busy()
         {
@@ -1033,9 +1054,10 @@ impl eframe::App for PrismCastNativeApp {
             self.confirm_quit_open = true;
         }
 
-        self.drain_events(ctx);
-        self.upload_live_previews(ctx);
-        self.handle_global_shortcuts(ctx);
+        self.drain_events(&ctx);
+        self.sync_theme(&ctx);
+        self.upload_live_previews(&ctx);
+        self.handle_global_shortcuts(&ctx);
 
         if self.last_status_poll.elapsed() >= Duration::from_secs(2) {
             self.last_status_poll = Instant::now();
@@ -1048,43 +1070,45 @@ impl eframe::App for PrismCastNativeApp {
             }
         }
 
-        // Fundo broadcast carbono + feixes espectrais (idêntico à página GH Pages)
-        let screen_rect = ctx.screen_rect();
+        // Fundo volumétrico 3D (`egui-prismglass`) + espectro óptico do PrismCast
+        let screen_rect = ctx.content_rect();
         let time_sec = self.start_instant.elapsed().as_secs_f64();
-        theme::paint_spectral_backdrop(
+        theme::paint_studio_backdrop(
             &ctx.layer_painter(egui::LayerId::background()),
             screen_rect,
+            &self.prism_theme,
+            &self.settings.ui_appearance,
             time_sec,
         );
 
-        // Barra superior broadcast
-        panels::show_top_bar(self, ctx, time_sec);
+        // Barra superior broadcast em painel glass flutuante
+        panels::show_top_bar(self, ui);
 
-        // Rail de navegação esquerdo
-        panels::show_nav_rail(self, ctx);
+        // Sidebar de navegação flutuante (`egui-prismglass::GlassSidebar`)
+        panels::show_nav_rail(self, ui);
 
         // Conteúdo principal por aba
         match self.active_tab {
-            NavTab::Studio => panels::show_studio_workspace(self, ctx),
-            NavTab::Widgets => panels::show_widgets_screen(self, ctx),
-            NavTab::Destinations => panels::show_destinations_screen(self, ctx),
-            NavTab::Lan => panels::show_lan_screen(self, ctx),
-            NavTab::Settings => panels::show_settings_screen(self, ctx),
+            NavTab::Studio => panels::show_studio_workspace(self, ui),
+            NavTab::Widgets => panels::show_widgets_screen(self, ui),
+            NavTab::Destinations => panels::show_destinations_screen(self, ui),
+            NavTab::Lan => panels::show_lan_screen(self, ui),
+            NavTab::Settings => panels::show_settings_screen(self, ui),
         }
 
         // Modal nativo de seleção de telas/janelas com miniaturas reais
-        if let Some(sel) = self.picker.show(ctx) {
+        if let Some(sel) = self.picker.show(&ctx) {
             self.apply_picker_selection(sel);
         }
 
         // Modal de confirmação de saída durante live/gravação
         if self.confirm_quit_open {
-            panels::show_confirm_quit_modal(self, ctx);
+            panels::show_confirm_quit_modal(self, &ctx);
         }
 
         // Toast flutuante glassmorphism
         if let Some(toast) = self.toast.clone() {
-            panels::show_toast_overlay(ctx, &toast);
+            panels::show_toast_overlay(&ctx, &toast);
         }
 
         // Mantém 60fps fluídos no palco e medidores VU vivos
