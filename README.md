@@ -2,7 +2,7 @@
   <img src="build/icon.svg" alt="PrismCast Studio" width="64" height="64" />
 </p>
 
-# PrismCast Studio (`v3.0.0`)
+# PrismCast Studio (`v3.1.0`)
 
 Estúdio de transmissão **100% nativo em Rust (`egui` + `wgpu 24`)** para **Windows e Linux** — **sem Tauri, sem WebView2, sem Electron e sem popups de navegador**. Monta cenas com captura nativa direta de telas, janelas e imagens em saída dupla (**16:9 + 9:16**), transmite simultaneamente para **Twitch, YouTube, Kick, TikTok e RTMP/RTMPS próprio** com controle dinâmico de bitrate (ABR), compartilha a tela em **LAN P2P de baixíssima latência** e entrega recursos de produção profissional — GPU zero-copy, isolamento de áudio por aplicativo, plugins VST3/CLAP, câmera virtual nativa, transições personalizadas e servidor `obs-websocket` v5 para Stream Deck.
 
@@ -14,7 +14,7 @@ Estúdio de transmissão **100% nativo em Rust (`egui` + `wgpu 24`)** para **Win
 - **Captura 100% nativa sem popup, sem barra de compartilhamento e sem roubo de foco**:
   - **Windows**: monitores via **DXGI Desktop Duplication** (com fallback GDI automático) e janelas individuais diretamente por `HWND` via `PrintWindow(PW_RENDERFULLCONTENT)` — captura janelas aceleradas por hardware mesmo atrás do estúdio, sem jamais abrir popup de navegador, sem a barra `"http://tauri.localhost está compartilhando..."` e sem tirar o foco da edição.
   - **Miniaturas reais ao vivo**: o seletor de telas e janelas exibe prévias reais em alta nitidez de cada monitor e janela (filtrando janelas invisíveis e UWP *cloaked* via `DWMWA_CLOAKED`).
-- **Design Broadcast Carbon + Glassmorphism Espectral**: a interface desktop adota a mesma identidade visual da página oficial do GitHub Pages — chassi carbono fosco (`#141412`), painéis translúcidos com brilho especular, feixes espectrais suaves do prisma (`#FF3E52`, `#FFAE2B`, `#18DCB8`, `#3892FF`), tipografia marfim quente (`#F1EDE4`) e vermilion Tally (`#D63626`).
+- **Design Broadcast Carbon + `egui-prismglass`**: a interface desktop usa o design system [`egui-prismglass`](https://crates.io/crates/egui-prismglass) com superfícies translúcidas 3D, bordas especulares direcionais, física de mola nas interações e 6 temas selecionáveis em tempo real (*Prism Carbon*, *Onyx Dark*, *Glacial Glass*, *Frost Light*, *Minimal Dark* e *Minimal Light*), além de Inspetor de Material em **Ajustes**.
 - **Palco limpo sem botões invasivos**: fontes de tela e janela iniciam automaticamente de forma nativa e nunca sobrepõem cards/botões flutuantes em cima de outras fontes ativas no palco.
 
 ---
@@ -82,11 +82,11 @@ src-rust/
 ├── main.rs              # Entrada do binário nativo (UI Rust desktop + modo --headless RPC)
 ├── build.rs             # Incorporação nativa de ícone/metadados Windows via winresource
 ├── native_ui/
-│   ├── mod.rs           # App nativo eframe + egui + wgpu 24, atalhos, undo e eventos
-│   ├── theme.rs         # Paleta Broadcast Carbon & Glassmorphism Espectral (GH Pages)
+│   ├── mod.rs           # App nativo eframe + egui 0.37 + wgpu, atalhos, undo e eventos
+│   ├── theme.rs         # Temas egui-prismglass (Prism Carbon, Onyx, Glacial, Frost, Minimal)
 │   ├── stage.rs         # Palco GPU interativo (16:9, 9:16, Modo Estúdio, snap e recorte)
 │   ├── picker.rs        # Seletor nativo de telas e janelas com miniaturas reais ao vivo
-│   └── panels.rs        # Barra broadcast, docks (Cenas/Fontes/Mixer), Destinos, LAN e Ajustes
+│   └── panels.rs        # Barra broadcast, GlassSidebar, docks (Cenas/Fontes/Mixer) e Ajustes
 ├── native_capture.rs    # Pump nativo de captura (DXGI / PrintWindow / Imagens) + compositor
 ├── capture.rs           # Enumeração Win32/Linux, filtro DWMWA_CLOAKED e thumbnails reais
 ├── gpu_capture.rs       # Captura GPU zero-copy (DXGI Desktop Duplication / PipeWire DMA-BUF)

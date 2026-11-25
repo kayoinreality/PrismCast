@@ -1,11 +1,11 @@
-//! Palco interativo nativo (`16:9`, `9:16` Dual Output e Modo Estúdio).
+//! Palco interativo nativo (`16:9`, `9:16` Dual Output e Modo Estúdio) estilizado com `egui-prismglass`.
 //!
-//! - Exibe a textura GPU ao vivo produzida pelo compositor Rust (`wgpu` / software).
+//! - Exibe a textura GPU ao vivo produzida pelo compositor Rust (`wgpu` / software)
+//!   dentro de um monitor broadcast com moldura 3D glassmorphism.
 //! - Seleção por clique (ordem Z), arrastar com snap magnético nas bordas/centro,
 //!   4 alças de redimensionamento (`Shift` solta proporção, `Alt` recorta),
 //!   menu de contexto no botão direito e atalhos de teclado (setas + Delete).
-//! - Correção definitiva do bug de sobreposição: nunca desenha botão flutuante
-//!   `"Captura de janela pronta"` em cima de outras fontes ativas no palco.
+//! - Nunca desenha botão flutuante sobre fontes ativas no palco.
 
 use crate::capture::CaptureStatus;
 use crate::compositor::capture_key_for_item;
@@ -14,6 +14,9 @@ use crate::protocol::{Scene, SceneItem, SourceTransform, SourceType};
 use egui::{
     Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
     TextureHandle, Ui, Vec2,
+};
+use egui_prismglass::{
+    GlassButton, GlassCard, GlassElevation, PrismContextExt, paint_glass_surface,
 };
 use std::collections::HashMap;
 
@@ -143,22 +146,31 @@ pub fn show_stage_viewport(
     interaction: &mut StageInteraction,
     actions: &mut Vec<StageAction>,
 ) {
+    let prism = ui.ctx().prism_theme();
     let avail = ui.available_rect_before_wrap();
     let aspect = if vertical { 9.0 / 16.0 } else { 16.0 / 9.0 };
-    let stage_rect = fit_aspect_rect(avail.shrink2(Vec2::new(6.0, 6.0)), aspect);
+    let stage_rect = fit_aspect_rect(avail.shrink2(Vec2::new(10.0, 10.0)), aspect);
 
-    let resp = ui.allocate_rect(avail, if editable { Sense::click_and_drag() } else { Sense::hover() });
+    let resp = ui.allocate_rect(
+        avail,
+        if editable {
+            Sense::click_and_drag()
+        } else {
+            Sense::hover()
+        },
+    );
     let painter = ui.painter().clone();
 
-    // Moldura glassmorphism em volta do canvas 16:9 / 9:16
-    let frame_rect = stage_rect.expand(2.0);
-    painter.rect_filled(frame_rect, CornerRadius::same(10), Color32::from_rgb(0x0B, 0x0B, 0x09));
-    painter.rect_stroke(
-        frame_rect,
-        CornerRadius::same(10),
-        Stroke::new(1.0_f32, theme::GLASS_EDGE_STRONG),
-        StrokeKind::Outside,
-    );
+    // Moldura 3D glassmorphism (`egui-prismglass`) ao redor do monitor broadcast
+    let bezel_rect = stage_rect.expand(5.0);
+    let bezel_tokens = prism
+        .surface(GlassElevation::Elevated)
+        .with_corner_radius((prism.radius.lg * prism.radius_scale).clamp(6.0, 20.0));
+    paint_glass_surface(&painter, bezel_rect, &bezel_tokens);
+
+    // Fundo escuro de referência do monitor de vídeo
+    let well_cr = CornerRadius::same(((bezel_tokens.corner_radius - 4.0).max(4.0)) as u8);
+    painter.rect_filled(stage_rect, well_cr, theme::media_well_fill(&prism));
 
     // Textura GPU ao vivo do compositor Rust
     if let Some(tex) = texture {
@@ -168,11 +180,16 @@ pub fn show_stage_viewport(
             Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
-    } else {
-        painter.rect_filled(stage_rect, CornerRadius::same(8), Color32::from_rgb(0x0F, 0x0F, 0x0D));
     }
 
-    // Grade sutil de broadcast quando não há nenhuma fonte visual ativa na cena inteira
+    // Linha hairline sutil enquadrando a área útil de vídeo
+    painter.rect_stroke(
+        stage_rect,
+        CornerRadius::same(4),
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 18)),
+        StrokeKind::Inside,
+    );
+
     let mut visible_items: Vec<&SceneItem> = scene
         .map(|sc| {
             let mut list: Vec<&SceneItem> = sc
@@ -196,77 +213,109 @@ pub fn show_stage_viewport(
 
     let has_any_visual_source = visible_items.iter().any(|it| match it.source_type {
         SourceType::ColorSource | SourceType::TextSource | SourceType::BrowserSource => true,
-        _ => capture_key_for_item(it)
-            .and_then(|k| capture_statuses.get(&k))
-            .copied()
-            == Some(CaptureStatus::Ok),
+        _ => {
+            capture_key_for_item(it)
+                .and_then(|k| capture_statuses.get(&k))
+                .copied()
+                == Some(CaptureStatus::Ok)
+        }
     });
 
-    // Só exibe prompt vazio se a CENA INTEIRA não tiver nenhuma fonte visual ativa!
-    // Nunca sobrepõe botão flutuante em cima de outra fonte capturada.
+    // Só exibe prompt vazio se a CENA INTEIRA não tiver nenhuma fonte visual ativa
     if editable && !has_any_visual_source && visible_items.is_empty() {
-        let card_rect = Rect::from_center_size(stage_rect.center(), Vec2::new(310.0, 108.0));
-        painter.rect_filled(card_rect, CornerRadius::same(14), theme::GLASS_MODAL);
-        painter.rect_stroke(
-            card_rect,
-            CornerRadius::same(14),
-            Stroke::new(1.0_f32, theme::GLASS_EDGE_STRONG),
-            StrokeKind::Inside,
-        );
+        let card_w = (stage_rect.width() - 32.0).clamp(240.0, 350.0);
+        let card_rect = Rect::from_center_size(stage_rect.center(), Vec2::new(card_w, 134.0));
         let mut child_ui = ui.new_child(
             egui::UiBuilder::new()
-                .max_rect(card_rect.shrink(14.0))
+                .max_rect(card_rect)
                 .id_salt((id_salt, "empty_stage")),
         );
-        child_ui.vertical_centered(|ui| {
-            ui.label(
-                RichText::new("Cena vazia")
-                    .size(15.0)
-                    .strong()
-                    .color(theme::INK),
-            );
-            ui.label(
-                RichText::new("Adicione uma tela ou janela nativa para começar")
-                    .size(11.5)
-                    .color(theme::MUTED),
-            );
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.add_space(16.0);
-                if theme::tally_button(ui, "+ Captura de tela").clicked() {
-                    actions.push(StageAction::OpenPickerForNewScreen);
-                }
-                if ui.button("+ Janela").clicked() {
-                    actions.push(StageAction::OpenPickerForNewWindow);
-                }
+        GlassCard::new()
+            .elevation(GlassElevation::Floating)
+            .padding(egui::Margin::symmetric(18, 14))
+            .fill_width(true)
+            .show(&mut child_ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.label(
+                        RichText::new("Cena vazia")
+                            .size(15.5)
+                            .strong()
+                            .color(prism.palette.text_primary),
+                    );
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Adicione uma tela ou janela nativa para começar")
+                            .size(11.8)
+                            .color(prism.palette.text_secondary),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        let btn_group_w = 248.0;
+                        let pad = ((ui.available_width() - btn_group_w) * 0.5).max(0.0);
+                        ui.add_space(pad);
+                        if theme::tally_button(ui, "+ Captura de tela").clicked() {
+                            actions.push(StageAction::OpenPickerForNewScreen);
+                        }
+                        if ui
+                            .add(
+                                GlassButton::secondary("+ Janela")
+                                    .pill(true)
+                                    .min_size(Vec2::new(88.0, 32.0)),
+                            )
+                            .clicked()
+                        {
+                            actions.push(StageAction::OpenPickerForNewWindow);
+                        }
+                    });
+                });
             });
-        });
     }
 
-    // Tag de identificação do viewport (PROGRAMA / PRÉVIA / 9:16)
+    // Tag pill translúcida de identificação do viewport (PROGRAMA / PRÉVIA / 9:16)
+    let badge_font = FontId::monospace(10.0);
+    let badge_galley =
+        painter.layout_no_wrap(label_badge.to_owned(), badge_font.clone(), Color32::WHITE);
     let badge_pos = Pos2::new(stage_rect.left() + 10.0, stage_rect.top() + 10.0);
-    let badge_w = (label_badge.len() as f32 * 6.8 + 20.0).max(66.0);
-    let badge_rect = Rect::from_min_size(badge_pos, Vec2::new(badge_w, 20.0));
-    painter.rect_filled(badge_rect, CornerRadius::same(6), Color32::from_black_alpha(185));
+    let badge_w = (badge_galley.size().x + 28.0).max(74.0);
+    let badge_rect = Rect::from_min_size(badge_pos, Vec2::new(badge_w, 22.0));
+    painter.rect_filled(
+        badge_rect,
+        CornerRadius::same(11),
+        Color32::from_rgba_unmultiplied(12, 13, 16, 198),
+    );
     painter.rect_stroke(
         badge_rect,
-        CornerRadius::same(6),
-        Stroke::new(1.0_f32, badge_accent),
+        CornerRadius::same(11),
+        Stroke::new(
+            1.0_f32,
+            Color32::from_rgba_unmultiplied(
+                badge_accent.r(),
+                badge_accent.g(),
+                badge_accent.b(),
+                185,
+            ),
+        ),
         StrokeKind::Inside,
     );
+    let dot_pos = Pos2::new(badge_rect.left() + 10.0, badge_rect.center().y);
+    painter.circle_filled(
+        dot_pos,
+        4.6,
+        Color32::from_rgba_unmultiplied(badge_accent.r(), badge_accent.g(), badge_accent.b(), 65),
+    );
+    painter.circle_filled(dot_pos, 2.6, badge_accent);
     painter.text(
-        badge_rect.center(),
-        Align2::CENTER_CENTER,
+        Pos2::new(badge_rect.left() + 19.0, badge_rect.center().y),
+        Align2::LEFT_CENTER,
         label_badge,
-        FontId::monospace(10.0),
-        theme::INK,
+        badge_font,
+        Color32::from_rgb(0xF5, 0xF3, 0xEE),
     );
 
     if !editable {
         return;
     }
 
-    // Conversão coordenada de tela -> relativa ao palco [0..1]
     let to_rel = |p: Pos2| -> Pos2 {
         Pos2::new(
             (p.x - stage_rect.left()) / stage_rect.width().max(1.0),
@@ -274,7 +323,6 @@ pub fn show_stage_viewport(
         )
     };
 
-    // Hit-test do topo da pilha Z para baixo
     let hit_test = |pos: Pos2, items: &[&SceneItem]| -> Option<String> {
         for it in items.iter().rev() {
             let r = item_rect_in_stage(stage_rect, tf_of(it, vertical));
@@ -285,7 +333,6 @@ pub fn show_stage_viewport(
         None
     };
 
-    // Hover visual
     if interaction.drag.is_none() {
         interaction.hover_id = resp
             .hover_pos()
@@ -295,7 +342,9 @@ pub fn show_stage_viewport(
 
     // Início de arrasto (alça de redimensionamento ou corpo da fonte)
     if resp.drag_started_by(egui::PointerButton::Primary) {
-        if let Some(pointer) = ui.input(|i| i.pointer.press_origin().or_else(|| i.pointer.hover_pos())) {
+        if let Some(pointer) =
+            ui.input(|i| i.pointer.press_origin().or_else(|| i.pointer.hover_pos()))
+        {
             let mut started_handle = false;
             if let Some(sel_id) = selected_id {
                 if let Some(sel_item) = visible_items.iter().find(|it| it.id == sel_id) {
@@ -404,20 +453,34 @@ pub fn show_stage_viewport(
                         let oh = orig.height.max(0.05);
                         match corner {
                             CornerHandle::Nw => {
-                                next.crop_left = Some((orig.crop_left.unwrap_or(0.0) + dx / ow).clamp(0.0, 0.85));
-                                next.crop_top = Some((orig.crop_top.unwrap_or(0.0) + dy / oh).clamp(0.0, 0.85));
+                                next.crop_left = Some(
+                                    (orig.crop_left.unwrap_or(0.0) + dx / ow).clamp(0.0, 0.85),
+                                );
+                                next.crop_top =
+                                    Some((orig.crop_top.unwrap_or(0.0) + dy / oh).clamp(0.0, 0.85));
                             }
                             CornerHandle::Ne => {
-                                next.crop_right = Some((orig.crop_right.unwrap_or(0.0) - dx / ow).clamp(0.0, 0.85));
-                                next.crop_top = Some((orig.crop_top.unwrap_or(0.0) + dy / oh).clamp(0.0, 0.85));
+                                next.crop_right = Some(
+                                    (orig.crop_right.unwrap_or(0.0) - dx / ow).clamp(0.0, 0.85),
+                                );
+                                next.crop_top =
+                                    Some((orig.crop_top.unwrap_or(0.0) + dy / oh).clamp(0.0, 0.85));
                             }
                             CornerHandle::Sw => {
-                                next.crop_left = Some((orig.crop_left.unwrap_or(0.0) + dx / ow).clamp(0.0, 0.85));
-                                next.crop_bottom = Some((orig.crop_bottom.unwrap_or(0.0) - dy / oh).clamp(0.0, 0.85));
+                                next.crop_left = Some(
+                                    (orig.crop_left.unwrap_or(0.0) + dx / ow).clamp(0.0, 0.85),
+                                );
+                                next.crop_bottom = Some(
+                                    (orig.crop_bottom.unwrap_or(0.0) - dy / oh).clamp(0.0, 0.85),
+                                );
                             }
                             CornerHandle::Se => {
-                                next.crop_right = Some((orig.crop_right.unwrap_or(0.0) - dx / ow).clamp(0.0, 0.85));
-                                next.crop_bottom = Some((orig.crop_bottom.unwrap_or(0.0) - dy / oh).clamp(0.0, 0.85));
+                                next.crop_right = Some(
+                                    (orig.crop_right.unwrap_or(0.0) - dx / ow).clamp(0.0, 0.85),
+                                );
+                                next.crop_bottom = Some(
+                                    (orig.crop_bottom.unwrap_or(0.0) - dy / oh).clamp(0.0, 0.85),
+                                );
                             }
                         }
                     } else {
@@ -427,21 +490,37 @@ pub fn show_stage_viewport(
                         match corner {
                             CornerHandle::Se => {
                                 nw = (orig.width + dx).max(0.05);
-                                nh = if shift { (orig.height + dy).max(0.05) } else { nw / aspect_orig };
+                                nh = if shift {
+                                    (orig.height + dy).max(0.05)
+                                } else {
+                                    nw / aspect_orig
+                                };
                             }
                             CornerHandle::Sw => {
                                 nw = (orig.width - dx).max(0.05);
-                                nh = if shift { (orig.height + dy).max(0.05) } else { nw / aspect_orig };
+                                nh = if shift {
+                                    (orig.height + dy).max(0.05)
+                                } else {
+                                    nw / aspect_orig
+                                };
                                 nx = orig.x + (orig.width - nw);
                             }
                             CornerHandle::Ne => {
                                 nw = (orig.width + dx).max(0.05);
-                                nh = if shift { (orig.height - dy).max(0.05) } else { nw / aspect_orig };
+                                nh = if shift {
+                                    (orig.height - dy).max(0.05)
+                                } else {
+                                    nw / aspect_orig
+                                };
                                 ny = orig.y + (orig.height - nh);
                             }
                             CornerHandle::Nw => {
                                 nw = (orig.width - dx).max(0.05);
-                                nh = if shift { (orig.height - dy).max(0.05) } else { nw / aspect_orig };
+                                nh = if shift {
+                                    (orig.height - dy).max(0.05)
+                                } else {
+                                    nw / aspect_orig
+                                };
                                 nx = orig.x + (orig.width - nw);
                                 ny = orig.y + (orig.height - nh);
                             }
@@ -488,7 +567,11 @@ pub fn show_stage_viewport(
             .or_else(|| selected_id.map(str::to_string));
         if let Some(tid) = target_id {
             if let Some(item) = visible_items.iter().find(|it| it.id == tid) {
-                ui.label(RichText::new(&item.name).strong().color(theme::INK));
+                ui.label(
+                    RichText::new(&item.name)
+                        .strong()
+                        .color(prism.palette.text_primary),
+                );
                 ui.separator();
                 if matches!(
                     item.source_type,
@@ -496,35 +579,39 @@ pub fn show_stage_viewport(
                 ) && ui.button("Trocar tela / janela…").clicked()
                 {
                     actions.push(StageAction::OpenPickerForItem(tid.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Tela cheia (100%)").clicked() {
                     actions.push(StageAction::FillCanvas {
                         item_id: tid.clone(),
                         vertical,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Centralizar no palco").clicked() {
                     actions.push(StageAction::CenterCanvas {
                         item_id: tid.clone(),
                         vertical,
                     });
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui.button("Trazer para frente").clicked() {
                     actions.push(StageAction::BringForward(tid.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
                 if ui.button("Enviar para trás").clicked() {
                     actions.push(StageAction::SendBackward(tid.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
-                let lock_txt = if item.locked { "Destravar posição" } else { "Travar posição" };
+                let lock_txt = if item.locked {
+                    "Destravar posição"
+                } else {
+                    "Travar posição"
+                };
                 if ui.button(lock_txt).clicked() {
                     actions.push(StageAction::ToggleLock(tid.clone()));
-                    ui.close_menu();
+                    ui.close();
                 }
                 ui.separator();
                 if ui
@@ -532,34 +619,40 @@ pub fn show_stage_viewport(
                     .clicked()
                 {
                     actions.push(StageAction::RemoveItem(tid));
-                    ui.close_menu();
+                    ui.close();
                 }
             }
         } else {
             if ui.button("+ Adicionar captura de tela…").clicked() {
                 actions.push(StageAction::OpenPickerForNewScreen);
-                ui.close_menu();
+                ui.close();
             }
             if ui.button("+ Adicionar captura de janela…").clicked() {
                 actions.push(StageAction::OpenPickerForNewWindow);
-                ui.close_menu();
+                ui.close();
             }
         }
     });
 
-    // Guias magnéticas de snap (turquesa espectral)
+    // Guias magnéticas de snap (accent do tema / turquesa espectral)
     if let Some(gx) = interaction.snap_x {
         let x = stage_rect.left() + gx * stage_rect.width();
         painter.line_segment(
-            [Pos2::new(x, stage_rect.top()), Pos2::new(x, stage_rect.bottom())],
-            Stroke::new(1.2_f32, theme::SPEC_TEAL),
+            [
+                Pos2::new(x, stage_rect.top()),
+                Pos2::new(x, stage_rect.bottom()),
+            ],
+            Stroke::new(1.3_f32, theme::SPEC_TEAL),
         );
     }
     if let Some(gy) = interaction.snap_y {
         let y = stage_rect.top() + gy * stage_rect.height();
         painter.line_segment(
-            [Pos2::new(stage_rect.left(), y), Pos2::new(stage_rect.right(), y)],
-            Stroke::new(1.2_f32, theme::SPEC_TEAL),
+            [
+                Pos2::new(stage_rect.left(), y),
+                Pos2::new(stage_rect.right(), y),
+            ],
+            Stroke::new(1.3_f32, theme::SPEC_TEAL),
         );
     }
 
@@ -570,8 +663,8 @@ pub fn show_stage_viewport(
                 let r = item_rect_in_stage(stage_rect, tf_of(it, vertical));
                 painter.rect_stroke(
                     r,
-                    CornerRadius::same(3),
-                    Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(24, 220, 184, 150)),
+                    CornerRadius::same(4),
+                    Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(24, 220, 184, 170)),
                     StrokeKind::Inside,
                 );
             }
@@ -588,44 +681,51 @@ pub fn show_stage_viewport(
                 .copied()
                 == Some(CaptureStatus::Missing);
             let border_col = if sel_item.locked {
-                theme::MUTED
+                prism.palette.text_secondary
             } else if is_missing {
-                theme::SPEC_AMBER
+                theme::SPEC_RED
             } else {
                 theme::SPEC_AMBER
             };
 
             painter.rect_stroke(
                 r,
-                CornerRadius::same(3),
+                CornerRadius::same(4),
                 Stroke::new(1.8_f32, border_col),
                 StrokeKind::Inside,
             );
 
-            // Tag discreta no canto superior esquerdo (nunca bloqueia o palco!)
             let mut tag = sel_item.name.clone();
             if sel_item.locked {
                 tag.push_str(" · travada");
             } else if is_missing {
                 tag.push_str(" · janela fechada");
             }
-            let tag_w = (tag.chars().count() as f32 * 6.4 + 16.0).clamp(52.0, 260.0);
-            let tag_y = if r.top() - 22.0 > stage_rect.top() {
-                r.top() - 22.0
+            let tag_font = FontId::proportional(11.0);
+            let tag_galley = painter.layout_no_wrap(tag.clone(), tag_font.clone(), Color32::WHITE);
+            let tag_w = (tag_galley.size().x + 16.0).clamp(56.0, 260.0);
+            let tag_y = if r.top() - 24.0 > stage_rect.top() {
+                r.top() - 24.0
             } else {
-                r.top() + 4.0
+                r.top() + 5.0
             };
-            let tag_rect = Rect::from_min_size(Pos2::new(r.left() + 2.0, tag_y), Vec2::new(tag_w, 19.0));
-            painter.rect_filled(tag_rect, CornerRadius::same(5), theme::TALLY);
+            let tag_rect =
+                Rect::from_min_size(Pos2::new(r.left() + 3.0, tag_y), Vec2::new(tag_w, 20.0));
+            painter.rect_filled(tag_rect, CornerRadius::same(10), theme::TALLY);
+            painter.rect_stroke(
+                tag_rect,
+                CornerRadius::same(10),
+                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 55)),
+                StrokeKind::Inside,
+            );
             painter.text(
                 tag_rect.center(),
                 Align2::CENTER_CENTER,
                 tag,
-                FontId::proportional(11.0),
-                theme::INK,
+                tag_font,
+                Color32::WHITE,
             );
 
-            // 4 alças de canto
             if !sel_item.locked {
                 for corner in [
                     CornerHandle::Nw,
@@ -634,12 +734,12 @@ pub fn show_stage_viewport(
                     CornerHandle::Se,
                 ] {
                     let cp = corner_pos(r, corner);
-                    let hr = Rect::from_center_size(cp, Vec2::splat(9.0));
-                    painter.rect_filled(hr, CornerRadius::same(2), theme::INK);
+                    let hr = Rect::from_center_size(cp, Vec2::splat(9.5));
+                    painter.rect_filled(hr, CornerRadius::same(3), Color32::WHITE);
                     painter.rect_stroke(
                         hr,
-                        CornerRadius::same(2),
-                        Stroke::new(1.3_f32, theme::TALLY),
+                        CornerRadius::same(3),
+                        Stroke::new(1.4_f32, theme::TALLY),
                         StrokeKind::Outside,
                     );
                 }
@@ -647,6 +747,5 @@ pub fn show_stage_viewport(
         }
     }
 
-    // Remove unused mut warning
     visible_items.clear();
 }
