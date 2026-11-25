@@ -998,6 +998,52 @@ impl GpuCaptureEngine {
             .ok_or_else(|| "DXGI duplicator não inicializado".to_string())?;
         dup.readback_shared_to_cpu(now_ms)
     }
+
+    /// Adquire o próximo frame da tela primária via DXGI e devolve `FrameBuffer` BGRA quando disponível.
+    /// Em plataformas sem DXGI ou quando não há novo frame no timeout, retorna `Ok(None)`.
+    pub fn poll_primary_cpu_frame(
+        &mut self,
+        timeout_ms: u32,
+        now_ms: u64,
+    ) -> Result<Option<FrameBuffer>, String> {
+        #[cfg(windows)]
+        {
+            if !self.settings.zero_copy_enabled
+                || self.active_backend == GpuCaptureBackendKind::SoftwareFallback
+            {
+                return Ok(None);
+            }
+            if self.dxgi.is_none() {
+                match DxgiDuplicator::new(0) {
+                    Ok(dup) => self.dxgi = Some(dup),
+                    Err(err) => {
+                        self.last_error = Some(err.clone());
+                        return Err(err);
+                    }
+                }
+            }
+            if let Some(ref mut dup) = self.dxgi {
+                match dup.acquire_shared_frame(timeout_ms, now_ms) {
+                    Ok(Some(handle)) => {
+                        self.frames.insert(self.primary_key.clone(), handle);
+                        return dup.readback_shared_to_cpu(now_ms).map(Some);
+                    }
+                    Ok(None) => return Ok(None),
+                    Err(err) => {
+                        self.last_error = Some(err.clone());
+                        self.dxgi = None;
+                        return Err(err);
+                    }
+                }
+            }
+            Ok(None)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (timeout_ms, now_ms);
+            Ok(None)
+        }
+    }
 }
 
 #[cfg(test)]

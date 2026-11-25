@@ -1,5 +1,5 @@
 #![cfg_attr(
-    all(not(debug_assertions), feature = "tauri-app"),
+    all(not(debug_assertions), feature = "native-ui"),
     windows_subsystem = "windows"
 )]
 
@@ -28,7 +28,7 @@ async fn main() {
 
     println!("====================================================");
     println!(
-        " PrismCast Studio v{} — Rust Native Engine",
+        " PrismCast Studio v{} — 100% Rust Native Studio",
         env!("CARGO_PKG_VERSION")
     );
     println!(" RPC / Event Bridge listening on 127.0.0.1:{}", port);
@@ -61,11 +61,11 @@ async fn main() {
         });
     }
 
-    #[cfg(feature = "tauri-app")]
+    #[cfg(feature = "native-ui")]
     let headless = std::env::var("PRISMCAST_HEADLESS").as_deref() == Ok("1")
         || std::env::args().any(|a| a == "--headless");
 
-    #[cfg(feature = "tauri-app")]
+    #[cfg(feature = "native-ui")]
     if !headless {
         let eng_rpc = engine.clone();
         let shutdown_rpc = shutdown.clone();
@@ -78,8 +78,9 @@ async fn main() {
             .await;
         });
 
-        if let Err(err) = prismcast_core::tauri_app::run_tauri_app(engine.clone()) {
-            eprintln!("[prismcast-tauri] {err}");
+        let rt_handle = tokio::runtime::Handle::current();
+        if let Err(err) = prismcast_core::native_ui::run_native_app(engine.clone(), rt_handle) {
+            eprintln!("[prismcast-native-ui] {err}");
         }
         shutdown.cancel();
         engine.shutdown().await;
