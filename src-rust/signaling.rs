@@ -27,7 +27,7 @@ const CHAT_RATE_WINDOW_MS: u64 = 5000;
 const CHAT_RATE_MAX: u32 = 8;
 const REACTION_RATE_WINDOW_MS: u64 = 3000;
 const REACTION_RATE_MAX: u32 = 10;
-const FLUSH_TIMEOUT: Duration = Duration::from_millis(120);
+const FLUSH_TIMEOUT: Duration = Duration::from_millis(250);
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -268,6 +268,7 @@ impl SignalingServer {
                                         }
                                     }
                                     let _ = ws_write.flush().await;
+                                    let _ = ws_write.close().await;
                                     break;
                                 }
                                 item = rx.recv() => match item {
@@ -1053,8 +1054,8 @@ mod tests {
             .expect("server start");
 
         let mut client = SignalingClient::new();
-        let closed = Arc::new(Mutex::new(Option::<ViewerClosedReason>::None));
-        let closed_cb = closed.clone();
+        let (closed_tx, closed_rx) = tokio::sync::oneshot::channel::<ViewerClosedReason>();
+        let closed_tx = Arc::new(Mutex::new(Some(closed_tx)));
 
         let outcome = client
             .connect(
@@ -1064,7 +1065,9 @@ mod tests {
                 Some("998877".to_string()),
                 |_msg| {},
                 move |info| {
-                    *closed_cb.lock().unwrap() = Some(info.reason);
+                    if let Some(tx) = closed_tx.lock().unwrap().take() {
+                        let _ = tx.send(info.reason);
+                    }
                 },
             )
             .await;
@@ -1077,11 +1080,14 @@ mod tests {
         let remaining = server.kick(&viewer_id).expect("viewer deveria existir");
         assert!(remaining.is_empty());
 
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(matches!(
-            *closed.lock().unwrap(),
-            Some(ViewerClosedReason::Kicked)
-        ));
+        let reason = tokio::time::timeout(Duration::from_secs(5), closed_rx)
+            .await
+            .expect("timeout aguardando callback on_closed após kick")
+            .expect("canal on_closed encerrado sem motivo");
+        assert!(
+            matches!(reason, ViewerClosedReason::Kicked),
+            "esperava ViewerClosedReason::Kicked, recebeu {reason:?}"
+        );
 
         server.stop().await;
     }
