@@ -2,7 +2,7 @@
 !include "MUI2.nsh"
 
 !ifndef APP_VERSION
-  !define APP_VERSION "3.1.0"
+  !define APP_VERSION "3.2.0"
 !endif
 
 Name "PrismCast Studio ${APP_VERSION}"

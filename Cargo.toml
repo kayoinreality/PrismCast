@@ -1,6 +1,6 @@
 [package]
 name = "prismcast"
-version = "3.1.0"
+version = "3.2.0"
 edition = "2021"
 authors = ["kayor"]
 description = "PrismCast Studio — Estúdio de transmissão 100% nativo em Rust (egui + wgpu) com captura nativa sem WebView, Dual Output (16:9 + 9:16), Multistreaming, Mixer DSP e LAN P2P"
@@ -63,7 +63,7 @@ open = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 eframe = { version = "0.37", optional = true, default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 egui = { version = "0.37", optional = true }
-egui-prismglass = { version = "0.1", optional = true }
+egui-prismglass = { version = "0.3", optional = true }
 rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "tokio"] }
 
 [target.'cfg(windows)'.build-dependencies]
