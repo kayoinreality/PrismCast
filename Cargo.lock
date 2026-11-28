@@ -1112,9 +1112,9 @@ dependencies = [
 
 [[package]]
 name = "egui-prismglass"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2a97e782d95c64692d41555a1bdc4b74a987bde485253f232db271316032077"
+checksum = "ab4d0220526f83bcdf0a80223349ce49a8fdd6203125b654d41be82621d67a27"
 dependencies = [
  "egui",
 ]
@@ -3377,7 +3377,7 @@ checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
 
 [[package]]
 name = "prismcast"
-version = "3.1.0"
+version = "3.2.0"
 dependencies = [
  "base64 0.22.1",
  "bytemuck",

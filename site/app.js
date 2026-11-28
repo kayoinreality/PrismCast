@@ -509,13 +509,22 @@
     app: document.getElementById('meter-app')
   };
   const meterCache = {};
+  const pcApp = document.getElementById('pc-app');
+  const meterTheme = { bg: '#0d0c0b', off: '#24221f' };
+  function refreshMeterTheme() {
+    if (!pcApp) return;
+    const cs = getComputedStyle(pcApp);
+    meterTheme.bg = cs.getPropertyValue('--pc-meter-bg').trim() || meterTheme.bg;
+    meterTheme.off = cs.getPropertyValue('--pc-meter-off').trim() || meterTheme.off;
+  }
+  refreshMeterTheme();
 
   function resizeMeters() {
     Object.entries(meterEls).forEach(([id, canvas]) => {
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
       const w = Math.max(120, Math.round(rect.width || 200));
-      const h = 12;
+      const h = 6;
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
@@ -530,11 +539,11 @@
     const entry = meterCache[id];
     if (!entry) return;
     const { ctx, w, h } = entry;
-    ctx.fillStyle = '#141412';
+    ctx.fillStyle = meterTheme.bg;
     ctx.fillRect(0, 0, w, h);
 
-    const segments = 34;
-    const gap = 2;
+    const segments = 40;
+    const gap = 1;
     const segW = (w - gap * (segments - 1)) / segments;
     const activeCount = muted ? 0 : Math.round(level * segments);
     const peakIdx = muted ? -1 : Math.min(segments - 1, Math.round(peak * segments));
@@ -542,18 +551,18 @@
     for (let i = 0; i < segments; i++) {
       const ratio = i / segments;
       let color = '#33b06b';
-      if (ratio > 0.84) color = '#e03e2d';
-      else if (ratio > 0.66) color = '#d98a22';
+      if (ratio >= 0.9) color = '#e03e2d';
+      else if (ratio >= 0.7) color = '#d98a22';
 
       const x = i * (segW + gap);
       if (i < activeCount || i === peakIdx) {
         ctx.fillStyle = color;
         ctx.globalAlpha = i === peakIdx && i >= activeCount ? 0.95 : 0.9;
       } else {
-        ctx.fillStyle = '#252420';
+        ctx.fillStyle = meterTheme.off;
         ctx.globalAlpha = 1;
       }
-      ctx.fillRect(x, 1, segW, h - 2);
+      ctx.fillRect(x, 0, segW, h);
     }
     ctx.globalAlpha = 1;
   }
@@ -583,6 +592,8 @@
     if (activeSceneReadout) {
       activeSceneReadout.textContent = sceneLabels[next];
     }
+    const sceneTitle = document.getElementById('pc-scene-title');
+    if (sceneTitle) sceneTitle.textContent = sceneLabels[next];
     if (reducedMotion) renderOnce(performance.now() / 1000);
   }
 
@@ -603,10 +614,11 @@
   const btnCam = document.getElementById('toggle-camera');
   function toggleCamera() {
     state.cameraOn = !state.cameraOn;
-    if (btnCam) {
-      btnCam.setAttribute('aria-pressed', String(state.cameraOn));
-      btnCam.textContent = state.cameraOn ? 'Câmera: Ligada' : 'Câmera: Oculta';
-    }
+    if (btnCam) btnCam.setAttribute('aria-pressed', String(state.cameraOn));
+    const camEye = document.querySelector('#pc-cam-eye use');
+    if (camEye) camEye.setAttribute('href', state.cameraOn ? '#i-eye' : '#i-eye-off');
+    const camRow = camEye && camEye.closest('.pc-row');
+    if (camRow) camRow.classList.toggle('is-muted-src', !state.cameraOn);
     if (reducedMotion) renderOnce(performance.now() / 1000);
     return state.cameraOn;
   }
@@ -616,7 +628,8 @@
   if (btnTrans) {
     btnTrans.addEventListener('click', () => {
       state.transitionMode = state.transitionMode === 'fade' ? 'cut' : 'fade';
-      btnTrans.textContent = state.transitionMode === 'fade' ? 'Transição: Esmaecer' : 'Transição: Corte';
+      const label = btnTrans.querySelector('span') || btnTrans;
+      label.textContent = state.transitionMode === 'fade' ? 'Transição · Esmaecer' : 'Transição · Corte';
     });
   }
 
@@ -626,10 +639,7 @@
     const readout = document.getElementById(`db-${id}`);
     if (!ch) return;
     ch.muted = muted;
-    if (muteBtn) {
-      muteBtn.setAttribute('aria-pressed', String(ch.muted));
-      muteBtn.textContent = ch.muted ? 'MUDO' : 'ATIVO';
-    }
+    if (muteBtn) muteBtn.setAttribute('aria-pressed', String(ch.muted));
     if (readout) readout.textContent = ch.muted ? 'MUDO' : formatDb(ch.db);
   }
 
@@ -639,8 +649,16 @@
     const muteBtn = document.getElementById(`mute-${id}`);
     const ch = state.channels[id];
 
+    const paintFill = () => {
+      if (!fader) return;
+      const min = parseFloat(fader.min);
+      const max = parseFloat(fader.max);
+      fader.style.setProperty('--fill', `${((parseFloat(fader.value) - min) / (max - min)) * 100}%`);
+    };
+    paintFill();
     if (fader) {
       fader.addEventListener('input', () => {
+        paintFill();
         ch.db = parseFloat(fader.value);
         if (readout) readout.textContent = ch.muted ? 'MUDO' : formatDb(ch.db);
       });
@@ -670,10 +688,53 @@
       el.className = 'chat-msg';
       el.innerHTML = `<span class="chat-src ${next.cls}">${next.src}</span><span class="chat-user">${next.user}</span>${next.text}`;
       chatFeed.appendChild(el);
+      const chatCount = document.getElementById('pc-chat-count');
+      if (chatCount) chatCount.textContent = String(24 + chatIdx);
       while (chatFeed.children.length > 4) {
         chatFeed.removeChild(chatFeed.firstElementChild);
       }
     }, 4800);
+  }
+
+  // ------------------------------------------------------- Console theme picker (Prism presets)
+  const themeNames = { carbon: 'Prism Carbon', light: 'Prism Light', glass: 'Prism Glass Dark' };
+  const themeBtns = Array.from(document.querySelectorAll('[data-console-theme]'));
+  themeBtns.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.getAttribute('data-console-theme');
+      if (!pcApp || !themeNames[next]) return;
+      pcApp.setAttribute('data-theme', next);
+      themeBtns.forEach((b) => b.setAttribute('aria-checked', String(b === btn)));
+      const nameEl = document.getElementById('pc-theme-name');
+      if (nameEl) nameEl.textContent = themeNames[next];
+      refreshMeterTheme();
+      if (reducedMotion) renderOnce(performance.now() / 1000);
+    });
+  });
+
+  // Inspector tabs (Propriedades · Chat)
+  const inspectorTabs = Array.from(document.querySelectorAll('[data-inspector-tab]'));
+  inspectorTabs.forEach((tab) => {
+    tab.addEventListener('click', () => {
+      const key = tab.getAttribute('data-inspector-tab');
+      inspectorTabs.forEach((t) => t.setAttribute('aria-selected', String(t === tab)));
+      document.querySelectorAll('[data-inspector-pane]').forEach((pane) => {
+        pane.hidden = pane.getAttribute('data-inspector-pane') !== key;
+      });
+    });
+  });
+
+  // Live tally timer (tabular HH:MM:SS, like the native top bar)
+  const liveTimer = document.getElementById('pc-live-timer');
+  if (liveTimer) {
+    let liveSec = 1 * 3600 + 12 * 60 + 48;
+    setInterval(() => {
+      liveSec += 1;
+      const h = String(Math.floor(liveSec / 3600)).padStart(2, '0');
+      const m = String(Math.floor((liveSec % 3600) / 60)).padStart(2, '0');
+      const sec = String(liveSec % 60).padStart(2, '0');
+      liveTimer.textContent = `${h}:${m}:${sec}`;
+    }, 1000);
   }
 
   // ------------------------------------------------------- Interactive 4-Step Workflow
@@ -996,7 +1057,7 @@
         }
         if (telFps) {
           const fps = (59.9 + Math.abs(Math.sin(t * 0.9)) * 0.1).toFixed(1);
-          telFps.textContent = `${fps} FPS`;
+          telFps.textContent = `${fps} fps`;
         }
       }
       if (workflowVisible) {

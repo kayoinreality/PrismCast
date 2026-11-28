@@ -6,6 +6,7 @@
 //! - Visual inspirado diretamente na landing page GitHub Pages (carbono fosco, vermilion tally,
 //!   feixes espectrais do prisma e painéis translúcidos glassmorphism).
 
+pub mod icons;
 pub mod panels;
 pub mod picker;
 pub mod stage;
@@ -17,12 +18,12 @@ use crate::native_capture::{NativeStudioPump, PreviewSnapshot};
 use crate::native_ui::picker::{PickerPurpose, PickerSelection, SourcePickerModal};
 use crate::native_ui::stage::{StageAction, StageInteraction};
 use crate::protocol::{
-    AppSettings, AudioChannel, AudioChannelKind, AudioFilters, AudioLevelSample,
-    CanvasOrientation, Destination, DiscoveredHost, ExternalControlStatus, GpuPipelineStatus,
-    KitInfo, MultiChatEvent, MultiChatMessage, MultistreamEngineStatus, PlatformId,
-    RecorderStatus, Scene, SceneItem, SourceKind, SourceSettings, SourceTransform, SourceType,
-    StudioScenesState, TelemetryStats, TransitionType, TwitchCapabilities, TwitchLoginState,
-    UiAppearanceSettings, UpdateStatus, VirtualCameraStatus,
+    AppSettings, AudioChannel, AudioChannelKind, AudioFilters, AudioLevelSample, CanvasOrientation,
+    Destination, DiscoveredHost, ExternalControlStatus, GpuPipelineStatus, KitInfo, MultiChatEvent,
+    MultiChatMessage, MultistreamEngineStatus, PlatformId, RecorderStatus, Scene, SceneItem,
+    SourceKind, SourceSettings, SourceTransform, SourceType, StudioScenesState, TelemetryStats,
+    TransitionType, TwitchCapabilities, TwitchLoginState, UiAppearanceSettings, UpdateStatus,
+    VirtualCameraStatus,
 };
 use crate::rpc::{AppEngine, RpcEvent};
 use egui::{ColorImage, Context, TextureHandle, TextureOptions, Vec2, ViewportCommand};
@@ -66,7 +67,10 @@ pub struct ToastNotice {
 
 #[derive(Debug)]
 pub enum BgUiMsg {
-    Toast { message: String, is_error: bool },
+    Toast {
+        message: String,
+        is_error: bool,
+    },
     SettingsRefreshed(AppSettings),
     MultistreamStatus(MultistreamEngineStatus),
     RecorderStatus(RecorderStatus),
@@ -76,7 +80,11 @@ pub enum BgUiMsg {
     TwitchCapabilities(TwitchCapabilities),
     TwitchLogin(TwitchLoginState),
     KitLoaded(Option<KitInfo>),
-    LanHostStarted { ip: String, port: u16, pin: Option<String> },
+    LanHostStarted {
+        ip: String,
+        port: u16,
+        pin: Option<String>,
+    },
     LanHostStopped,
     DiscoveredHosts(Vec<DiscoveredHost>),
     FirewallChecked(bool),
@@ -137,6 +145,8 @@ pub struct PrismCastNativeApp {
     pub obs_password_input: String,
     pub new_scene_name: String,
     pub adding_scene: bool,
+    /// Cena em renomeação inline (id, texto em edição) — duplo clique na lista de cenas.
+    pub renaming_scene: Option<(String, String)>,
     pub new_dest_name: String,
     pub new_dest_server: String,
 
@@ -196,7 +206,7 @@ impl PrismCastNativeApp {
             prism_theme,
             applied_appearance,
             undo_stack: Vec::new(),
-            active_tab: NavTab::Studio,
+            active_tab: start_tab_from_env(),
             right_tab: RightTab::Properties,
             edit_vertical: false,
             selected_item_id,
@@ -231,6 +241,7 @@ impl PrismCastNativeApp {
             obs_password_input: String::new(),
             new_scene_name: String::new(),
             adding_scene: false,
+            renaming_scene: None,
             new_dest_name: String::new(),
             new_dest_server: "rtmp://".to_string(),
             confirm_quit_open: false,
@@ -279,7 +290,9 @@ impl PrismCastNativeApp {
         let engine = self.engine.clone();
         let tx = self.bg_tx.clone();
         self.rt.spawn(async move {
-            let _ = engine.handle_command("settings_set", json!({ "patch": patch })).await;
+            let _ = engine
+                .handle_command("settings_set", json!({ "patch": patch }))
+                .await;
             let snap = engine.store.snapshot();
             let _ = tx.send(BgUiMsg::SettingsRefreshed(snap));
         });
@@ -363,7 +376,9 @@ impl PrismCastNativeApp {
         let engine = self.engine.clone();
         let tx = self.bg_tx.clone();
         self.rt.spawn(async move {
-            let ms = engine.handle_command("multistream_status", Value::Null).await;
+            let ms = engine
+                .handle_command("multistream_status", Value::Null)
+                .await;
             if let Ok(parsed) = serde_json::from_value::<MultistreamEngineStatus>(ms) {
                 let _ = tx.send(BgUiMsg::MultistreamStatus(parsed));
             }
@@ -371,11 +386,15 @@ impl PrismCastNativeApp {
             if let Ok(parsed) = serde_json::from_value::<RecorderStatus>(rec) {
                 let _ = tx.send(BgUiMsg::RecorderStatus(parsed));
             }
-            let vc = engine.handle_command("virtual_cam_status", Value::Null).await;
+            let vc = engine
+                .handle_command("virtual_cam_status", Value::Null)
+                .await;
             if let Ok(parsed) = serde_json::from_value::<VirtualCameraStatus>(vc) {
                 let _ = tx.send(BgUiMsg::VirtualCamStatus(parsed));
             }
-            let ext = engine.handle_command("external_control_status", Value::Null).await;
+            let ext = engine
+                .handle_command("external_control_status", Value::Null)
+                .await;
             if let Ok(parsed) = serde_json::from_value::<ExternalControlStatus>(ext) {
                 let _ = tx.send(BgUiMsg::ExternalControlStatus(parsed));
             }
@@ -383,7 +402,9 @@ impl PrismCastNativeApp {
             if let Ok(parsed) = serde_json::from_value::<UpdateStatus>(upd) {
                 let _ = tx.send(BgUiMsg::UpdateStatus(parsed));
             }
-            let tw = engine.handle_command("twitch_capabilities", Value::Null).await;
+            let tw = engine
+                .handle_command("twitch_capabilities", Value::Null)
+                .await;
             if let Ok(parsed) = serde_json::from_value::<TwitchCapabilities>(tw) {
                 let _ = tx.send(BgUiMsg::TwitchCapabilities(parsed));
             }
@@ -427,7 +448,9 @@ impl PrismCastNativeApp {
                     .await;
                 let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                 if let Some(st_val) = res.get("status") {
-                    if let Ok(st) = serde_json::from_value::<MultistreamEngineStatus>(st_val.clone()) {
+                    if let Ok(st) =
+                        serde_json::from_value::<MultistreamEngineStatus>(st_val.clone())
+                    {
                         let _ = tx.send(BgUiMsg::MultistreamStatus(st));
                     }
                 }
@@ -437,10 +460,9 @@ impl PrismCastNativeApp {
                         is_error: false,
                     });
                 } else {
-                    let err = res
-                        .get("error")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Configure e habilite pelo menos um destino com chave de transmissão.");
+                    let err = res.get("error").and_then(|v| v.as_str()).unwrap_or(
+                        "Configure e habilite pelo menos um destino com chave de transmissão.",
+                    );
                     let _ = tx.send(BgUiMsg::Toast {
                         message: err.to_string(),
                         is_error: true,
@@ -455,7 +477,11 @@ impl PrismCastNativeApp {
         let tx = self.bg_tx.clone();
         let active = self.recorder.recording;
         self.rt.spawn(async move {
-            let cmd = if active { "recorder_stop" } else { "recorder_start" };
+            let cmd = if active {
+                "recorder_stop"
+            } else {
+                "recorder_start"
+            };
             let res = engine.handle_command(cmd, Value::Null).await;
             if let Ok(st) = serde_json::from_value::<RecorderStatus>(res.clone()) {
                 let _ = tx.send(BgUiMsg::RecorderStatus(st));
@@ -480,7 +506,9 @@ impl PrismCastNativeApp {
         let engine = self.engine.clone();
         let tx = self.bg_tx.clone();
         self.rt.spawn(async move {
-            let res = engine.handle_command("recorder_save_replay", Value::Null).await;
+            let res = engine
+                .handle_command("recorder_save_replay", Value::Null)
+                .await;
             let ok = res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             if ok {
                 let path = res.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -549,7 +577,10 @@ impl PrismCastNativeApp {
                 }
                 self.selected_item_id = Some(new_id);
                 self.persist_scenes();
-                self.notify(format!("Capturando nativamente: {}", sel.source_name), false);
+                self.notify(
+                    format!("Capturando nativamente: {}", sel.source_name),
+                    false,
+                );
             }
             PickerPurpose::RebindItem { item_id } => {
                 if let Some(sc) = self.editing_scene_mut() {
@@ -742,7 +773,8 @@ impl PrismCastNativeApp {
                     if let Some(sc) = self.editing_scene_mut() {
                         if let Some(it) = sc.items.iter_mut().find(|i| i.id == id) {
                             it.transform.z_index = (it.transform.z_index - 1).max(0);
-                            it.vertical_transform.z_index = (it.vertical_transform.z_index - 1).max(0);
+                            it.vertical_transform.z_index =
+                                (it.vertical_transform.z_index - 1).max(0);
                             dirty = true;
                         }
                     }
@@ -833,7 +865,8 @@ impl PrismCastNativeApp {
         while let Ok(ev) = self.rpc_rx.try_recv() {
             match ev.event.as_str() {
                 "audio:levels" => {
-                    if let Ok(levels) = serde_json::from_value::<Vec<AudioLevelSample>>(ev.payload) {
+                    if let Ok(levels) = serde_json::from_value::<Vec<AudioLevelSample>>(ev.payload)
+                    {
                         for sample in levels {
                             self.audio_levels.insert(sample.id.clone(), sample);
                         }
@@ -936,21 +969,31 @@ impl PrismCastNativeApp {
             if s.width == 0 || s.height == 0 {
                 return;
             }
-            let img = ColorImage::from_rgba_unmultiplied(
-                [s.width as usize, s.height as usize],
-                &s.rgba,
-            );
+            let img =
+                ColorImage::from_rgba_unmultiplied([s.width as usize, s.height as usize], &s.rgba);
             match slot {
                 Some(tex) => tex.set(img, TextureOptions::LINEAR),
                 None => *slot = Some(ctx.load_texture(name, img, TextureOptions::LINEAR)),
             }
         }
 
-        let snap_h = self.pump.previews.program_h.lock().ok().and_then(|g| g.clone());
+        let snap_h = self
+            .pump
+            .previews
+            .program_h
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
         update_tex(ctx, "stage_program_h", &mut self.tex_program_h, snap_h);
 
         if self.settings.studio.dual_output_enabled {
-            let snap_v = self.pump.previews.program_v.lock().ok().and_then(|g| g.clone());
+            let snap_v = self
+                .pump
+                .previews
+                .program_v
+                .lock()
+                .ok()
+                .and_then(|g| g.clone());
             update_tex(ctx, "stage_program_v", &mut self.tex_program_v, snap_v);
         }
 
@@ -962,7 +1005,12 @@ impl PrismCastNativeApp {
                 .lock()
                 .ok()
                 .and_then(|g| g.clone());
-            update_tex(ctx, "stage_studio_preview", &mut self.tex_studio_preview, snap_p);
+            update_tex(
+                ctx,
+                "stage_studio_preview",
+                &mut self.tex_studio_preview,
+                snap_p,
+            );
         }
 
         // Atualiza snapshot rápido de telemetria e status de captura
@@ -1048,7 +1096,9 @@ impl eframe::App for PrismCastNativeApp {
         let ctx = ui.ctx().clone();
 
         // Intercepta fechamento acidental durante live/gravação
-        if ctx.input(|i| i.viewport().close_requested()) && !self.force_close && self.engine.is_busy()
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.force_close
+            && self.engine.is_busy()
         {
             ctx.send_viewport_cmd(ViewportCommand::CancelClose);
             self.confirm_quit_open = true;
@@ -1081,10 +1131,11 @@ impl eframe::App for PrismCastNativeApp {
             time_sec,
         );
 
-        // Barra superior broadcast em painel glass flutuante
+        // Barra superior (contexto, Tally com cronômetro e ações) + barra de status inferior
         panels::show_top_bar(self, ui);
+        panels::show_status_bar(self, ui);
 
-        // Sidebar de navegação flutuante (`egui-prismglass::GlassSidebar`)
+        // Trilho de navegação em vidro (`egui-prismglass::GlassSidebar`)
         panels::show_nav_rail(self, ui);
 
         // Conteúdo principal por aba
@@ -1113,6 +1164,18 @@ impl eframe::App for PrismCastNativeApp {
 
         // Mantém 60fps fluídos no palco e medidores VU vivos
         ctx.request_repaint_after(Duration::from_millis(16));
+    }
+}
+
+/// Aba inicial (`PRISMCAST_START_TAB=studio|widgets|destinations|lan|settings`), útil para
+/// capturas de tela automatizadas da documentação.
+fn start_tab_from_env() -> NavTab {
+    match std::env::var("PRISMCAST_START_TAB").as_deref() {
+        Ok("widgets") => NavTab::Widgets,
+        Ok("destinations") => NavTab::Destinations,
+        Ok("lan") => NavTab::Lan,
+        Ok("settings") => NavTab::Settings,
+        _ => NavTab::Studio,
     }
 }
 

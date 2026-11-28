@@ -2,9 +2,31 @@
   <img src="build/icon.svg" alt="PrismCast Studio" width="64" height="64" />
 </p>
 
-# PrismCast Studio (`v3.1.0`)
+# PrismCast Studio (`v3.2.0`)
 
 Estúdio de transmissão **100% nativo em Rust (`egui` + `wgpu 24`)** para **Windows e Linux** — **sem Tauri, sem WebView2, sem Electron e sem popups de navegador**. Monta cenas com captura nativa direta de telas, janelas e imagens em saída dupla (**16:9 + 9:16**), transmite simultaneamente para **Twitch, YouTube, Kick, TikTok e RTMP/RTMPS próprio** com controle dinâmico de bitrate (ABR), compartilha a tela em **LAN P2P de baixíssima latência** e entrega recursos de produção profissional — GPU zero-copy, isolamento de áudio por aplicativo, plugins VST3/CLAP, câmera virtual nativa, transições personalizadas e servidor `obs-websocket` v5 para Stream Deck.
+
+---
+
+![PrismCast Studio v3.2 — tema Prism Carbon](docs/screenshots/studio-prism-carbon.png)
+
+## O que mudou na `v3.2.0` (UI Prism · `egui-prismglass` 0.3)
+
+- **Nova linguagem visual Prism**: migração para [`egui-prismglass` 0.3](https://crates.io/crates/egui-prismglass) com tipografia **Inter** embutida (3 pesos + algarismos tabulares para FPS, dB e cronômetros), rampa neutra calibrada, uma única cor de destaque e bordas hairline.
+- **Material Layered**: conteúdo sólido e legível; o vidro fosco fica reservado ao que flutua (trilho lateral, menus, toasts). O **Prism Carbon** — identidade do PrismCast — foi reconstruído nessa linguagem com neutros carbono quentes e Aurora espectral.
+- **10 temas + 9 cores de destaque**: *Prism Carbon*, *Prism Dark/Light*, *Prism Glass Dark/Light* (tudo em vidro) e os clássicos v0.2, escolhidos numa galeria com miniaturas renderizadas pelo próprio tema. Atalho claro/escuro direto no trilho lateral.
+- **UX do estúdio redesenhada**:
+  - Barra superior com contexto (aba › cena), **Tally com cronômetro** da live/gravação e ações agrupadas (modos de visualização · Replay · Gravar · Entrar ao vivo).
+  - **Barra de status** com telemetria tabular: FPS, render p95, quadros perdidos, bitrate, encoder, backend GPU, zero-copy, VCam e Stream Deck.
+  - **Ícones vetoriais nativos** (46 glyphs desenhados no `Painter`) substituindo emojis que dependiam de fontes de fallback.
+  - Docks de Cenas, Fontes e Mixer com linhas de lista, marcador de seleção, **renomear cena com duplo clique**, menu "Adicionar fonte" com ícones e estados vazios explicativos.
+  - Inspetor com abas segmentadas (Propriedades · Chat), Multichat com chips por plataforma e envio com Enter.
+  - Palco com rótulo do viewport no canto oposto à fonte selecionada, seleção na cor de destaque e dicas de atalho em capas de tecla.
+  - Telas de página centralizadas numa coluna legível; destinos com marca da plataforma e seletor 16:9 / 9:16.
+
+| Prism Light | Ajustes · Aparência |
+| :---: | :---: |
+| ![Prism Light](docs/screenshots/studio-prism-light.png) | ![Galeria de temas](docs/screenshots/settings-appearance.png) |
 
 ---
 
@@ -83,7 +105,8 @@ src-rust/
 ├── build.rs             # Incorporação nativa de ícone/metadados Windows via winresource
 ├── native_ui/
 │   ├── mod.rs           # App nativo eframe + egui 0.37 + wgpu, atalhos, undo e eventos
-│   ├── theme.rs         # Temas egui-prismglass (Prism Carbon, Onyx, Glacial, Frost, Minimal)
+│   ├── theme.rs         # Temas Prism (egui-prismglass 0.3), Inter, cores de destaque e kit broadcast
+│   ├── icons.rs         # 46 ícones vetoriais nativos desenhados no Painter
 │   ├── stage.rs         # Palco GPU interativo (16:9, 9:16, Modo Estúdio, snap e recorte)
 │   ├── picker.rs        # Seletor nativo de telas e janelas com miniaturas reais ao vivo
 │   └── panels.rs        # Barra broadcast, GlassSidebar, docks (Cenas/Fontes/Mixer) e Ajustes

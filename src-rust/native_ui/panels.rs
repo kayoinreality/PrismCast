@@ -1,204 +1,258 @@
-//! Telas e painéis glassmorphism do PrismCast Studio alimentados por `egui-prismglass`.
+//! Telas e painéis do PrismCast Studio na linguagem Prism da `egui-prismglass` 0.3.
 //!
-//! - Barra superior broadcast flutuante (`GlassPanel`) com logotipo prisma óptico,
-//!   Tally animado (`AO VIVO / FORA DO AR`), telemetria `wgpu` e ações rápidas (`GlassButton`).
-//! - Sidebar flutuante recolhível (`GlassSidebar` + `SidebarItem`) com badges vivos e
-//!   alternador rápido de temas (`Prism Carbon`, `Onyx`, `Glacial`, `Frost`, `Minimal`).
-//! - Workspace completo do Estúdio: palco 16:9 / 9:16 / Modo Estúdio, docks flutuantes
-//!   (`Cenas`, `Fontes`, `Mixer de Áudio` com `GlassSlider` e VU meters broadcast) e
-//!   inspetor direito (`Propriedades` com `GlassToggle` / `GlassSlider` + `Multichat`).
-//! - Telas completas de `Destinos`, `Widgets`, `Rede Local (LAN P2P)` e `Ajustes`
-//!   (incluindo Inspetor de Material `egui-prismglass` em tempo real).
+//! - **Barra superior** sólida com contexto (aba / cena), Tally com cronômetro e grupos de
+//!   ações com ícones vetoriais (modos de visualização · gravação · CTA ao vivo).
+//! - **Trilho lateral** em vidro (a camada flutuante do material Layered) com marca, seções
+//!   Produção / Sistema, badges vivos e alternador rápido claro/escuro.
+//! - **Barra de status** com telemetria tabular (FPS, render p95, quadros perdidos, bitrate,
+//!   encoder, backend GPU, áudio e clientes externos).
+//! - **Estúdio**: palco 16:9 / 9:16 / Modo Estúdio, docks de Cenas, Fontes e Mixer com linhas
+//!   de lista, estados vazios e inspetor com abas segmentadas (Propriedades · Chat).
+//! - Telas de `Destinos`, `Widgets`, `Rede Local` e `Ajustes` (com galeria de temas e cores).
 
 use crate::capture::CaptureStatus;
 use crate::compositor::capture_key_for_item;
+use crate::native_ui::icons::Icon;
 use crate::native_ui::picker::PickerPurpose;
-use crate::native_ui::stage::{StageAction, StageInteraction, show_stage_viewport};
-use crate::native_ui::theme;
+use crate::native_ui::stage::{show_stage_viewport, StageAction, StageInteraction};
+use crate::native_ui::theme::{self, Btn, BtnOpts, RichTextWeight};
 use crate::native_ui::{
-    BgUiMsg, NavTab, PrismCastNativeApp, RightTab, ToastNotice, ensure_window_audio_channel,
-    source_type_badge, transition_label,
+    ensure_window_audio_channel, source_type_badge, transition_label, BgUiMsg, NavTab,
+    PrismCastNativeApp, RightTab, ToastNotice,
 };
 use crate::protocol::{
     AudioChannel, AudioChannelKind, AudioFilters, AudioMonitorMode, CanvasOrientation,
     ChatFragment, ChatPlatform, Destination, DiscoveredHost, PlatformId, Scene, SceneItem,
-    SourceKind, SourceType, TransitionType, TwitchLoginState, UiAppearanceSettings, UiThemePreset,
-    UpdateState,
+    SourceKind, SourceType, TransitionType, TwitchLoginState, UiAccent, UiAppearanceSettings,
+    UiThemePreset, UpdateState,
 };
 use egui::{
     Align, Align2, Color32, Context, Frame, Layout, Margin, RichText, Ui, Vec2, ViewportCommand,
 };
 use egui_prismglass::{
-    BadgeVariant, GlassBadge, GlassButton, GlassCard, GlassElevation, GlassPanel, GlassSidebar,
-    GlassSlider, GlassToggle, PrismContextExt, SidebarIcon, SidebarItem, SpringConfig,
-    SurfaceStyle, ThemeMode, animate_spring, paint_glass_surface,
+    animate_spring, paint_glass_surface, BadgeVariant, FontWeight, GlassBadge, GlassButton,
+    GlassCard, GlassElevation, GlassPanel, GlassSegmented, GlassSidebar, GlassSlider, GlassToggle,
+    PrismContextExt, SpringConfig, SurfaceStyle, ThemeMode,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
-// ------------------------------------------------------------------ Barra Superior Broadcast
+// ------------------------------------------------------------------ Helpers de layout
+
+/// Margem externa padrão entre a janela e os painéis flutuantes.
+const GUTTER: i8 = 8;
+
+fn tab_title(tab: NavTab) -> &'static str {
+    match tab {
+        NavTab::Studio => "Estúdio",
+        NavTab::Widgets => "Widgets",
+        NavTab::Destinations => "Destinos",
+        NavTab::Lan => "Rede local",
+        NavTab::Settings => "Ajustes",
+    }
+}
+
+fn tab_icon(tab: NavTab) -> Icon {
+    match tab {
+        NavTab::Studio => Icon::Studio,
+        NavTab::Widgets => Icon::Widgets,
+        NavTab::Destinations => Icon::Broadcast,
+        NavTab::Lan => Icon::Network,
+        NavTab::Settings => Icon::Settings,
+    }
+}
+
+/// Ícone vetorial para cada tipo de fonte.
+pub fn source_icon(t: SourceType) -> Icon {
+    match t {
+        SourceType::ScreenCapture => Icon::Monitor,
+        SourceType::WindowCapture => Icon::Window,
+        SourceType::ImageSource => Icon::Image,
+        SourceType::ColorSource => Icon::Swatch,
+        SourceType::TextSource => Icon::Text,
+        SourceType::BrowserSource => Icon::Globe,
+        SourceType::CameraInput => Icon::Camera,
+        SourceType::AudioInput => Icon::Mic,
+        SourceType::AudioOutput => Icon::Volume,
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.chars().count() > max {
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    } else {
+        s.to_owned()
+    }
+}
+
+/// Tempo no ar: maior uptime entre os destinos ativos.
+fn live_uptime(app: &PrismCastNativeApp) -> Option<u64> {
+    if app.multistream.active {
+        Some(
+            app.multistream
+                .destinations
+                .iter()
+                .map(|d| d.uptime_sec)
+                .max()
+                .unwrap_or(0),
+        )
+    } else if app.recorder.recording {
+        Some(app.recorder.recordingDurationSec)
+    } else {
+        None
+    }
+}
+
+/// Margem das telas de página: centraliza o conteúdo numa coluna de até 1000 pt.
+fn page_margin(ui: &Ui) -> Margin {
+    let w = ui.available_width();
+    let side = ((w - 1000.0) * 0.5).max(18.0).min(400.0);
+    Margin {
+        left: side as i8,
+        right: side as i8,
+        top: 14,
+        bottom: 12,
+    }
+}
+
+// ------------------------------------------------------------------ Barra Superior
 
 pub fn show_top_bar(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     egui::Panel::top("prismcast_top_bar")
-        .exact_size(64.0)
+        .exact_size(60.0)
         .show_separator_line(false)
         .frame(Frame::NONE.inner_margin(Margin {
-            left: 10,
-            right: 10,
-            top: 8,
-            bottom: 4,
+            left: GUTTER,
+            right: GUTTER,
+            top: GUTTER + 2,
+            bottom: 2,
         }))
         .show(ui, |ui| {
             GlassPanel::new()
-                .padding(Margin::symmetric(14, 7))
+                .padding(Margin::symmetric(12, 7))
                 .show(ui, |ui| {
                     ui.horizontal_centered(|ui| {
-                        // Logotipo vetorial óptico + Marca
-                        let (logo_rect, _) =
-                            ui.allocate_exact_size(Vec2::new(30.0, 26.0), egui::Sense::hover());
-                        theme::paint_prism_logo(ui.painter(), logo_rect, &prism);
-                        ui.add_space(4.0);
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            ui.label(
-                                RichText::new("PrismCast Studio")
-                                    .size(14.5)
-                                    .strong()
-                                    .color(prism.palette.text_primary),
-                            );
-                            ui.label(
-                                RichText::new(format!(
-                                    "100% Rust · {}",
-                                    app.gpu_status.compositor_backend.to_uppercase()
-                                ))
-                                .size(9.8)
-                                .monospace()
-                                .color(prism.palette.text_muted),
-                            );
-                        });
+                        // Contexto: aba ativa › cena em edição
+                        theme::icon(
+                            ui,
+                            tab_icon(app.active_tab),
+                            16.0,
+                            prism.palette.text_secondary,
+                        );
+                        ui.label(theme::text(
+                            ui,
+                            tab_title(app.active_tab),
+                            14.0,
+                            FontWeight::Semibold,
+                            prism.palette.text_primary,
+                        ));
+                        if app.active_tab == NavTab::Studio {
+                            theme::icon(ui, Icon::ChevronRight, 12.0, prism.palette.text_muted);
+                            let scene = app
+                                .program_scene()
+                                .map(|s| s.name.clone())
+                                .unwrap_or_else(|| "Cena principal".into());
+                            ui.label(theme::text(
+                                ui,
+                                truncate(&scene, 26),
+                                13.0,
+                                FontWeight::Medium,
+                                prism.palette.text_secondary,
+                            ));
+                        }
+                        ui.add_space(10.0);
+                        theme::paint_tally_pill(
+                            ui,
+                            app.multistream.active,
+                            app.recorder.recording,
+                            live_uptime(app),
+                        );
 
-                        ui.add_space(12.0);
-
-                        // Pílula Tally broadcast com pulso suave (`animate_pulse`)
-                        theme::paint_tally_pill(ui, app.multistream.active, app.recorder.recording);
-
-                        ui.add_space(8.0);
-
-                        // Strip de telemetria em tempo real dentro de cartão sutil
-                        GlassCard::new()
-                            .elevation(GlassElevation::Subtle)
-                            .corner_radius(10.0)
-                            .padding(Margin::symmetric(10, 4))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    ui.spacing_mut().item_spacing.x = 10.0;
-                                    let fps_val = if app.telemetry.compositor_fps > 0.1 {
-                                        app.telemetry.compositor_fps
-                                    } else {
-                                        app.settings.studio.fps as f32
-                                    };
-                                    ui.label(
-                                        RichText::new(format!("{fps_val:.0} FPS"))
-                                            .monospace()
-                                            .size(11.0)
-                                            .strong()
-                                            .color(prism.palette.accent),
-                                    );
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{:.1} ms",
-                                            app.telemetry.render_ms_p95
-                                        ))
-                                        .monospace()
-                                        .size(11.0)
-                                        .color(prism.palette.text_secondary),
-                                    );
-                                    if app.virtual_cam.active {
-                                        ui.add(
-                                            GlassBadge::new("VCAM")
-                                                .variant(BadgeVariant::Accent)
-                                                .dot(true),
-                                        );
-                                    }
-                                });
-                            });
-
-                        // Botões de ação à direita
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = 6.0;
 
-                            // CTA principal: Entrar ao vivo / Encerrar live
-                            let live_label = if app.multistream.active {
-                                "■ Encerrar live"
+                            // CTA principal
+                            let cta = if app.multistream.active {
+                                theme::button(
+                                    ui,
+                                    "Encerrar live",
+                                    BtnOpts::new(Btn::Danger).icon(Icon::Stop).height(32.0),
+                                )
                             } else {
-                                "● Entrar ao vivo"
+                                theme::button(
+                                    ui,
+                                    "Entrar ao vivo",
+                                    BtnOpts::new(Btn::Tally).icon(Icon::Broadcast).height(32.0),
+                                )
                             };
-                            if theme::tally_button(ui, live_label).clicked() {
+                            if cta.clicked() {
                                 app.toggle_live();
                             }
 
-                            // Gravação MP4
                             let rec_label = if app.recorder.recording {
-                                format!("■ Rec {}s", app.recorder.recordingDurationSec)
+                                theme::format_hms(app.recorder.recordingDurationSec)
                             } else {
-                                "● Gravar".to_string()
+                                "Gravar".to_string()
                             };
-                            if ui
-                                .add(
-                                    GlassButton::secondary(&rec_label)
-                                        .selected(app.recorder.recording)
-                                        .pill(true)
-                                        .min_size(Vec2::new(0.0, 30.0)),
-                                )
-                                .clicked()
+                            if theme::button(
+                                ui,
+                                &rec_label,
+                                BtnOpts::new(Btn::Secondary)
+                                    .icon(if app.recorder.recording {
+                                        Icon::Stop
+                                    } else {
+                                        Icon::Record
+                                    })
+                                    .selected(app.recorder.recording)
+                                    .height(32.0),
+                            )
+                            .on_hover_text("Gravação local MP4")
+                            .clicked()
                             {
                                 app.toggle_recording();
                             }
 
-                            // Salvar Replay
-                            if ui
-                                .add(
-                                    GlassButton::ghost("↺ Replay")
-                                        .pill(true)
-                                        .min_size(Vec2::new(0.0, 30.0)),
-                                )
-                                .on_hover_text("Salvar últimos segundos do Replay Buffer")
-                                .clicked()
+                            if theme::button(
+                                ui,
+                                "Replay",
+                                BtnOpts::new(Btn::Ghost).icon(Icon::Replay).height(32.0),
+                            )
+                            .on_hover_text("Salvar os últimos segundos do Replay Buffer")
+                            .clicked()
                             {
                                 app.save_replay();
                             }
 
-                            // Tela de Pausa
+                            theme::vsep(ui, &prism, 22.0);
+
+                            // Modos de visualização (alternâncias)
                             let shield = app.settings.studio.privacy_shield_active;
-                            if ui
-                                .add(
-                                    GlassButton::secondary("Pausa")
-                                        .selected(shield)
-                                        .pill(true)
-                                        .min_size(Vec2::new(0.0, 30.0)),
-                                )
-                                .on_hover_text("Ativar tela de pausa (Volto já)")
-                                .clicked()
+                            if theme::icon_button_ex(
+                                ui,
+                                Icon::Pause,
+                                "Tela de pausa (Volto já)",
+                                shield,
+                                30.0,
+                            )
+                            .clicked()
                             {
                                 app.settings.studio.privacy_shield_active = !shield;
                                 app.persist_studio();
                             }
-
-                            // Saída dupla 9:16
                             let dual = app.settings.studio.dual_output_enabled;
-                            if ui
-                                .add(
-                                    GlassButton::secondary("9:16")
-                                        .selected(dual)
-                                        .pill(true)
-                                        .min_size(Vec2::new(0.0, 30.0)),
-                                )
-                                .on_hover_text(
-                                    "Ativar saída dupla vertical 9:16 (TikTok / Shorts)",
-                                )
-                                .clicked()
+                            if theme::icon_button_ex(
+                                ui,
+                                Icon::Vertical,
+                                "Saída dupla vertical 9:16 (TikTok / Shorts)",
+                                dual,
+                                30.0,
+                            )
+                            .clicked()
                             {
                                 app.settings.studio.dual_output_enabled = !dual;
                                 if !app.settings.studio.dual_output_enabled {
@@ -206,17 +260,15 @@ pub fn show_top_bar(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 }
                                 app.persist_studio();
                             }
-
-                            // Modo Estúdio (Prévia + Programa)
                             let sm = app.settings.scenes.studio_mode;
-                            if ui
-                                .add(
-                                    GlassButton::secondary("Modo estúdio")
-                                        .selected(sm)
-                                        .pill(true)
-                                        .min_size(Vec2::new(0.0, 30.0)),
-                                )
-                                .clicked()
+                            if theme::icon_button_ex(
+                                ui,
+                                Icon::Columns,
+                                "Modo estúdio: prévia editável + programa",
+                                sm,
+                                30.0,
+                            )
+                            .clicked()
                             {
                                 app.settings.scenes.studio_mode = !sm;
                                 if app.settings.scenes.studio_mode
@@ -233,19 +285,246 @@ pub fn show_top_bar(app: &mut PrismCastNativeApp, ui: &mut Ui) {
         });
 }
 
-// ------------------------------------------------------------------ Sidebar Flutuante (GlassSidebar)
+// ------------------------------------------------------------------ Barra de Status
+
+pub fn show_status_bar(app: &mut PrismCastNativeApp, ui: &mut Ui) {
+    if !app.settings.ui_appearance.show_status_bar {
+        return;
+    }
+    let prism = ui.ctx().prism_theme();
+    egui::Panel::bottom("prismcast_status_bar")
+        .exact_size(30.0)
+        .show_separator_line(false)
+        .frame(Frame::NONE.inner_margin(Margin {
+            left: GUTTER + 4,
+            right: GUTTER + 4,
+            top: 2,
+            bottom: 6,
+        }))
+        .show(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 5.0;
+                let t = &app.telemetry;
+                let fps = if t.compositor_fps > 0.1 {
+                    t.compositor_fps
+                } else {
+                    app.settings.studio.fps as f32
+                };
+                let fps_ok = t.target_fps == 0 || fps >= t.target_fps as f32 * 0.95;
+                theme::status_dot(
+                    ui,
+                    if fps_ok {
+                        theme::METER_OK
+                    } else {
+                        theme::METER_WARN
+                    },
+                    false,
+                );
+                theme::stat(ui, "", &format!("{fps:.0} fps"), prism.palette.text_primary);
+                ui.add_space(8.0);
+                theme::stat(
+                    ui,
+                    "Render",
+                    &format!("{:.1} ms", t.render_ms_p95),
+                    prism.palette.text_secondary,
+                );
+                ui.add_space(8.0);
+                theme::stat(
+                    ui,
+                    "Perdidos",
+                    &t.dropped_frames.to_string(),
+                    if t.dropped_frames > 0 {
+                        theme::METER_WARN
+                    } else {
+                        prism.palette.text_secondary
+                    },
+                );
+                if app.multistream.active {
+                    ui.add_space(8.0);
+                    let kbps = if t.encode_bitrate_kbps > 0 {
+                        t.encode_bitrate_kbps
+                    } else {
+                        app.multistream
+                            .destinations
+                            .iter()
+                            .map(|d| d.bitrate_kbps)
+                            .sum()
+                    };
+                    theme::stat(
+                        ui,
+                        "Bitrate",
+                        &format!("{kbps} kbps"),
+                        prism.palette.text_secondary,
+                    );
+                    if t.abr_active {
+                        theme::chip(ui, "ABR", prism.palette.accent);
+                    }
+                }
+                let encoder = if !t.encoder.is_empty() {
+                    t.encoder.clone()
+                } else {
+                    app.multistream.encoder.clone()
+                };
+                if !encoder.is_empty() {
+                    ui.add_space(8.0);
+                    theme::stat(
+                        ui,
+                        "Encoder",
+                        &encoder.to_uppercase(),
+                        prism.palette.text_secondary,
+                    );
+                }
+                ui.add_space(8.0);
+                let backend = if app.gpu_status.compositor_backend.is_empty() {
+                    "wgpu".to_string()
+                } else {
+                    app.gpu_status.compositor_backend.clone()
+                };
+                theme::stat(ui, "GPU", &backend, prism.palette.text_secondary);
+                if app.gpu_status.zero_copy_active || t.zero_copy_active {
+                    theme::chip(ui, "ZERO-COPY", theme::METER_OK);
+                }
+                if t.audio_runtime_active {
+                    ui.add_space(8.0);
+                    theme::stat(ui, "Áudio", "48 kHz", prism.palette.text_secondary);
+                }
+                if app.virtual_cam.active {
+                    theme::chip(ui, "VCam", prism.palette.accent);
+                }
+                if t.external_clients > 0 {
+                    ui.add_space(8.0);
+                    theme::stat(
+                        ui,
+                        "Stream Deck",
+                        &t.external_clients.to_string(),
+                        prism.palette.text_secondary,
+                    );
+                }
+
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(theme::num_text(
+                        ui,
+                        format!("v{}", env!("CARGO_PKG_VERSION")),
+                        11.0,
+                        FontWeight::Regular,
+                        prism.palette.text_muted,
+                    ));
+                    if app.lan_hosting {
+                        ui.add_space(8.0);
+                        theme::chip(ui, "LAN host", theme::SPEC_BLUE);
+                    }
+                });
+            });
+        });
+}
+
+// ------------------------------------------------------------------ Trilho Lateral (GlassSidebar)
+
+/// Item de navegação com ícone vetorial, rótulo Inter e badge opcional.
+fn nav_item(
+    ui: &mut Ui,
+    ic: Icon,
+    label: &str,
+    selected: bool,
+    badge: Option<&str>,
+    collapsed: bool,
+) -> egui::Response {
+    let prism = ui.ctx().prism_theme();
+    let h = 34.0;
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), h), egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let p = ui.painter();
+    let cr =
+        egui::CornerRadius::same((prism.radius.md * prism.radius_scale).clamp(4.0, 12.0) as u8);
+    if selected {
+        let fill = if prism.surface_style.is_prism() {
+            prism.neutrals.selected
+        } else {
+            theme::selected_card_tint(&prism)
+        };
+        p.rect_filled(rect, cr, fill);
+    } else if resp.hovered() {
+        p.rect_filled(rect, cr, theme::hover_fill(&prism));
+    }
+    let icon_col = if selected {
+        prism.palette.accent
+    } else {
+        prism.palette.text_secondary
+    };
+    let icon_x = if collapsed {
+        rect.center().x - 8.0
+    } else {
+        rect.left() + 10.0
+    };
+    let ir =
+        egui::Rect::from_min_size(egui::pos2(icon_x, rect.center().y - 8.0), Vec2::splat(16.0));
+    crate::native_ui::icons::paint_icon(p, ir, ic, icon_col);
+    if !collapsed {
+        let f = theme::font(ui, 13.0, FontWeight::Medium);
+        p.text(
+            egui::pos2(rect.left() + 36.0, rect.center().y),
+            Align2::LEFT_CENTER,
+            label,
+            f,
+            if selected {
+                prism.palette.text_primary
+            } else {
+                prism.palette.text_secondary
+            },
+        );
+        if let Some(b) = badge {
+            let bf = theme::num_font(ui, 10.5, FontWeight::Semibold);
+            let g = p.layout_no_wrap(b.to_owned(), bf, prism.palette.text_secondary);
+            let br = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - g.size().x - 18.0, rect.center().y - 9.0),
+                Vec2::new(g.size().x + 10.0, 18.0),
+            );
+            let live = b == "AR";
+            let (bg, fg) = if live {
+                (theme::TALLY, Color32::WHITE)
+            } else {
+                (
+                    theme::hover_fill(&prism).gamma_multiply(2.0),
+                    prism.palette.text_secondary,
+                )
+            };
+            p.rect_filled(br, 9.0, bg);
+            p.galley_with_override_text_color(br.center() - g.size() * 0.5, g, fg);
+        }
+    } else if let Some(b) = badge {
+        let dot = egui::pos2(ir.right() + 2.0, ir.top());
+        p.circle_filled(
+            dot,
+            3.5,
+            if b == "AR" {
+                theme::TALLY
+            } else {
+                prism.palette.accent
+            },
+        );
+    }
+    if collapsed {
+        resp.on_hover_text(label)
+    } else {
+        resp
+    }
+}
 
 pub fn show_nav_rail(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
     let collapsed = app.settings.ui_appearance.sidebar_collapsed;
 
-    let target_w = if collapsed { 72.0 } else { 194.0 };
+    let target_w = if collapsed { 60.0 } else { 204.0 };
     let anim_w = animate_spring(
         ui.ctx(),
         egui::Id::unique("prismcast_sidebar_width"),
         target_w,
         SpringConfig::smooth(),
     );
+    let compact = collapsed || anim_w < 150.0;
 
     let enabled_dests = app
         .settings
@@ -274,199 +553,195 @@ pub fn show_nav_rail(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     };
 
     egui::Panel::left("prismcast_nav_rail")
-        .exact_size(anim_w + 14.0)
+        .exact_size(anim_w + f32::from(GUTTER) + 2.0)
         .resizable(false)
         .show_separator_line(false)
         .frame(Frame::NONE.inner_margin(Margin {
-            left: 10,
-            right: 4,
-            top: 4,
-            bottom: 10,
+            left: GUTTER,
+            right: 2,
+            top: 2,
+            bottom: 2,
         }))
         .show(ui, |ui| {
             GlassSidebar::new()
                 .width(anim_w)
-                .padding(Margin::symmetric(if collapsed { 8 } else { 10 }, 12))
+                .padding(Margin::symmetric(if compact { 8 } else { 10 }, 12))
                 .show(ui, |ui| {
-                    if !collapsed && anim_w > 130.0 {
-                        // Cabeçalho expandido + botão recolher
-                        ui.horizontal(|ui| {
-                            theme::section_heading(ui, "ESTÚDIO", &prism);
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    // Marca
+                    ui.horizontal(|ui| {
+                        let (logo_rect, logo_resp) =
+                            ui.allocate_exact_size(Vec2::new(30.0, 26.0), egui::Sense::click());
+                        theme::paint_prism_logo(ui.painter(), logo_rect, &prism);
+                        if compact {
+                            if logo_resp.on_hover_text("Expandir barra lateral").clicked() {
+                                app.settings.ui_appearance.sidebar_collapsed = false;
+                                app.persist_appearance();
+                            }
+                        } else {
+                            ui.vertical(|ui| {
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                ui.label(theme::text(
+                                    ui,
+                                    "PrismCast",
+                                    14.0,
+                                    FontWeight::Semibold,
+                                    prism.palette.text_primary,
+                                ));
+                                ui.label(theme::text(
+                                    ui,
+                                    "Studio",
+                                    11.0,
+                                    FontWeight::Regular,
+                                    prism.palette.text_muted,
+                                ));
+                            });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        GlassButton::ghost("«")
-                                            .pill(true)
-                                            .min_size(Vec2::new(26.0, 24.0)),
-                                    )
-                                    .on_hover_text("Recolher barra lateral")
-                                    .clicked()
+                                if theme::icon_button(
+                                    ui,
+                                    Icon::ChevronLeft,
+                                    "Recolher barra lateral",
+                                )
+                                .clicked()
                                 {
                                     app.settings.ui_appearance.sidebar_collapsed = true;
                                     app.persist_appearance();
                                 }
                             });
-                        });
-                        ui.add_space(6.0);
+                        }
+                    });
+                    ui.add_space(14.0);
 
-                        // Itens de navegação nativos `SidebarItem` da `egui-prismglass`
-                        let mut item_studio = SidebarItem::new(SidebarIcon::Prism, "Estúdio")
-                            .selected(app.active_tab == NavTab::Studio);
-                        if app.multistream.active {
-                            item_studio = item_studio.badge("AR");
-                        }
-                        if item_studio.show(ui).clicked() {
-                            app.active_tab = NavTab::Studio;
-                        }
-                        ui.add_space(2.0);
-
-                        let mut item_widgets = SidebarItem::new(SidebarIcon::Grid, "Widgets")
-                            .selected(app.active_tab == NavTab::Widgets);
-                        if let Some(ref b) = widget_badge {
-                            item_widgets = item_widgets.badge(b);
-                        }
-                        if item_widgets.show(ui).clicked() {
-                            app.active_tab = NavTab::Widgets;
-                        }
-                        ui.add_space(2.0);
-
-                        let mut item_dest = SidebarItem::new(SidebarIcon::Tokens, "Destinos")
-                            .selected(app.active_tab == NavTab::Destinations);
-                        if let Some(ref b) = dest_badge {
-                            item_dest = item_dest.badge(b);
-                        }
-                        if item_dest.show(ui).clicked() {
-                            app.active_tab = NavTab::Destinations;
-                        }
-                        ui.add_space(2.0);
-
-                        let mut item_lan = SidebarItem::new(SidebarIcon::Prism, "Rede LAN")
-                            .custom_glyph("⬡")
-                            .selected(app.active_tab == NavTab::Lan);
-                        if let Some(ref b) = lan_badge {
-                            item_lan = item_lan.badge(b);
-                        }
-                        if item_lan.show(ui).clicked() {
-                            app.active_tab = NavTab::Lan;
-                        }
-                        ui.add_space(2.0);
-
-                        let mut item_settings = SidebarItem::new(SidebarIcon::Sliders, "Ajustes")
-                            .selected(app.active_tab == NavTab::Settings);
-                        if has_update {
-                            item_settings = item_settings.badge("UPD");
-                        }
-                        if item_settings.show(ui).clicked() {
-                            app.active_tab = NavTab::Settings;
-                        }
-
-                        // Rodapé: alternador rápido de tema PrismGlass + versão
-                        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("PrismCast v{}", env!("CARGO_PKG_VERSION")))
-                                    .monospace()
-                                    .size(10.0)
-                                    .color(prism.palette.text_muted),
-                            );
+                    let section = |ui: &mut Ui, title: &str| {
+                        if compact {
                             ui.add_space(6.0);
-
-                            let preset = app.settings.ui_appearance.preset;
-                            if ui
-                                .add(
-                                    GlassButton::secondary(format!("◐ {}", preset.label()))
-                                        .pill(true)
-                                        .min_size(Vec2::new(ui.available_width(), 30.0)),
-                                )
-                                .on_hover_text(
-                                    "Alternar tema PrismGlass (clique para trocar estilo)",
-                                )
-                                .clicked()
-                            {
-                                app.settings.ui_appearance.preset = preset.next();
-                                app.persist_appearance();
-                            }
-
-                            if has_update {
-                                ui.add_space(6.0);
-                                if ui
-                                    .add(
-                                        GlassButton::accent("⬆ Atualização")
-                                            .pill(true)
-                                            .min_size(Vec2::new(ui.available_width(), 28.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    app.active_tab = NavTab::Settings;
-                                }
-                            }
-                        });
-                    } else {
-                        // Modo compacto (recolhido)
-                        ui.vertical_centered(|ui| {
-                            if ui
-                                .add(
-                                    GlassButton::ghost("»")
-                                        .pill(true)
-                                        .min_size(Vec2::new(44.0, 28.0)),
-                                )
-                                .on_hover_text("Expandir barra lateral")
-                                .clicked()
-                            {
-                                app.settings.ui_appearance.sidebar_collapsed = false;
-                                app.persist_appearance();
-                            }
-                            ui.add_space(8.0);
-
-                            let compact_items = [
-                                (NavTab::Studio, "▣", "Estúdio"),
-                                (NavTab::Widgets, "◈", "Widgets"),
-                                (NavTab::Destinations, "◉", "Destinos"),
-                                (NavTab::Lan, "⬡", "Rede LAN"),
-                                (NavTab::Settings, "⚙", "Ajustes"),
-                            ];
-                            for (tab, glyph, tooltip) in compact_items {
-                                let active = app.active_tab == tab;
-                                if ui
-                                    .add(
-                                        GlassButton::secondary(glyph)
-                                            .selected(active)
-                                            .min_size(Vec2::new(46.0, 38.0)),
-                                    )
-                                    .on_hover_text(tooltip)
-                                    .clicked()
-                                {
-                                    app.active_tab = tab;
-                                }
-                                ui.add_space(4.0);
-                            }
-                        });
-
-                        ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                    .monospace()
-                                    .size(9.5)
-                                    .color(prism.palette.text_muted),
-                            );
+                            theme::hairline(ui, &prism);
                             ui.add_space(6.0);
-                            let preset = app.settings.ui_appearance.preset;
-                            if ui
-                                .add(
-                                    GlassButton::secondary("◐")
-                                        .pill(true)
-                                        .min_size(Vec2::new(40.0, 30.0)),
-                                )
-                                .on_hover_text(format!(
-                                    "Tema: {} (clique para alternar)",
-                                    preset.label()
-                                ))
-                                .clicked()
-                            {
-                                app.settings.ui_appearance.preset = preset.next();
-                                app.persist_appearance();
-                            }
-                        });
+                        } else {
+                            ui.add_space(4.0);
+                            ui.horizontal(|ui| {
+                                ui.add_space(10.0);
+                                theme::section_heading(ui, title, &prism);
+                            });
+                            ui.add_space(2.0);
+                        }
+                    };
+
+                    section(ui, "Produção");
+                    let items = [
+                        (
+                            NavTab::Studio,
+                            app.multistream.active.then(|| "AR".to_string()),
+                        ),
+                        (NavTab::Widgets, widget_badge),
+                        (NavTab::Destinations, dest_badge),
+                    ];
+                    for (tab, badge) in items {
+                        if nav_item(
+                            ui,
+                            tab_icon(tab),
+                            tab_title(tab),
+                            app.active_tab == tab,
+                            badge.as_deref(),
+                            compact,
+                        )
+                        .clicked()
+                        {
+                            app.active_tab = tab;
+                        }
                     }
+                    ui.add_space(8.0);
+                    section(ui, "Sistema");
+                    let items = [
+                        (NavTab::Lan, lan_badge),
+                        (NavTab::Settings, has_update.then(|| "1".to_string())),
+                    ];
+                    for (tab, badge) in items {
+                        if nav_item(
+                            ui,
+                            tab_icon(tab),
+                            tab_title(tab),
+                            app.active_tab == tab,
+                            badge.as_deref(),
+                            compact,
+                        )
+                        .clicked()
+                        {
+                            app.active_tab = tab;
+                        }
+                    }
+
+                    // Rodapé: atualização + alternador claro/escuro
+                    ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                        let preset = app.settings.ui_appearance.preset;
+                        let next = preset.toggled_polarity();
+                        let ic = if preset.is_dark() {
+                            Icon::Sun
+                        } else {
+                            Icon::Moon
+                        };
+                        let tip = format!(
+                            "Mudar para {} ({})",
+                            next.label(),
+                            if next.is_dark() { "escuro" } else { "claro" }
+                        );
+                        if compact {
+                            ui.vertical_centered(|ui| {
+                                if theme::icon_button_ex(ui, ic, &tip, false, 32.0).clicked() {
+                                    app.settings.ui_appearance.preset = next;
+                                    app.persist_appearance();
+                                }
+                            });
+                        } else {
+                            ui.horizontal(|ui| {
+                                if theme::icon_button_ex(ui, ic, &tip, false, 28.0).clicked() {
+                                    app.settings.ui_appearance.preset = next;
+                                    app.persist_appearance();
+                                }
+                                ui.vertical(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 0.0;
+                                    ui.label(theme::text(
+                                        ui,
+                                        "Tema",
+                                        10.5,
+                                        FontWeight::Regular,
+                                        prism.palette.text_muted,
+                                    ));
+                                    ui.label(theme::text(
+                                        ui,
+                                        preset.label(),
+                                        12.0,
+                                        FontWeight::Medium,
+                                        prism.palette.text_secondary,
+                                    ));
+                                });
+                            });
+                        }
+                        if has_update {
+                            ui.add_space(6.0);
+                            let resp = if compact {
+                                theme::icon_button_ex(
+                                    ui,
+                                    Icon::Download,
+                                    "Atualização disponível",
+                                    true,
+                                    32.0,
+                                )
+                            } else {
+                                theme::button(
+                                    ui,
+                                    "Atualização disponível",
+                                    BtnOpts::new(Btn::Accent)
+                                        .icon(Icon::Download)
+                                        .small()
+                                        .min_width(ui.available_width()),
+                                )
+                            };
+                            if resp.clicked() {
+                                app.active_tab = NavTab::Settings;
+                            }
+                        }
+                    });
                 });
         });
 }
@@ -477,16 +752,16 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     let prism = ctx.prism_theme();
 
-    // 1. Sidebar direita flutuante (Propriedades / Chat Multichat)
+    // 1. Inspetor à direita (Propriedades / Multichat)
     egui::Panel::right("studio_right_panel")
-        .default_size(318.0)
-        .size_range(268.0..=430.0)
+        .default_size(320.0)
+        .size_range(276.0..=440.0)
         .show_separator_line(false)
         .frame(Frame::NONE.inner_margin(Margin {
-            left: 4,
-            right: 10,
-            top: 4,
-            bottom: 10,
+            left: 2,
+            right: GUTTER,
+            top: 2,
+            bottom: 2,
         }))
         .show(ui, |ui| {
             let panel_h = ui.available_height();
@@ -494,38 +769,30 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                 .padding(Margin::same(12))
                 .min_height((panel_h - 24.0).max(180.0))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let tab_w = ((ui.available_width() - 8.0) * 0.5).max(96.0);
-                        if ui
-                            .add(
-                                GlassButton::secondary("Propriedades")
-                                    .selected(app.right_tab == RightTab::Properties)
-                                    .pill(true)
-                                    .min_size(Vec2::new(tab_w, 30.0)),
-                            )
-                            .clicked()
-                        {
-                            app.right_tab = RightTab::Properties;
-                        }
-                        if ui
-                            .add(
-                                GlassButton::secondary(format!(
-                                    "Chat ({})",
-                                    app.chat_messages.len()
-                                ))
-                                .selected(app.right_tab == RightTab::Chat)
-                                .pill(true)
-                                .min_size(Vec2::new(tab_w, 30.0)),
-                            )
-                            .clicked()
-                        {
-                            app.right_tab = RightTab::Chat;
-                        }
-                    });
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.add_space(8.0);
-
+                    let mut idx = match app.right_tab {
+                        RightTab::Properties => 0usize,
+                        RightTab::Chat => 1usize,
+                    };
+                    let chat_label = if app.chat_messages.is_empty() {
+                        "Chat".to_string()
+                    } else {
+                        format!("Chat · {}", app.chat_messages.len().min(999))
+                    };
+                    if ui
+                        .add(
+                            GlassSegmented::new(&mut idx, &["Propriedades", chat_label.as_str()])
+                                .fill_width(true)
+                                .height(30.0),
+                        )
+                        .changed()
+                    {
+                        app.right_tab = if idx == 0 {
+                            RightTab::Properties
+                        } else {
+                            RightTab::Chat
+                        };
+                    }
+                    ui.add_space(12.0);
                     match app.right_tab {
                         RightTab::Properties => show_properties_panel(app, ui),
                         RightTab::Chat => show_chat_panel(app, ui),
@@ -533,139 +800,153 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                 });
         });
 
-    // 2. Dock inferior flutuante (Cenas | Fontes | Mixer de Áudio)
+    // 2. Dock inferior (Cenas | Fontes | Mixer de Áudio)
     egui::Panel::bottom("studio_bottom_dock")
-        .default_size(258.0)
-        .size_range(200.0..=380.0)
+        .default_size(262.0)
+        .size_range(200.0..=400.0)
         .resizable(true)
         .show_separator_line(false)
         .frame(Frame::NONE.inner_margin(Margin {
-            left: 6,
-            right: 6,
+            left: 2,
+            right: 2,
             top: 4,
-            bottom: 10,
+            bottom: 2,
         }))
         .show(ui, |ui| {
             let total_w = ui.available_width();
-            let gap = 10.0;
-            let col_scenes_w = (total_w * 0.25).clamp(200.0, 290.0);
-            let col_sources_w = (total_w * 0.31).clamp(230.0, 360.0);
+            let gap = 8.0;
+            let col_scenes_w = (total_w * 0.26).clamp(200.0, 300.0);
+            let col_sources_w = (total_w * 0.34).clamp(240.0, 400.0);
             let col_mixer_w = (total_w - col_scenes_w - col_sources_w - gap * 2.0).max(240.0);
             let dock_h = ui.available_height();
 
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = gap;
-
-                ui.allocate_ui_with_layout(
-                    Vec2::new(col_scenes_w, dock_h),
-                    Layout::top_down(Align::LEFT),
-                    |ui| {
-                        GlassPanel::new()
-                            .padding(Margin::same(11))
-                            .min_height((dock_h - 22.0).max(140.0))
-                            .show(ui, |ui| {
-                                show_scenes_dock(app, ui);
-                            });
-                    },
-                );
-
-                ui.allocate_ui_with_layout(
-                    Vec2::new(col_sources_w, dock_h),
-                    Layout::top_down(Align::LEFT),
-                    |ui| {
-                        GlassPanel::new()
-                            .padding(Margin::same(11))
-                            .min_height((dock_h - 22.0).max(140.0))
-                            .show(ui, |ui| {
-                                show_sources_dock(app, ui);
-                            });
-                    },
-                );
-
-                ui.allocate_ui_with_layout(
-                    Vec2::new(col_mixer_w, dock_h),
-                    Layout::top_down(Align::LEFT),
-                    |ui| {
-                        GlassPanel::new()
-                            .padding(Margin::same(11))
-                            .min_height((dock_h - 22.0).max(140.0))
-                            .show(ui, |ui| {
-                                show_mixer_dock(app, ui);
-                            });
-                    },
-                );
+                let cols: [(f32, fn(&mut PrismCastNativeApp, &mut Ui)); 3] = [
+                    (col_scenes_w, show_scenes_dock),
+                    (col_sources_w, show_sources_dock),
+                    (col_mixer_w, show_mixer_dock),
+                ];
+                for (w, f) in cols {
+                    ui.allocate_ui_with_layout(
+                        Vec2::new(w, dock_h),
+                        Layout::top_down(Align::LEFT),
+                        |ui| {
+                            GlassPanel::new()
+                                .padding(Margin::symmetric(10, 10))
+                                .min_height((dock_h - 20.0).max(140.0))
+                                .show(ui, |ui| f(app, ui));
+                        },
+                    );
+                }
             });
         });
 
-    // 3. Palco Central GPU (16:9, 9:16 Dual Output e Modo Estúdio)
+    // 3. Palco central
     egui::CentralPanel::default()
-        .frame(Frame::NONE.inner_margin(Margin::symmetric(8, 4)))
+        .frame(Frame::NONE.inner_margin(Margin::symmetric(6, 4)))
         .show(ui, |ui| {
-            // Cabeçalho do palco
             ui.horizontal(|ui| {
+                ui.set_min_height(30.0);
                 let scene_name = app
                     .editing_scene()
-                    .map(|s| s.name.as_str())
-                    .unwrap_or("Cena principal");
-                ui.add(GlassBadge::new("CENA").variant(BadgeVariant::Neutral));
-                ui.label(
-                    RichText::new(scene_name)
-                        .size(14.0)
-                        .strong()
-                        .color(prism.palette.text_primary),
+                    .map(|s| s.name.clone())
+                    .unwrap_or_else(|| "Cena principal".into());
+                let studio_mode = app.settings.scenes.studio_mode;
+                theme::chip(
+                    ui,
+                    if studio_mode { "Prévia" } else { "Cena" },
+                    if studio_mode {
+                        theme::SPEC_TEAL
+                    } else {
+                        prism.palette.text_secondary
+                    },
                 );
+                ui.label(theme::text(
+                    ui,
+                    truncate(&scene_name, 32),
+                    14.0,
+                    FontWeight::Semibold,
+                    prism.palette.text_primary,
+                ));
+                let n_items = app.editing_scene().map(|s| s.items.len()).unwrap_or(0);
+                ui.label(theme::num_text(
+                    ui,
+                    format!("{n_items} fontes"),
+                    12.0,
+                    FontWeight::Regular,
+                    prism.palette.text_muted,
+                ));
 
-                if app.settings.studio.dual_output_enabled {
+                if app.settings.studio.dual_output_enabled && !studio_mode {
                     ui.add_space(10.0);
-                    if theme::glass_toggle_button(ui, "Editar 16:9", !app.edit_vertical).clicked() {
-                        app.edit_vertical = false;
-                    }
-                    if theme::glass_toggle_button(ui, "Editar 9:16", app.edit_vertical).clicked() {
-                        app.edit_vertical = true;
+                    let mut idx = usize::from(app.edit_vertical);
+                    if ui
+                        .add(
+                            GlassSegmented::new(&mut idx, &["Editar 16:9", "Editar 9:16"])
+                                .height(26.0),
+                        )
+                        .changed()
+                    {
+                        app.edit_vertical = idx == 1;
                     }
                 }
 
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if app.settings.scenes.studio_mode {
-                        if theme::tally_button(ui, "⇄ Transição").clicked() {
-                            if !app.settings.scenes.preview_scene_id.is_empty() {
-                                app.settings.scenes.active_scene_id =
-                                    app.settings.scenes.preview_scene_id.clone();
-                                app.persist_scenes();
-                            }
-                        }
+                    if studio_mode
+                        && theme::button(
+                            ui,
+                            &format!(
+                                "Transição · {}",
+                                transition_label(app.settings.scenes.transition_type)
+                            ),
+                            BtnOpts::new(Btn::Tally).icon(Icon::Swap).small(),
+                        )
+                        .on_hover_text("Leva a prévia para o programa")
+                        .clicked()
+                        && !app.settings.scenes.preview_scene_id.is_empty()
+                    {
+                        app.settings.scenes.active_scene_id =
+                            app.settings.scenes.preview_scene_id.clone();
+                        app.persist_scenes();
                     }
-                    if !app.undo_stack.is_empty() {
-                        if ui
-                            .add(
-                                GlassButton::ghost(format!("↶ Desfazer ({})", app.undo_stack.len()))
-                                    .pill(true)
-                                    .min_size(Vec2::new(0.0, 28.0)),
-                            )
-                            .clicked()
-                        {
-                            app.undo();
-                        }
+                    let can_undo = !app.undo_stack.is_empty();
+                    if theme::button(
+                        ui,
+                        "Desfazer",
+                        BtnOpts::new(Btn::Ghost)
+                            .icon(Icon::Undo)
+                            .small()
+                            .enabled(can_undo),
+                    )
+                    .on_hover_text(format!(
+                        "Ctrl+Z · {} passos no histórico",
+                        app.undo_stack.len()
+                    ))
+                    .clicked()
+                    {
+                        app.undo();
                     }
                 });
             });
 
-            ui.add_space(6.0);
+            ui.add_space(4.0);
 
-            let stage_area_h = (ui.available_height() - 24.0).max(160.0);
+            let stage_area_h = (ui.available_height() - 26.0).max(160.0);
             let mut stage_actions: Vec<StageAction> = Vec::new();
             let editing_scene = app.editing_scene().cloned();
             let program_scene = app.program_scene().cloned();
             let selected_id = app.selected_item_id.clone();
             let dual = app.settings.studio.dual_output_enabled;
             let studio_mode = app.settings.scenes.studio_mode;
+            let live = app.multistream.active;
 
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_width(), stage_area_h),
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     if studio_mode {
-                        let half_w = (ui.available_width() - 10.0) * 0.5;
+                        let half_w = (ui.available_width() - 8.0) * 0.5;
                         ui.allocate_ui(Vec2::new(half_w, stage_area_h), |ui| {
                             show_stage_viewport(
                                 ui,
@@ -684,14 +965,18 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 &mut stage_actions,
                             );
                         });
-                        ui.add_space(10.0);
+                        ui.add_space(8.0);
                         ui.allocate_ui(Vec2::new(half_w, stage_area_h), |ui| {
                             let mut dummy = StageInteraction::default();
                             let mut ignored = Vec::new();
                             show_stage_viewport(
                                 ui,
                                 "stage_program_ro",
-                                "PROGRAMA · NO AR",
+                                if live {
+                                    "PROGRAMA · NO AR"
+                                } else {
+                                    "PROGRAMA"
+                                },
                                 theme::TALLY,
                                 app.tex_program_h.as_ref(),
                                 program_scene.as_ref(),
@@ -704,16 +989,21 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                             );
                         });
                     } else if dual {
-                        let vert_w = (stage_area_h * 9.0 / 16.0 + 22.0).clamp(184.0, 330.0);
-                        let horiz_w = (ui.available_width() - vert_w - 10.0).max(240.0);
-
+                        let vert_w = (stage_area_h * 9.0 / 16.0 + 22.0).clamp(184.0, 340.0);
+                        let horiz_w = (ui.available_width() - vert_w - 8.0).max(240.0);
                         ui.allocate_ui(Vec2::new(horiz_w, stage_area_h), |ui| {
                             show_stage_viewport(
                                 ui,
                                 "stage_h",
-                                "16:9 HORIZONTAL",
-                                if !app.edit_vertical {
-                                    theme::SPEC_AMBER
+                                if live {
+                                    "NO AR · 16:9"
+                                } else {
+                                    "16:9 · HORIZONTAL"
+                                },
+                                if live {
+                                    theme::TALLY
+                                } else if !app.edit_vertical {
+                                    prism.palette.accent
                                 } else {
                                     prism.palette.text_muted
                                 },
@@ -727,14 +1017,14 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 &mut stage_actions,
                             );
                         });
-                        ui.add_space(10.0);
+                        ui.add_space(8.0);
                         ui.allocate_ui(Vec2::new(vert_w, stage_area_h), |ui| {
                             show_stage_viewport(
                                 ui,
                                 "stage_v",
-                                "9:16 VERTICAL",
+                                "9:16 · VERTICAL",
                                 if app.edit_vertical {
-                                    theme::SPEC_AMBER
+                                    prism.palette.accent
                                 } else {
                                     prism.palette.text_muted
                                 },
@@ -752,15 +1042,15 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                         show_stage_viewport(
                             ui,
                             "stage_main",
-                            if app.multistream.active {
+                            if live {
                                 "NO AR · 16:9"
                             } else {
                                 "PALCO · 16:9"
                             },
-                            if app.multistream.active {
+                            if live {
                                 theme::TALLY
                             } else {
-                                theme::SPEC_TEAL
+                                prism.palette.accent
                             },
                             app.tex_program_h.as_ref(),
                             editing_scene.as_ref(),
@@ -779,18 +1069,30 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                 app.apply_stage_actions(stage_actions);
             }
 
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    RichText::new(
-                        "Arraste para mover · cantos redimensionam (Shift solta proporção · Alt recorta) · botão direito abre opções · Delete remove",
-                    )
-                    .size(10.5)
-                    .color(prism.palette.text_muted),
-                );
+            // Dicas de atalho em capas de tecla
+            ui.horizontal_centered(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let muted = prism.palette.text_muted;
+                let hint = |ui: &mut Ui, s: &str| {
+                    ui.label(theme::text(ui, s, 11.0, FontWeight::Regular, muted));
+                };
+                let avail = ui.available_width();
+                let start = ((avail - 600.0) * 0.5).max(0.0);
+                ui.add_space(start);
+                hint(ui, "Arraste para mover ·");
+                theme::kbd(ui, "Shift");
+                hint(ui, "solta proporção ·");
+                theme::kbd(ui, "Alt");
+                hint(ui, "recorta ·");
+                theme::kbd(ui, "←↑↓→");
+                hint(ui, "ajuste fino ·");
+                theme::kbd(ui, "Del");
+                hint(ui, "remove ·");
+                theme::kbd(ui, "Ctrl Z");
+                hint(ui, "desfaz");
             });
         });
 
-    // Modal de filtros DSP de áudio quando aberto
     if let Some(ch_id) = app.filter_channel_id.clone() {
         show_audio_filters_modal(app, &ctx, &ch_id);
     }
@@ -798,45 +1100,44 @@ pub fn show_studio_workspace(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 
 // ------------------------------------------------------------------ Dock: Cenas
 
+fn transition_combo(app: &mut PrismCastNativeApp, ui: &mut Ui) {
+    egui::ComboBox::from_id_salt("transition_combo")
+        .width(104.0)
+        .selected_text(transition_label(app.settings.scenes.transition_type))
+        .show_ui(ui, |ui| {
+            for t in [
+                TransitionType::Cut,
+                TransitionType::Fade,
+                TransitionType::FadeToBlack,
+                TransitionType::Slide,
+                TransitionType::Stinger,
+                TransitionType::LumaWipe,
+                TransitionType::CustomShader,
+            ] {
+                if ui
+                    .selectable_value(
+                        &mut app.settings.scenes.transition_type,
+                        t,
+                        transition_label(t),
+                    )
+                    .clicked()
+                {
+                    app.persist_scenes();
+                }
+            }
+        });
+}
+
 fn show_scenes_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
+    let n = app.settings.scenes.scenes.len();
 
-    ui.horizontal(|ui| {
-        theme::section_heading(ui, "CENAS", &prism);
-        ui.add(
-            GlassBadge::new(&app.settings.scenes.scenes.len().to_string())
-                .variant(BadgeVariant::Neutral),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            egui::ComboBox::from_id_salt("transition_combo")
-                .width(96.0)
-                .selected_text(transition_label(app.settings.scenes.transition_type))
-                .show_ui(ui, |ui| {
-                    for t in [
-                        TransitionType::Cut,
-                        TransitionType::Fade,
-                        TransitionType::FadeToBlack,
-                        TransitionType::Slide,
-                        TransitionType::Stinger,
-                        TransitionType::LumaWipe,
-                        TransitionType::CustomShader,
-                    ] {
-                        if ui
-                            .selectable_value(
-                                &mut app.settings.scenes.transition_type,
-                                t,
-                                transition_label(t),
-                            )
-                            .clicked()
-                        {
-                            app.persist_scenes();
-                        }
-                    }
-                });
-        });
+    theme::dock_header(ui, "Cenas", Some(n), &prism, |ui| {
+        if theme::icon_button(ui, Icon::Plus, "Nova cena").clicked() {
+            app.adding_scene = true;
+            app.new_scene_name = format!("Cena {}", app.settings.scenes.scenes.len() + 1);
+        }
     });
-
-    ui.add_space(6.0);
 
     let active_id = app.settings.scenes.active_scene_id.clone();
     let preview_id = app.settings.scenes.preview_scene_id.clone();
@@ -844,11 +1145,15 @@ fn show_scenes_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 
     let mut select_scene: Option<String> = None;
     let mut delete_scene: Option<String> = None;
+    let mut start_rename: Option<(String, String)> = None;
+    let mut commit_rename = false;
 
     egui::ScrollArea::vertical()
         .id_salt("scenes_scroll")
-        .max_height((ui.available_height() - 36.0).max(80.0))
+        .max_height((ui.available_height() - 40.0).max(80.0))
+        .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             for (idx, scene) in app.settings.scenes.scenes.iter().enumerate() {
                 let is_selected = if studio_mode {
                     scene.id == preview_id
@@ -856,78 +1161,129 @@ fn show_scenes_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                     scene.id == active_id
                 };
                 let is_on_air = scene.id == active_id;
+                let renaming = app
+                    .renaming_scene
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == scene.id);
 
-                let mut card = GlassCard::new()
-                    .elevation(if is_selected {
-                        GlassElevation::Elevated
-                    } else {
-                        GlassElevation::Subtle
-                    })
-                    .corner_radius(10.0)
-                    .padding(Margin::symmetric(10, 6))
-                    .fill_width(true);
-                if is_selected {
-                    card = card.tint(theme::selected_card_tint(&prism));
-                }
-
-                card.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let idx_resp = ui.add(
-                            egui::Label::new(
-                                RichText::new(format!("{:02}", idx + 1))
-                                    .monospace()
-                                    .size(10.5)
-                                    .color(if is_on_air {
-                                        theme::SPEC_RED
-                                    } else {
-                                        prism.palette.text_muted
-                                    }),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        let name_resp = ui.add(
-                            egui::Label::new(
-                                RichText::new(&scene.name)
-                                    .size(12.5)
-                                    .strong()
-                                    .color(if is_selected {
-                                        prism.palette.text_primary
-                                    } else {
-                                        prism.palette.text_secondary
-                                    }),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if idx_resp.hovered() || name_resp.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if idx_resp.clicked() || name_resp.clicked() {
-                            select_scene = Some(scene.id.clone());
+                let resp =
+                    theme::list_row(ui, is_selected, 32.0, Some(prism.palette.accent), |ui| {
+                        ui.label(theme::num_text(
+                            ui,
+                            format!("{:02}", idx + 1),
+                            11.0,
+                            FontWeight::Medium,
+                            if is_on_air && (studio_mode || app.multistream.active) {
+                                theme::SPEC_RED
+                            } else {
+                                prism.palette.text_muted
+                            },
+                        ));
+                        if renaming {
+                            if let Some((_, buf)) = app.renaming_scene.as_mut() {
+                                let r = ui.add(
+                                    egui::TextEdit::singleline(buf)
+                                        .desired_width(ui.available_width() - 34.0),
+                                );
+                                r.request_focus();
+                                if r.lost_focus() {
+                                    commit_rename = true;
+                                }
+                            }
+                        } else {
+                            ui.label(theme::text(
+                                ui,
+                                truncate(&scene.name, 22),
+                                12.5,
+                                if is_selected {
+                                    FontWeight::Medium
+                                } else {
+                                    FontWeight::Regular
+                                },
+                                if is_selected {
+                                    prism.palette.text_primary
+                                } else {
+                                    prism.palette.text_secondary
+                                },
+                            ));
                         }
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if app.settings.scenes.scenes.len() > 1
-                                && ui
-                                    .small_button(
-                                        RichText::new("🗑").color(prism.palette.text_muted),
-                                    )
-                                    .on_hover_text("Remover cena")
-                                    .clicked()
+                            if n > 1
+                                && theme::icon_button(ui, Icon::Trash, "Remover cena").clicked()
                             {
                                 delete_scene = Some(scene.id.clone());
                             }
-                            if studio_mode && is_on_air {
-                                ui.add(
-                                    GlassBadge::new("AR")
-                                        .variant(BadgeVariant::Warning)
-                                        .dot(true),
-                                );
+                            if is_on_air && (studio_mode || app.multistream.active) {
+                                theme::chip(ui, "No ar", theme::SPEC_RED);
                             }
                         });
                     });
-                });
+                if resp.clicked() {
+                    select_scene = Some(scene.id.clone());
+                }
+                if resp.double_clicked() {
+                    start_rename = Some((scene.id.clone(), scene.name.clone()));
+                }
+                resp.on_hover_text("Clique para selecionar · duplo clique para renomear");
+            }
+
+            if app.adding_scene {
                 ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut app.new_scene_name)
+                            .desired_width(ui.available_width() - 64.0)
+                            .hint_text("Nome da cena"),
+                    );
+                    r.request_focus();
+                    let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let esc = ui.input(|i| i.key_pressed(egui::Key::Escape));
+                    if (theme::icon_button_ex(ui, Icon::Check, "Criar", true, 26.0).clicked()
+                        || enter)
+                        && !app.new_scene_name.trim().is_empty()
+                    {
+                        app.push_undo();
+                        let new_id = format!("scene-{}", Uuid::new_v4());
+                        app.settings.scenes.scenes.push(Scene {
+                            id: new_id.clone(),
+                            name: app.new_scene_name.trim().to_string(),
+                            items: Vec::new(),
+                            created_at: super::now_ms(),
+                            transition_override: None,
+                        });
+                        if studio_mode {
+                            app.settings.scenes.preview_scene_id = new_id;
+                        } else {
+                            app.settings.scenes.active_scene_id = new_id.clone();
+                            app.settings.scenes.preview_scene_id = new_id;
+                        }
+                        app.new_scene_name.clear();
+                        app.adding_scene = false;
+                        app.persist_scenes();
+                    }
+                    if theme::icon_button(ui, Icon::Close, "Cancelar").clicked() || esc {
+                        app.adding_scene = false;
+                        app.new_scene_name.clear();
+                    }
+                });
             }
         });
+
+    if let Some(r) = start_rename {
+        app.renaming_scene = Some(r);
+    }
+    if commit_rename {
+        if let Some((id, name)) = app.renaming_scene.take() {
+            let name = name.trim().to_string();
+            if !name.is_empty() {
+                app.push_undo();
+                if let Some(sc) = app.settings.scenes.scenes.iter_mut().find(|s| s.id == id) {
+                    sc.name = name;
+                }
+                app.persist_scenes();
+            }
+        }
+    }
 
     if let Some(id) = select_scene {
         if studio_mode {
@@ -957,82 +1313,25 @@ fn show_scenes_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
         app.persist_scenes();
     }
 
-    // Rodapé: adicionar nova cena
+    // Rodapé: transição + duração
     ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
         ui.horizontal(|ui| {
-            if app.adding_scene {
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut app.new_scene_name)
-                        .desired_width(115.0)
-                        .hint_text("Nome da cena"),
-                );
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui
-                    .add(
-                        GlassButton::accent("Criar")
-                            .pill(true)
-                            .min_size(Vec2::new(0.0, 26.0)),
-                    )
-                    .clicked()
-                    || enter)
-                    && !app.new_scene_name.trim().is_empty()
-                {
-                    app.push_undo();
-                    let new_id = format!("scene-{}", Uuid::new_v4());
-                    app.settings.scenes.scenes.push(Scene {
-                        id: new_id.clone(),
-                        name: app.new_scene_name.trim().to_string(),
-                        items: Vec::new(),
-                        created_at: super::now_ms(),
-                        transition_override: None,
-                    });
-                    if studio_mode {
-                        app.settings.scenes.preview_scene_id = new_id;
-                    } else {
-                        app.settings.scenes.active_scene_id = new_id.clone();
-                        app.settings.scenes.preview_scene_id = new_id;
-                    }
-                    app.new_scene_name.clear();
-                    app.adding_scene = false;
-                    app.persist_scenes();
-                }
-                if ui
-                    .add(
-                        GlassButton::ghost("✕")
-                            .pill(true)
-                            .min_size(Vec2::new(26.0, 26.0)),
-                    )
-                    .clicked()
-                {
-                    app.adding_scene = false;
-                    app.new_scene_name.clear();
-                }
-            } else {
-                if ui
-                    .add(
-                        GlassButton::secondary("+ Nova cena")
-                            .pill(true)
-                            .min_size(Vec2::new(0.0, 26.0)),
-                    )
-                    .clicked()
-                {
-                    app.adding_scene = true;
-                    app.new_scene_name =
-                        format!("Cena {}", app.settings.scenes.scenes.len() + 1);
-                }
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut app.settings.scenes.transition_duration_ms)
-                            .range(50..=3000)
-                            .speed(25)
-                            .suffix(" ms"),
-                    )
-                    .changed()
-                {
-                    app.persist_scenes();
-                }
+            theme::icon(ui, Icon::Swap, 14.0, prism.palette.text_muted);
+            transition_combo(app, ui);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut app.settings.scenes.transition_duration_ms)
+                        .range(50..=3000)
+                        .speed(25)
+                        .suffix(" ms"),
+                )
+                .on_hover_text("Duração da transição")
+                .changed()
+            {
+                app.persist_scenes();
             }
         });
+        theme::hairline(ui, &prism);
     });
 }
 
@@ -1040,16 +1339,19 @@ fn show_scenes_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 
 fn show_sources_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
+    let count = app.editing_scene().map(|s| s.items.len()).unwrap_or(0);
 
-    ui.horizontal(|ui| {
-        theme::section_heading(ui, "FONTES", &prism);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let count = app.editing_scene().map(|s| s.items.len()).unwrap_or(0);
-            ui.add(GlassBadge::new(&format!("{count} itens")).variant(BadgeVariant::Neutral));
-        });
+    let mut open_add_menu = None;
+    theme::dock_header(ui, "Fontes", Some(count), &prism, |ui| {
+        let r = theme::icon_button(ui, Icon::Plus, "Adicionar fonte");
+        open_add_menu = Some(r);
     });
-
-    ui.add_space(6.0);
+    if let Some(r) = open_add_menu {
+        egui::Popup::menu(&r).show(|ui| {
+            ui.set_min_width(190.0);
+            add_source_menu(app, ui);
+        });
+    }
 
     let items_snapshot: Vec<SceneItem> = app
         .editing_scene()
@@ -1068,14 +1370,16 @@ fn show_sources_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 
     egui::ScrollArea::vertical()
         .id_salt("sources_scroll")
-        .max_height((ui.available_height() - 36.0).max(80.0))
+        .max_height((ui.available_height() - 40.0).max(80.0))
+        .auto_shrink([false, false])
         .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
             if items_snapshot.is_empty() {
-                ui.add_space(12.0);
-                ui.label(
-                    RichText::new("Nenhuma fonte nesta cena ainda.")
-                        .size(12.0)
-                        .color(prism.palette.text_muted),
+                theme::empty_state(
+                    ui,
+                    Icon::Layers,
+                    "Nenhuma fonte nesta cena",
+                    "Adicione uma tela, janela, imagem ou texto.",
                 );
             }
             for item in &items_snapshot {
@@ -1083,113 +1387,93 @@ fn show_sources_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                 let status = capture_key_for_item(item)
                     .and_then(|k| app.capture_statuses.get(&k))
                     .copied();
+                let is_capture = matches!(
+                    item.source_type,
+                    SourceType::ScreenCapture | SourceType::WindowCapture
+                );
 
-                let mut card = GlassCard::new()
-                    .elevation(if selected {
-                        GlassElevation::Elevated
+                let resp = theme::list_row(ui, selected, 32.0, Some(prism.palette.accent), |ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    let icon_col = if !item.visible {
+                        prism.palette.text_muted
+                    } else if selected {
+                        prism.palette.accent
                     } else {
-                        GlassElevation::Subtle
-                    })
-                    .corner_radius(10.0)
-                    .padding(Margin::symmetric(9, 6))
-                    .fill_width(true);
-                if selected {
-                    card = card.tint(theme::selected_card_tint(&prism));
-                }
-
-                card.show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let dot_col = match (item.source_type, status) {
-                            (
-                                SourceType::ScreenCapture | SourceType::WindowCapture,
-                                Some(CaptureStatus::Ok),
-                            ) => theme::METER_OK,
-                            (
-                                SourceType::ScreenCapture | SourceType::WindowCapture,
-                                Some(CaptureStatus::Missing | CaptureStatus::Error),
-                            ) => theme::SPEC_AMBER,
-                            _ => prism.palette.accent,
+                        prism.palette.text_secondary
+                    };
+                    theme::icon(ui, source_icon(item.source_type), 15.0, icon_col);
+                    ui.label(theme::text(
+                        ui,
+                        truncate(&item.name, 20),
+                        12.5,
+                        if selected {
+                            FontWeight::Medium
+                        } else {
+                            FontWeight::Regular
+                        },
+                        if !item.visible {
+                            prism.palette.text_muted
+                        } else if selected {
+                            prism.palette.text_primary
+                        } else {
+                            prism.palette.text_secondary
+                        },
+                    ));
+                    if is_capture {
+                        let (col, tip) = match status {
+                            Some(CaptureStatus::Ok) => (theme::METER_OK, "Capturando"),
+                            Some(CaptureStatus::Missing) => (theme::SPEC_AMBER, "Janela fechada"),
+                            Some(CaptureStatus::Error) => (theme::METER_CLIP, "Erro de captura"),
+                            _ => (prism.palette.text_muted, "Conectando…"),
                         };
-                        let (drect, _) =
-                            ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(
-                            drect.center(),
-                            4.5,
-                            Color32::from_rgba_unmultiplied(
-                                dot_col.r(),
-                                dot_col.g(),
-                                dot_col.b(),
-                                55,
-                            ),
-                        );
-                        ui.painter().circle_filled(drect.center(), 2.8, dot_col);
-
-                        let badge_resp = ui.add(
-                            egui::Label::new(
-                                RichText::new(source_type_badge(item.source_type))
-                                    .monospace()
-                                    .size(9.5)
-                                    .color(prism.palette.text_muted),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-
-                        let mut label = item.name.clone();
-                        if label.chars().count() > 16 {
-                            label = format!("{}…", label.chars().take(15).collect::<String>());
+                        let (r, resp) =
+                            ui.allocate_exact_size(Vec2::splat(8.0), egui::Sense::hover());
+                        ui.painter().circle_filled(r.center(), 3.0, col);
+                        resp.on_hover_text(tip);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 0.0;
+                        if theme::icon_button(ui, Icon::Trash, "Remover fonte").clicked() {
+                            remove_id = Some(item.id.clone());
                         }
-                        let name_resp = ui.add(
-                            egui::Label::new(
-                                RichText::new(label).size(12.2).color(if !item.visible {
-                                    prism.palette.text_muted
-                                } else if selected {
-                                    prism.palette.text_primary
-                                } else {
-                                    prism.palette.text_secondary
-                                }),
-                            )
-                            .sense(egui::Sense::click()),
-                        );
-                        if badge_resp.hovered() || name_resp.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        if theme::icon_button(
+                            ui,
+                            if item.locked {
+                                Icon::Lock
+                            } else {
+                                Icon::Unlock
+                            },
+                            "Travar / destravar",
+                        )
+                        .clicked()
+                        {
+                            toggle_lock = Some(item.id.clone());
                         }
-                        if badge_resp.clicked() || name_resp.clicked() {
-                            select_id = Some(item.id.clone());
+                        if theme::icon_button(
+                            ui,
+                            if item.visible {
+                                Icon::Eye
+                            } else {
+                                Icon::EyeOff
+                            },
+                            "Mostrar / ocultar",
+                        )
+                        .clicked()
+                        {
+                            toggle_vis = Some(item.id.clone());
                         }
-
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
-                            if ui
-                                .small_button(RichText::new("🗑").color(prism.palette.text_muted))
-                                .on_hover_text("Remover fonte")
-                                .clicked()
-                            {
-                                remove_id = Some(item.id.clone());
-                            }
-                            if ui
-                                .small_button(if item.visible { "👁" } else { "⊘" })
-                                .on_hover_text("Mostrar / ocultar")
-                                .clicked()
-                            {
-                                toggle_vis = Some(item.id.clone());
-                            }
-                            if ui
-                                .small_button(if item.locked { "🔒" } else { "🔓" })
-                                .on_hover_text("Travar / destravar")
-                                .clicked()
-                            {
-                                toggle_lock = Some(item.id.clone());
-                            }
-                            if ui.small_button("↑").on_hover_text("Subir camada").clicked() {
-                                move_delta = Some((item.id.clone(), 1));
-                            }
-                            if ui.small_button("↓").on_hover_text("Descer camada").clicked() {
-                                move_delta = Some((item.id.clone(), -1));
-                            }
-                        });
+                        if theme::icon_button(ui, Icon::ChevronDown, "Descer camada").clicked() {
+                            move_delta = Some((item.id.clone(), -1));
+                        }
+                        if theme::icon_button(ui, Icon::ChevronUp, "Subir camada").clicked() {
+                            move_delta = Some((item.id.clone(), 1));
+                        }
                     });
                 });
-                ui.add_space(4.0);
+                if resp.clicked() {
+                    select_id = Some(item.id.clone());
+                }
+                resp.on_hover_text(source_type_badge(item.source_type));
             }
         });
 
@@ -1223,87 +1507,126 @@ fn show_sources_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
         app.persist_scenes();
     }
 
-    // Rodapé: adicionar fontes nativas
+    // Rodapé: atalhos de captura nativa
     ui.with_layout(Layout::bottom_up(Align::LEFT), |ui| {
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    GlassButton::accent("+ Tela")
-                        .pill(true)
-                        .min_size(Vec2::new(0.0, 26.0)),
-                )
-                .clicked()
+            ui.spacing_mut().item_spacing.x = 6.0;
+            if theme::button(
+                ui,
+                "Tela",
+                BtnOpts::new(Btn::Accent).icon(Icon::Monitor).small(),
+            )
+            .clicked()
             {
                 app.picker
                     .open(PickerPurpose::AddNewSource, SourceKind::Screen, None);
             }
-            if ui
-                .add(
-                    GlassButton::secondary("+ Janela")
-                        .pill(true)
-                        .min_size(Vec2::new(0.0, 26.0)),
-                )
-                .clicked()
+            if theme::button(
+                ui,
+                "Janela",
+                BtnOpts::new(Btn::Secondary).icon(Icon::Window).small(),
+            )
+            .clicked()
             {
                 app.picker
                     .open(PickerPurpose::AddNewSource, SourceKind::Window, None);
             }
-            ui.menu_button("+ Outros ▾", |ui| {
-                if ui.button("Imagem (PNG / JPG / WebP)").clicked() {
-                    app.add_simple_source(SourceType::ImageSource);
-                    ui.close();
-                }
-                if ui.button("Cor sólida").clicked() {
-                    app.add_simple_source(SourceType::ColorSource);
-                    ui.close();
-                }
-                if ui.button("Texto").clicked() {
-                    app.add_simple_source(SourceType::TextSource);
-                    ui.close();
-                }
-                if ui.button("Widget HTML / URL").clicked() {
-                    app.add_simple_source(SourceType::BrowserSource);
-                    ui.close();
-                }
-                if ui.button("Câmera").clicked() {
-                    app.add_simple_source(SourceType::CameraInput);
-                    ui.close();
-                }
+            let more = theme::button(
+                ui,
+                "Mais",
+                BtnOpts::new(Btn::Ghost).icon(Icon::Plus).small(),
+            );
+            egui::Popup::menu(&more).show(|ui| {
+                ui.set_min_width(190.0);
+                add_source_menu(app, ui);
             });
         });
+        theme::hairline(ui, &prism);
     });
+}
+
+fn menu_entry(ui: &mut Ui, ic: Icon, label: &str) -> bool {
+    let prism = ui.ctx().prism_theme();
+    let resp = theme::list_row(ui, false, 28.0, None, |ui| {
+        theme::icon(ui, ic, 14.0, prism.palette.text_secondary);
+        ui.label(theme::text(
+            ui,
+            label,
+            12.5,
+            FontWeight::Regular,
+            prism.palette.text_primary,
+        ));
+    });
+    resp.clicked()
+}
+
+fn add_source_menu(app: &mut PrismCastNativeApp, ui: &mut Ui) {
+    let mut close = false;
+    if menu_entry(ui, Icon::Monitor, "Captura de tela") {
+        app.picker
+            .open(PickerPurpose::AddNewSource, SourceKind::Screen, None);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Window, "Captura de janela") {
+        app.picker
+            .open(PickerPurpose::AddNewSource, SourceKind::Window, None);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Image, "Imagem (PNG / JPG / WebP)") {
+        app.add_simple_source(SourceType::ImageSource);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Swatch, "Cor sólida") {
+        app.add_simple_source(SourceType::ColorSource);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Text, "Texto") {
+        app.add_simple_source(SourceType::TextSource);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Globe, "Widget HTML / URL") {
+        app.add_simple_source(SourceType::BrowserSource);
+        close = true;
+    }
+    if menu_entry(ui, Icon::Camera, "Câmera") {
+        app.add_simple_source(SourceType::CameraInput);
+        close = true;
+    }
+    if close {
+        ui.close();
+    }
 }
 
 // ------------------------------------------------------------------ Dock: Mixer de Áudio
 
 fn show_mixer_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
+    let n = app.settings.audio_mixer.channels.len();
 
-    ui.horizontal(|ui| {
-        theme::section_heading(ui, "MIXER · 48 KHZ DSP", &prism);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui
-                .add(
-                    GlassButton::secondary("+ Canal App")
-                        .pill(true)
-                        .min_size(Vec2::new(0.0, 24.0)),
-                )
-                .clicked()
-            {
-                let id = format!("app-{}", Uuid::new_v4());
-                app.settings.audio_mixer.channels.push(AudioChannel {
-                    id,
-                    kind: AudioChannelKind::App,
-                    name: "Aplicativo".to_string(),
-                    filters: AudioFilters::default_for(AudioChannelKind::App),
-                    ..Default::default()
-                });
-                app.persist_audio();
-            }
-        });
+    let mut add_channel = false;
+    theme::dock_header(ui, "Mixer", Some(n), &prism, |ui| {
+        if theme::button(
+            ui,
+            "Canal de app",
+            BtnOpts::new(Btn::Ghost).icon(Icon::Plus).small(),
+        )
+        .on_hover_text("Isola o áudio de um único programa (WASAPI / PipeWire)")
+        .clicked()
+        {
+            add_channel = true;
+        }
+        theme::chip(ui, "48K", prism.palette.text_muted);
     });
-
-    ui.add_space(6.0);
+    if add_channel {
+        app.settings.audio_mixer.channels.push(AudioChannel {
+            id: format!("app-{}", Uuid::new_v4()),
+            kind: AudioChannelKind::App,
+            name: "Aplicativo".to_string(),
+            filters: AudioFilters::default_for(AudioChannelKind::App),
+            ..Default::default()
+        });
+        app.persist_audio();
+    }
 
     let mut dirty = false;
     let mut open_filters: Option<String> = None;
@@ -1313,8 +1636,18 @@ fn show_mixer_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     egui::ScrollArea::vertical()
         .id_salt("mixer_scroll")
         .max_height((ui.available_height() - 4.0).max(110.0))
+        .auto_shrink([false, false])
         .show(ui, |ui| {
-            for ch in &mut app.settings.audio_mixer.channels {
+            if app.settings.audio_mixer.channels.is_empty() {
+                theme::empty_state(
+                    ui,
+                    Icon::Volume,
+                    "Sem canais de áudio",
+                    "Adicione um canal de aplicativo.",
+                );
+            }
+            let count = app.settings.audio_mixer.channels.len();
+            for (i, ch) in app.settings.audio_mixer.channels.iter_mut().enumerate() {
                 let peak = app
                     .audio_levels
                     .get(&ch.id)
@@ -1325,89 +1658,105 @@ fn show_mixer_dock(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                     || ch.filters.eq_enabled
                     || ch.filters.limiter.enabled
                     || ch.filters.highpass_hz > 1.0;
+                let ch_icon = match ch.kind {
+                    AudioChannelKind::Mic => Icon::Mic,
+                    AudioChannelKind::App => Icon::Window,
+                    _ => Icon::Volume,
+                };
 
-                GlassCard::new()
-                    .elevation(GlassElevation::Subtle)
-                    .corner_radius(10.0)
-                    .padding(Margin::symmetric(10, 7))
-                    .fill_width(true)
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new(&ch.name)
-                                    .size(12.5)
-                                    .strong()
-                                    .color(prism.palette.text_primary),
-                            );
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                ui.spacing_mut().item_spacing.x = 5.0;
-                                if ch.kind == AudioChannelKind::App
-                                    && ui
-                                        .small_button(
-                                            RichText::new("🗑").color(prism.palette.text_muted),
-                                        )
-                                        .on_hover_text("Remover canal")
-                                        .clicked()
-                                {
-                                    remove_ch = Some(ch.id.clone());
-                                }
-                                if ui
-                                    .add(
-                                        GlassButton::secondary("DSP")
-                                            .selected(has_dsp)
-                                            .pill(true)
-                                            .min_size(Vec2::new(42.0, 22.0)),
-                                    )
-                                    .on_hover_text(
-                                        "Filtros DSP, EQ 3 bandas, Compressor e VST3/CLAP",
-                                    )
-                                    .clicked()
-                                {
-                                    open_filters = Some(ch.id.clone());
-                                }
-                                let mute_resp = if ch.muted {
-                                    theme::tally_button_compact(ui, "Mudo")
-                                } else {
-                                    ui.add(
-                                        GlassButton::ghost("🔊")
-                                            .pill(true)
-                                            .min_size(Vec2::new(30.0, 22.0)),
-                                    )
-                                };
-                                if mute_resp.clicked() {
-                                    ch.muted = !ch.muted;
-                                    dirty = true;
-                                }
-                                ui.label(
-                                    RichText::new(format!("{:+.1} dB", ch.volume_db))
-                                        .monospace()
-                                        .size(10.8)
-                                        .color(if ch.muted {
-                                            prism.palette.text_muted
-                                        } else {
-                                            prism.palette.text_secondary
-                                        }),
-                                );
-                            });
-                        });
-                        ui.add_space(3.0);
-                        theme::paint_vu_meter(ui, peak, ch.muted, avail_w - 34.0);
-                        let fader_accent = if ch.muted {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    theme::icon(
+                        ui,
+                        ch_icon,
+                        14.0,
+                        if ch.muted {
                             prism.palette.text_muted
                         } else {
-                            prism.palette.accent
-                        };
-                        if ui
-                            .add(
-                                GlassSlider::new(&mut ch.volume_db, -60.0..=12.0)
-                                    .accent(fader_accent),
-                            )
-                            .changed()
+                            prism.palette.text_secondary
+                        },
+                    );
+                    ui.label(theme::text(
+                        ui,
+                        truncate(&ch.name, 22),
+                        12.5,
+                        FontWeight::Medium,
+                        if ch.muted {
+                            prism.palette.text_muted
+                        } else {
+                            prism.palette.text_primary
+                        },
+                    ));
+                    if has_dsp {
+                        theme::chip(ui, "DSP", prism.palette.accent);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if ch.kind == AudioChannelKind::App
+                            && theme::icon_button(ui, Icon::Trash, "Remover canal").clicked()
                         {
+                            remove_ch = Some(ch.id.clone());
+                        }
+                        if theme::icon_button(
+                            ui,
+                            Icon::Sliders,
+                            "Filtros DSP, EQ 3 bandas, compressor e VST3/CLAP",
+                        )
+                        .clicked()
+                        {
+                            open_filters = Some(ch.id.clone());
+                        }
+                        let mute = theme::icon_button_ex(
+                            ui,
+                            if ch.muted {
+                                Icon::VolumeMute
+                            } else {
+                                Icon::Volume
+                            },
+                            if ch.muted {
+                                "Ativar canal"
+                            } else {
+                                "Silenciar canal"
+                            },
+                            ch.muted,
+                            24.0,
+                        );
+                        if mute.clicked() {
+                            ch.muted = !ch.muted;
                             dirty = true;
                         }
+                        ui.add_space(4.0);
+                        ui.label(theme::num_text(
+                            ui,
+                            format!("{:+.1} dB", ch.volume_db),
+                            11.0,
+                            FontWeight::Medium,
+                            if ch.muted {
+                                prism.palette.text_muted
+                            } else {
+                                prism.palette.text_secondary
+                            },
+                        ));
                     });
-                ui.add_space(5.0);
+                });
+                ui.add_space(2.0);
+                theme::paint_vu_meter(ui, peak, ch.muted, avail_w - 22.0);
+                let fader_accent = if ch.muted {
+                    prism.palette.text_muted
+                } else {
+                    prism.palette.accent
+                };
+                if ui
+                    .add(GlassSlider::new(&mut ch.volume_db, -60.0..=12.0).accent(fader_accent))
+                    .changed()
+                {
+                    dirty = true;
+                }
+                if i + 1 < count {
+                    ui.add_space(4.0);
+                    theme::hairline(ui, &prism);
+                    ui.add_space(6.0);
+                }
             }
         });
 
@@ -1480,25 +1829,28 @@ fn show_audio_filters_modal(app: &mut PrismCastNativeApp, ctx: &Context, ch_id: 
                         ui.label(
                             RichText::new(&ch.name)
                                 .size(16.5)
-                                .strong()
+                                .semibold()
                                 .color(prism.palette.text_primary),
                         );
                         ui.add(GlassBadge::new("48 kHz DSP").variant(BadgeVariant::Accent));
                     });
                     ui.label(
-                        RichText::new("Filtros em tempo real · Passa-alta, Gate, Compressor e EQ 3 bandas")
-                            .size(11.0)
-                            .color(prism.palette.text_muted),
+                        RichText::new(
+                            "Filtros em tempo real · Passa-alta, Gate, Compressor e EQ 3 bandas",
+                        )
+                        .size(11.0)
+                        .color(prism.palette.text_muted),
                     );
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(
-                            GlassButton::ghost("✕")
-                                .pill(true)
-                                .min_size(Vec2::new(28.0, 28.0)),
-                        )
-                        .clicked()
+                    if theme::icon_button_ex(
+                        ui,
+                        crate::native_ui::icons::Icon::Close,
+                        "Fechar (Esc)",
+                        false,
+                        30.0,
+                    )
+                    .clicked()
                     {
                         open = false;
                     }
@@ -1544,7 +1896,9 @@ fn show_audio_filters_modal(app: &mut PrismCastNativeApp, ctx: &Context, ch_id: 
                                             (AudioMonitorMode::Monitor, "Monitorar e enviar"),
                                             (AudioMonitorMode::MonitorOnly, "Apenas monitorar"),
                                         ] {
-                                            if ui.selectable_value(&mut ch.monitor, m, lbl).clicked()
+                                            if ui
+                                                .selectable_value(&mut ch.monitor, m, lbl)
+                                                .clicked()
                                             {
                                                 dirty = true;
                                             }
@@ -1602,7 +1956,10 @@ fn show_audio_filters_modal(app: &mut PrismCastNativeApp, ctx: &Context, ch_id: 
                             ui.add_space(6.0);
 
                             if ui
-                                .add(GlassToggle::new(&mut ch.filters.gate.enabled).label("Noise Gate"))
+                                .add(
+                                    GlassToggle::new(&mut ch.filters.gate.enabled)
+                                        .label("Noise Gate"),
+                                )
                                 .changed()
                             {
                                 dirty = true;
@@ -1749,52 +2106,38 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     let Some(sel_id) = app.selected_item_id.clone() else {
-        ui.add_space(12.0);
-        GlassCard::new()
-            .elevation(GlassElevation::Subtle)
-            .padding(Margin::same(16))
-            .fill_width(true)
-            .show(ui, |ui| {
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        RichText::new("Nenhuma fonte selecionada")
-                            .size(13.5)
-                            .strong()
-                            .color(prism.palette.text_primary),
-                    );
-                    ui.add_space(4.0);
-                    ui.label(
-                        RichText::new("Clique em uma fonte no palco ou na lista inferior para editar posição, recorte e captura.")
-                            .size(11.5)
-                            .color(prism.palette.text_secondary),
-                    );
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        if ui
-                            .add(
-                                GlassButton::accent("+ Tela")
-                                    .pill(true)
-                                    .min_size(Vec2::new(0.0, 28.0)),
-                            )
-                            .clicked()
-                        {
-                            app.picker
-                                .open(PickerPurpose::AddNewSource, SourceKind::Screen, None);
-                        }
-                        if ui
-                            .add(
-                                GlassButton::secondary("+ Janela")
-                                    .pill(true)
-                                    .min_size(Vec2::new(0.0, 28.0)),
-                            )
-                            .clicked()
-                        {
-                            app.picker
-                                .open(PickerPurpose::AddNewSource, SourceKind::Window, None);
-                        }
-                    });
-                });
+        ui.add_space(24.0);
+        theme::empty_state(
+            ui,
+            Icon::Layers,
+            "Nenhuma fonte selecionada",
+            "Clique em uma fonte no palco ou na lista de Fontes\npara editar posição, recorte e captura.",
+        );
+        ui.vertical_centered(|ui| {
+            ui.horizontal(|ui| {
+                ui.add_space(((ui.available_width() - 190.0) * 0.5).max(0.0));
+                if theme::button(
+                    ui,
+                    "Tela",
+                    BtnOpts::new(Btn::Accent).icon(Icon::Monitor).small(),
+                )
+                .clicked()
+                {
+                    app.picker
+                        .open(PickerPurpose::AddNewSource, SourceKind::Screen, None);
+                }
+                if theme::button(
+                    ui,
+                    "Janela",
+                    BtnOpts::new(Btn::Secondary).icon(Icon::Window).small(),
+                )
+                .clicked()
+                {
+                    app.picker
+                        .open(PickerPurpose::AddNewSource, SourceKind::Window, None);
+                }
             });
+        });
         return;
     };
 
@@ -1820,16 +2163,24 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
         .id_salt("props_scroll")
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(&item_snapshot.name)
-                        .size(15.0)
-                        .strong()
-                        .color(prism.palette.text_primary),
+                theme::icon(
+                    ui,
+                    source_icon(item_snapshot.source_type),
+                    18.0,
+                    prism.palette.accent,
                 );
+                ui.label(theme::text(
+                    ui,
+                    truncate(&item_snapshot.name, 24),
+                    15.0,
+                    FontWeight::Semibold,
+                    prism.palette.text_primary,
+                ));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.add(
-                        GlassBadge::new(source_type_badge(item_snapshot.source_type))
-                            .variant(BadgeVariant::Accent),
+                    theme::chip(
+                        ui,
+                        &source_type_badge(item_snapshot.source_type).to_uppercase(),
+                        prism.palette.text_secondary,
                     );
                 });
             });
@@ -1853,32 +2204,41 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                             Some(CaptureStatus::Missing) => {
                                 ("Janela fechada", BadgeVariant::Warning)
                             }
-                            Some(CaptureStatus::Error) => {
-                                ("Erro na captura", BadgeVariant::Warm)
-                            }
+                            Some(CaptureStatus::Error) => ("Erro na captura", BadgeVariant::Warm),
                             _ => ("Conectando captura…", BadgeVariant::Neutral),
                         };
                         ui.add(GlassBadge::new(badge_txt).variant(badge_var).dot(true));
                         ui.add_space(8.0);
-                        if theme::tally_button(ui, "Escolher tela / janela na lista").clicked() {
+                        if theme::button(
+                            ui,
+                            "Trocar tela ou janela",
+                            BtnOpts::new(Btn::Secondary)
+                                .icon(Icon::Monitor)
+                                .small()
+                                .min_width(ui.available_width()),
+                        )
+                        .clicked()
+                        {
                             open_picker = true;
                         }
                         if item_snapshot.source_type == SourceType::WindowCapture {
                             ui.add_space(6.0);
                             let has_audio = item_snapshot.settings.audio_channel_id.is_some();
-                            if ui
-                                .add(
-                                    GlassButton::secondary(if has_audio {
-                                        "✓ Áudio desta janela vinculado"
-                                    } else {
-                                        "+ Capturar o áudio desta janela"
-                                    })
+                            if theme::button(
+                                ui,
+                                if has_audio {
+                                    "Áudio desta janela vinculado"
+                                } else {
+                                    "Capturar o áudio desta janela"
+                                },
+                                BtnOpts::new(Btn::Ghost)
+                                    .icon(if has_audio { Icon::Check } else { Icon::Volume })
                                     .selected(has_audio)
-                                    .pill(true)
                                     .enabled(!has_audio)
-                                    .min_size(Vec2::new(ui.available_width(), 28.0)),
-                                )
-                                .clicked()
+                                    .small()
+                                    .min_width(ui.available_width()),
+                            )
+                            .clicked()
                             {
                                 add_window_audio = true;
                             }
@@ -1901,13 +2261,12 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 .color(prism.palette.text_secondary),
                         );
                         ui.add_space(6.0);
-                        if ui
-                            .add(
-                                GlassButton::secondary("Trocar arquivo de imagem…")
-                                    .pill(true)
-                                    .min_size(Vec2::new(0.0, 28.0)),
-                            )
-                            .clicked()
+                        if theme::button(
+                            ui,
+                            "Trocar arquivo de imagem…",
+                            BtnOpts::new(Btn::Secondary).icon(Icon::Folder).small(),
+                        )
+                        .clicked()
                         {
                             pick_image = true;
                         }
@@ -2033,13 +2392,12 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 
                             ui.add_space(8.0);
                             ui.horizontal(|ui| {
-                                if ui
-                                    .add(
-                                        GlassButton::secondary("Tela cheia")
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 26.0)),
-                                    )
-                                    .clicked()
+                                if theme::button(
+                                    ui,
+                                    "Tela cheia",
+                                    BtnOpts::new(Btn::Secondary).small(),
+                                )
+                                .clicked()
                                 {
                                     tf.x = 0.0;
                                     tf.y = 0.0;
@@ -2047,13 +2405,12 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     tf.height = 1.0;
                                     dirty = true;
                                 }
-                                if ui
-                                    .add(
-                                        GlassButton::secondary("Centralizar")
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 26.0)),
-                                    )
-                                    .clicked()
+                                if theme::button(
+                                    ui,
+                                    "Centralizar",
+                                    BtnOpts::new(Btn::Secondary).small(),
+                                )
+                                .clicked()
                                 {
                                     tf.x = (1.0 - tf.width) * 0.5;
                                     tf.y = (1.0 - tf.height) * 0.5;
@@ -2215,56 +2572,45 @@ fn show_properties_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
 fn show_chat_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
-    ui.horizontal(|ui| {
-        theme::section_heading(ui, "MULTICHAT AO VIVO", &prism);
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui
-                .add(
-                    GlassButton::ghost("↻ Reconectar")
-                        .pill(true)
-                        .min_size(Vec2::new(0.0, 24.0)),
-                )
-                .clicked()
-            {
-                let engine = app.engine.clone();
-                app.rt.spawn(async move {
-                    let _ = engine
-                        .handle_command("multichat_reconnect", Value::Null)
-                        .await;
-                });
-            }
-        });
+    theme::dock_header(ui, "Multichat ao vivo", None, &prism, |ui| {
+        if theme::icon_button(ui, Icon::Refresh, "Reconectar Twitch, YouTube e Kick").clicked() {
+            let engine = app.engine.clone();
+            app.rt.spawn(async move {
+                let _ = engine
+                    .handle_command("multichat_reconnect", Value::Null)
+                    .await;
+            });
+        }
     });
 
-    ui.add_space(6.0);
-
-    let feed_h = (ui.available_height() - 44.0).max(120.0);
+    let feed_h = (ui.available_height() - 46.0).max(120.0);
     egui::ScrollArea::vertical()
         .id_salt("multichat_feed")
         .stick_to_bottom(true)
         .max_height(feed_h)
+        .auto_shrink([false, false])
         .show(ui, |ui| {
             if app.chat_messages.is_empty() {
-                ui.add_space(16.0);
-                GlassCard::new()
-                    .elevation(GlassElevation::Subtle)
-                    .padding(Margin::same(14))
-                    .fill_width(true)
-                    .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(
-                                "Conecte Twitch, YouTube ou Kick em Destinos para acompanhar o chat unificado aqui.",
-                            )
-                            .size(12.0)
-                            .color(prism.palette.text_secondary),
-                        );
-                    });
+                ui.add_space(24.0);
+                theme::empty_state(
+                    ui,
+                    Icon::Chat,
+                    "O chat aparece aqui",
+                    "Conecte Twitch, YouTube ou Kick em Destinos\npara acompanhar o chat unificado.",
+                );
+                ui.vertical_centered(|ui| {
+                    if theme::button(ui, "Abrir Destinos", BtnOpts::new(Btn::Secondary).icon(Icon::Broadcast).small())
+                        .clicked()
+                    {
+                        app.active_tab = NavTab::Destinations;
+                    }
+                });
             }
             for msg in &app.chat_messages {
                 let (plat_lbl, plat_col) = match msg.platform {
-                    ChatPlatform::Twitch => ("TW", Color32::from_rgb(169, 112, 255)),
-                    ChatPlatform::Youtube => ("YT", theme::SPEC_RED),
-                    ChatPlatform::Kick => ("KK", theme::METER_OK),
+                    ChatPlatform::Twitch => ("TW", theme::TWITCH),
+                    ChatPlatform::Youtube => ("YT", theme::YOUTUBE),
+                    ChatPlatform::Kick => ("KK", theme::KICK),
                 };
                 let text_body: String = msg
                     .fragments
@@ -2275,34 +2621,13 @@ fn show_chat_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                     })
                     .collect();
 
-                GlassCard::new()
-                    .elevation(GlassElevation::Flat)
-                    .corner_radius(9.0)
-                    .padding(Margin::symmetric(8, 5))
-                    .fill_width(true)
-                    .show(ui, |ui| {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(
-                                RichText::new(plat_lbl)
-                                    .monospace()
-                                    .size(10.0)
-                                    .strong()
-                                    .color(plat_col),
-                            );
-                            ui.label(
-                                RichText::new(format!("{}:", msg.name))
-                                    .size(12.0)
-                                    .strong()
-                                    .color(prism.palette.text_primary),
-                            );
-                            ui.label(
-                                RichText::new(text_body)
-                                    .size(12.0)
-                                    .color(prism.palette.text_secondary),
-                            );
-                        });
-                    });
-                ui.add_space(3.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    theme::chip(ui, plat_lbl, plat_col);
+                    ui.label(theme::text(ui, &msg.name, 12.5, FontWeight::Semibold, prism.palette.text_primary));
+                    ui.label(theme::text(ui, text_body, 12.5, FontWeight::Regular, prism.palette.text_secondary));
+                });
+                ui.add_space(5.0);
             }
         });
 
@@ -2310,17 +2635,18 @@ fn show_chat_panel(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let resp = ui.add(
             egui::TextEdit::singleline(&mut app.chat_input)
-                .desired_width((ui.available_width() - 78.0).max(80.0))
-                .hint_text("Enviar no chat Twitch…"),
+                .desired_width((ui.available_width() - 40.0).max(80.0))
+                .margin(Margin::symmetric(10, 7))
+                .hint_text("Enviar no chat da Twitch…"),
         );
         let send = (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
-            || ui
-                .add(
-                    GlassButton::accent("Enviar")
-                        .pill(true)
-                        .min_size(Vec2::new(68.0, 28.0)),
-                )
-                .clicked();
+            || theme::button(
+                ui,
+                "",
+                BtnOpts::new(Btn::Accent).icon(Icon::Send).height(32.0),
+            )
+            .on_hover_text("Enviar (Enter)")
+            .clicked();
         if send && !app.chat_input.trim().is_empty() {
             let text = app.chat_input.trim().to_string();
             app.chat_input.clear();
@@ -2351,14 +2677,14 @@ pub fn show_destinations_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     egui::CentralPanel::default()
-        .frame(Frame::NONE.inner_margin(Margin::symmetric(18, 12)))
+        .frame(Frame::NONE.inner_margin(page_margin(ui)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Destinos de Transmissão")
-                            .size(22.0)
-                            .strong()
+                            .size(21.0)
+                            .semibold()
                             .color(prism.palette.text_primary),
                     );
                     let active_count = app
@@ -2398,7 +2724,7 @@ pub fn show_destinations_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     ui.label(
                                         RichText::new("Conta Twitch (OAuth Device Code)")
                                             .size(15.0)
-                                            .strong()
+                                            .semibold()
                                             .color(prism.palette.text_primary),
                                     );
                                     if app.twitch_caps.linked {
@@ -2461,7 +2787,7 @@ pub fn show_destinations_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     RichText::new(user_code)
                                         .monospace()
                                         .size(16.0)
-                                        .strong()
+                                        .semibold()
                                         .color(theme::SPEC_AMBER),
                                 );
                                 if ui
@@ -2494,34 +2820,19 @@ pub fn show_destinations_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 if ui.add(GlassToggle::new(&mut dest.enabled)).changed() {
                                     dirty = true;
                                 }
-                                ui.label(
-                                    RichText::new(&dest.name)
-                                        .size(15.0)
-                                        .strong()
-                                        .color(prism.palette.text_primary),
-                                );
-                                let orient_lbl = match dest.orientation {
-                                    CanvasOrientation::Horizontal => "16:9 Horizontal",
-                                    CanvasOrientation::Vertical => "9:16 Vertical",
-                                };
+                                platform_mark(ui, dest.platform);
+                                ui.label(theme::text(ui, &dest.name, 15.0, FontWeight::Semibold, prism.palette.text_primary));
+                                ui.add_space(6.0);
+                                let mut orient_idx = usize::from(dest.orientation == CanvasOrientation::Vertical);
                                 if ui
-                                    .add(
-                                        GlassButton::secondary(orient_lbl)
-                                            .selected(
-                                                dest.orientation == CanvasOrientation::Vertical,
-                                            )
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 24.0)),
-                                    )
-                                    .clicked()
+                                    .add(GlassSegmented::new(&mut orient_idx, &["16:9", "9:16"]).height(26.0))
+                                    .on_hover_text("Canvas enviado para este destino")
+                                    .changed()
                                 {
-                                    dest.orientation = match dest.orientation {
-                                        CanvasOrientation::Horizontal => {
-                                            CanvasOrientation::Vertical
-                                        }
-                                        CanvasOrientation::Vertical => {
-                                            CanvasOrientation::Horizontal
-                                        }
+                                    dest.orientation = if orient_idx == 1 {
+                                        CanvasOrientation::Vertical
+                                    } else {
+                                        CanvasOrientation::Horizontal
                                     };
                                     dirty = true;
                                 }
@@ -2610,7 +2921,7 @@ pub fn show_destinations_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new("+ Novo destino RTMP")
-                                    .strong()
+                                    .semibold()
                                     .color(prism.palette.text_primary),
                             );
                             ui.add(
@@ -2690,13 +3001,13 @@ pub fn show_widgets_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     egui::CentralPanel::default()
-        .frame(Frame::NONE.inner_margin(Margin::symmetric(18, 12)))
+        .frame(Frame::NONE.inner_margin(page_margin(ui)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.label(
                     RichText::new("Widgets & Kit de Overlays")
-                        .size(22.0)
-                        .strong()
+                        .size(21.0)
+                        .semibold()
                         .color(prism.palette.text_primary),
                 );
                 ui.label(
@@ -2729,7 +3040,7 @@ pub fn show_widgets_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 );
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if theme::tally_button(ui, "Selecionar pasta do kit…").clicked() {
+                                if theme::button(ui, "Selecionar pasta do kit…", BtnOpts::new(Btn::Accent).icon(Icon::Folder)).clicked() {
                                     if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                                         let p = folder.to_string_lossy().to_string();
                                         app.settings.kit_path = Some(p.clone());
@@ -2747,7 +3058,7 @@ pub fn show_widgets_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                         ui.label(
                             RichText::new(&kit.name)
                                 .size(16.0)
-                                .strong()
+                                .semibold()
                                 .color(prism.palette.text_primary),
                         );
                         ui.add(
@@ -2766,7 +3077,7 @@ pub fn show_widgets_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     ui.vertical(|ui| {
                                         ui.label(
                                             RichText::new(&w.name)
-                                                .strong()
+                                                .semibold()
                                                 .color(prism.palette.text_primary),
                                         );
                                         ui.label(
@@ -2807,14 +3118,14 @@ pub fn show_lan_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     egui::CentralPanel::default()
-        .frame(Frame::NONE.inner_margin(Margin::symmetric(18, 12)))
+        .frame(Frame::NONE.inner_margin(page_margin(ui)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Rede Local (LAN P2P)")
-                            .size(22.0)
-                            .strong()
+                            .size(21.0)
+                            .semibold()
                             .color(prism.palette.text_primary),
                     );
                     if app.lan_hosting {
@@ -2844,7 +3155,7 @@ pub fn show_lan_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 ui.label(
                                     RichText::new("Transmitir na rede local (Host)")
                                         .size(15.0)
-                                        .strong()
+                                        .semibold()
                                         .color(prism.palette.text_primary),
                                 );
                                 if app.lan_hosting {
@@ -2979,17 +3290,16 @@ pub fn show_lan_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                             ui.label(
                                 RichText::new("Computadores encontrados na LAN")
                                     .size(15.0)
-                                    .strong()
+                                    .semibold()
                                     .color(prism.palette.text_primary),
                             );
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        GlassButton::secondary("↻ Procurar na rede")
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 28.0)),
-                                    )
-                                    .clicked()
+                                if theme::button(
+                                    ui,
+                                    "Procurar na rede",
+                                    BtnOpts::new(Btn::Secondary).icon(Icon::Refresh).small(),
+                                )
+                                .clicked()
                                 {
                                     let engine = app.engine.clone();
                                     let tx = app.bg_tx.clone();
@@ -3025,7 +3335,7 @@ pub fn show_lan_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                         ui.horizontal(|ui| {
                                             ui.label(
                                                 RichText::new(&h.name)
-                                                    .strong()
+                                                    .semibold()
                                                     .color(prism.palette.text_primary),
                                             );
                                             ui.add(
@@ -3052,13 +3362,13 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
     let prism = ui.ctx().prism_theme();
 
     egui::CentralPanel::default()
-        .frame(Frame::NONE.inner_margin(Margin::symmetric(18, 12)))
+        .frame(Frame::NONE.inner_margin(page_margin(ui)))
         .show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.label(
                     RichText::new("Ajustes do Estúdio")
-                        .size(22.0)
-                        .strong()
+                        .size(21.0)
+                        .semibold()
                         .color(prism.palette.text_primary),
                 );
                 ui.label(
@@ -3070,7 +3380,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                 );
                 ui.add_space(14.0);
 
-                // 0. Aparência & Material (`egui-prismglass`)
+                // 0. Aparência: galeria de temas Prism / clássicos, cor de destaque e material
                 GlassCard::new()
                     .elevation(GlassElevation::Elevated)
                     .padding(Margin::same(16))
@@ -3078,32 +3388,14 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                     .show(ui, |ui| {
                         let mut app_dirty = false;
                         ui.horizontal(|ui| {
-                            ui.label(
-                                RichText::new("Aparência & Material (egui-prismglass)")
-                                    .size(15.5)
-                                    .strong()
-                                    .color(prism.palette.text_primary),
-                            );
-                            ui.add(
-                                GlassBadge::new(if prism.surface_style == SurfaceStyle::Glass {
-                                    "Glass 3D"
-                                } else {
-                                    "Minimal Solid"
-                                })
-                                .variant(BadgeVariant::Accent)
-                                .dot(true),
-                            );
+                            theme::icon(ui, Icon::Swatch, 16.0, prism.palette.accent);
+                            ui.label(theme::text(ui, "Aparência", 15.5, FontWeight::Semibold, prism.palette.text_primary));
+                            theme::chip(ui, "EGUI-PRISMGLASS 0.3", prism.palette.text_muted);
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui
-                                    .add(
-                                        GlassButton::ghost("Restaurar padrão")
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 26.0)),
-                                    )
+                                if theme::button(ui, "Restaurar padrão", BtnOpts::new(Btn::Ghost).icon(Icon::Undo).small())
                                     .clicked()
                                 {
-                                    let keep_collapsed =
-                                        app.settings.ui_appearance.sidebar_collapsed;
+                                    let keep_collapsed = app.settings.ui_appearance.sidebar_collapsed;
                                     app.settings.ui_appearance = UiAppearanceSettings {
                                         sidebar_collapsed: keep_collapsed,
                                         ..Default::default()
@@ -3112,111 +3404,121 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                 }
                             });
                         });
+                        ui.label(theme::text(
+                            ui,
+                            "Linguagem Prism: tipografia Inter, neutros calibrados e vidro reservado ao que flutua.",
+                            12.0,
+                            FontWeight::Regular,
+                            prism.palette.text_secondary,
+                        ));
+                        ui.add_space(12.0);
 
-                        ui.add_space(10.0);
-                        theme::section_heading(ui, "TEMA VISUAL", &prism);
+                        let mut theme_gallery = |ui: &mut Ui, title: &str, presets: &[UiThemePreset], dirty: &mut bool| {
+                            theme::section_heading(ui, title, &prism);
+                            ui.add_space(6.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.spacing_mut().item_spacing = Vec2::new(10.0, 10.0);
+                                for &preset in presets {
+                                    let active = app.settings.ui_appearance.preset == preset;
+                                    if theme_card(ui, preset, app.settings.ui_appearance.accent, active).clicked() {
+                                        app.settings.ui_appearance.preset = preset;
+                                        *dirty = true;
+                                    }
+                                }
+                            });
+                            ui.add_space(12.0);
+                        };
+                        theme_gallery(ui, "Temas Prism", &UiThemePreset::PRISM, &mut app_dirty);
+                        theme_gallery(ui, "Clássicos (v0.2)", &UiThemePreset::CLASSIC, &mut app_dirty);
+
+                        theme::section_heading(ui, "Cor de destaque", &prism);
                         ui.add_space(6.0);
                         ui.horizontal_wrapped(|ui| {
-                            for preset in UiThemePreset::ALL {
-                                let active = app.settings.ui_appearance.preset == preset;
-                                if ui
-                                    .add(
-                                        GlassButton::secondary(preset.label())
-                                            .selected(active)
-                                            .pill(true)
-                                            .min_size(Vec2::new(0.0, 30.0)),
-                                    )
-                                    .clicked()
-                                {
-                                    app.settings.ui_appearance.preset = preset;
+                            ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
+                            for accent in UiAccent::ALL {
+                                let active = app.settings.ui_appearance.accent == accent;
+                                if accent_swatch_button(ui, accent, active).clicked() {
+                                    app.settings.ui_appearance.accent = accent;
                                     app_dirty = true;
                                 }
                             }
                         });
+                        ui.add_space(14.0);
 
-                        ui.add_space(12.0);
-                        theme::section_heading(ui, "INSPETOR DE MATERIAL", &prism);
+                        theme::section_heading(ui, "Material & fundo", &prism);
                         ui.add_space(6.0);
-
-                        let is_glass = prism.surface_style == SurfaceStyle::Glass;
+                        let is_glass = prism.surface_style != SurfaceStyle::Minimal;
                         ui.columns(2, |cols| {
-                            if is_glass {
-                                if cols[0]
+                            if is_glass
+                                && cols[0]
                                     .add(
-                                        GlassSlider::new(
-                                            &mut app.settings.ui_appearance.glass_opacity,
-                                            0.55..=1.45,
-                                        )
-                                        .label("Densidade do vidro")
-                                        .suffix("×")
-                                        .decimals(2),
+                                        GlassSlider::new(&mut app.settings.ui_appearance.glass_opacity, 0.55..=1.45)
+                                            .label("Densidade do vidro")
+                                            .suffix("×")
+                                            .decimals(2),
                                     )
                                     .changed()
-                                {
-                                    app_dirty = true;
-                                }
-                                if cols[0]
-                                    .add(
-                                        GlassSlider::new(
-                                            &mut app.settings.ui_appearance.specular_intensity,
-                                            0.0..=1.8,
-                                        )
-                                        .label("Brilho especular da borda")
-                                        .suffix("×")
-                                        .decimals(2),
-                                    )
-                                    .changed()
-                                {
-                                    app_dirty = true;
-                                }
+                            {
+                                app_dirty = true;
                             }
-
+                            if prism.surface_style == SurfaceStyle::Glass
+                                && cols[0]
+                                    .add(
+                                        GlassSlider::new(&mut app.settings.ui_appearance.specular_intensity, 0.0..=1.8)
+                                            .label("Brilho especular")
+                                            .suffix("×")
+                                            .decimals(2),
+                                    )
+                                    .changed()
+                            {
+                                app_dirty = true;
+                            }
                             if cols[1]
                                 .add(
-                                    GlassSlider::new(
-                                        &mut app.settings.ui_appearance.radius_scale,
-                                        0.5..=1.4,
-                                    )
-                                    .label("Arredondamento")
-                                    .suffix("×")
-                                    .decimals(2),
-                                )
-                                .changed()
-                            {
-                                app_dirty = true;
-                            }
-                            if is_glass {
-                                if cols[1]
-                                    .add(
-                                        GlassSlider::new(
-                                            &mut app.settings.ui_appearance.backdrop_intensity,
-                                            0.0..=1.4,
-                                        )
-                                        .label("Luminância do fundo 3D")
+                                    GlassSlider::new(&mut app.settings.ui_appearance.radius_scale, 0.5..=1.4)
+                                        .label("Arredondamento")
                                         .suffix("×")
                                         .decimals(2),
-                                    )
-                                    .changed()
-                                {
-                                    app_dirty = true;
-                                }
-                            }
-                        });
-
-                        if is_glass {
-                            ui.add_space(6.0);
-                            if ui
-                                .add(
-                                    GlassToggle::new(
-                                        &mut app.settings.ui_appearance.animate_backdrop,
-                                    )
-                                    .label("Animar ondas de luz volumétricas no fundo"),
                                 )
                                 .changed()
                             {
                                 app_dirty = true;
                             }
-                        }
+                            if is_glass
+                                && cols[1]
+                                    .add(
+                                        GlassSlider::new(&mut app.settings.ui_appearance.backdrop_intensity, 0.0..=1.4)
+                                            .label("Luz do fundo")
+                                            .suffix("×")
+                                            .decimals(2),
+                                    )
+                                    .changed()
+                            {
+                                app_dirty = true;
+                            }
+                        });
+                        ui.add_space(6.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing.x = 18.0;
+                            if is_glass
+                                && ui
+                                    .add(GlassToggle::new(&mut app.settings.ui_appearance.animate_backdrop).label("Animar a luz do fundo"))
+                                    .changed()
+                            {
+                                app_dirty = true;
+                            }
+                            if ui
+                                .add(GlassToggle::new(&mut app.settings.ui_appearance.show_status_bar).label("Barra de status com telemetria"))
+                                .changed()
+                            {
+                                app_dirty = true;
+                            }
+                            let mut collapsed = app.settings.ui_appearance.sidebar_collapsed;
+                            if ui.add(GlassToggle::new(&mut collapsed).label("Barra lateral compacta")).changed() {
+                                app.settings.ui_appearance.sidebar_collapsed = collapsed;
+                                app_dirty = true;
+                            }
+                        });
 
                         if app_dirty {
                             app.settings.ui_appearance.normalize();
@@ -3236,7 +3538,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                             ui.label(
                                 RichText::new("Vídeo & Pipeline GPU Zero-Copy")
                                     .size(15.0)
-                                    .strong()
+                                    .semibold()
                                     .color(prism.palette.text_primary),
                             );
                             ui.add(
@@ -3305,7 +3607,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     ui.label(
                                         RichText::new("Câmera Virtual Nativa")
                                             .size(15.0)
-                                            .strong()
+                                            .semibold()
                                             .color(prism.palette.text_primary),
                                     );
                                     ui.add(
@@ -3393,7 +3695,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     "Controladores Externos (obs-websocket v5 / Stream Deck)",
                                 )
                                 .size(15.0)
-                                .strong()
+                                .semibold()
                                 .color(prism.palette.text_primary),
                             );
                             ui.add(
@@ -3495,7 +3797,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     ui.label(
                                         RichText::new("Atualizações (GitHub Releases)")
                                             .size(15.0)
-                                            .strong()
+                                            .semibold()
                                             .color(prism.palette.text_primary),
                                     );
                                     ui.add(
@@ -3534,7 +3836,7 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
                                     });
                                 }
                                 if app.updater.state == UpdateState::Available {
-                                    if theme::tally_button(ui, "Baixar atualização").clicked() {
+                                    if theme::button(ui, "Baixar atualização", BtnOpts::new(Btn::Accent).icon(Icon::Download)).clicked() {
                                         let engine = app.engine.clone();
                                         app.rt.spawn(async move {
                                             let _ = engine
@@ -3579,6 +3881,137 @@ pub fn show_settings_screen(app: &mut PrismCastNativeApp, ui: &mut Ui) {
         });
 }
 
+/// Marca quadrada com a cor e as iniciais da plataforma de destino.
+fn platform_mark(ui: &mut Ui, platform: PlatformId) {
+    let (col, txt) = match platform {
+        PlatformId::Twitch => (theme::TWITCH, "TW"),
+        PlatformId::Youtube => (theme::YOUTUBE, "YT"),
+        PlatformId::Kick => (theme::KICK, "K"),
+        PlatformId::Tiktok => (theme::TIKTOK, "TT"),
+        _ => (theme::SPEC_BLUE, "RT"),
+    };
+    let (rect, _) = ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 7.0, col.gamma_multiply(0.22));
+    ui.painter().rect_stroke(
+        rect,
+        7.0,
+        egui::Stroke::new(1.0, col.gamma_multiply(0.55)),
+        egui::StrokeKind::Inside,
+    );
+    let f = theme::font(ui, 10.5, FontWeight::Semibold);
+    ui.painter()
+        .text(rect.center(), Align2::CENTER_CENTER, txt, f, col);
+}
+
+/// Cartão clicável de tema com miniatura renderizada pelo próprio tema.
+fn theme_card(
+    ui: &mut Ui,
+    preset: UiThemePreset,
+    accent: UiAccent,
+    active: bool,
+) -> egui::Response {
+    let prism = ui.ctx().prism_theme();
+    let size = Vec2::new(150.0, 128.0);
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if ui.is_rect_visible(rect) {
+        let mut preview = theme::base_theme(preset);
+        theme::apply_accent(&mut preview, accent);
+        let p = ui.painter();
+        let cr = egui::CornerRadius::same(10);
+        let fill = if resp.hovered() {
+            theme::hover_fill(&prism)
+        } else {
+            Color32::TRANSPARENT
+        };
+        p.rect_filled(rect, cr, fill);
+        let border = if active {
+            egui::Stroke::new(2.0, prism.palette.accent)
+        } else {
+            egui::Stroke::new(1.0, theme::hairline_color(&prism))
+        };
+        p.rect_stroke(rect, cr, border, egui::StrokeKind::Inside);
+        let thumb = egui::Rect::from_min_size(
+            rect.min + Vec2::new(6.0, 6.0),
+            Vec2::new(size.x - 12.0, 78.0),
+        );
+        theme::paint_theme_preview(p, thumb, &preview);
+        let tf = theme::font(ui, 12.5, FontWeight::Medium);
+        p.text(
+            egui::pos2(rect.left() + 10.0, thumb.bottom() + 15.0),
+            Align2::LEFT_CENTER,
+            preset.label(),
+            tf,
+            prism.palette.text_primary,
+        );
+        let cf = theme::font(ui, 10.5, FontWeight::Regular);
+        p.text(
+            egui::pos2(rect.left() + 10.0, thumb.bottom() + 31.0),
+            Align2::LEFT_CENTER,
+            preset.caption(),
+            cf,
+            prism.palette.text_muted,
+        );
+        if active {
+            let c = egui::pos2(thumb.right() - 10.0, thumb.top() + 10.0);
+            p.circle_filled(c, 8.0, prism.palette.accent);
+            crate::native_ui::icons::paint_icon(
+                p,
+                egui::Rect::from_center_size(c, Vec2::splat(10.0)),
+                Icon::Check,
+                prism.on_accent(),
+            );
+        }
+    }
+    resp
+}
+
+/// Amostra circular de cor de destaque com rótulo.
+fn accent_swatch_button(ui: &mut Ui, accent: UiAccent, active: bool) -> egui::Response {
+    let prism = ui.ctx().prism_theme();
+    let f = theme::font(ui, 12.0, FontWeight::Medium);
+    let g = ui
+        .painter()
+        .layout_no_wrap(accent.label().to_owned(), f, prism.palette.text_primary);
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(g.size().x + 40.0, 30.0), egui::Sense::click());
+    if resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let p = ui.painter();
+    let cr = egui::CornerRadius::same(15);
+    if active {
+        p.rect_filled(rect, cr, theme::hover_fill(&prism).gamma_multiply(2.0));
+        p.rect_stroke(
+            rect,
+            cr,
+            egui::Stroke::new(1.0, theme::hairline_color(&prism)),
+            egui::StrokeKind::Inside,
+        );
+    } else if resp.hovered() {
+        p.rect_filled(rect, cr, theme::hover_fill(&prism));
+    }
+    let c = egui::pos2(rect.left() + 16.0, rect.center().y);
+    let col = theme::accent_swatch(accent);
+    p.circle_filled(c, 8.0, col);
+    if active {
+        p.circle_stroke(c, 10.5, egui::Stroke::new(1.5, col));
+    }
+    p.galley_with_override_text_color(
+        egui::pos2(rect.left() + 30.0, rect.center().y - g.size().y * 0.5),
+        g,
+        if active {
+            prism.palette.text_primary
+        } else {
+            prism.palette.text_secondary
+        },
+    );
+    resp
+}
+
 // ------------------------------------------------------------------ Modais Auxiliares
 
 pub fn show_confirm_quit_modal(app: &mut PrismCastNativeApp, ctx: &Context) {
@@ -3616,17 +4049,11 @@ pub fn show_confirm_quit_modal(app: &mut PrismCastNativeApp, ctx: &Context) {
                 ui.label(
                     RichText::new("Encerrar PrismCast Studio?")
                         .size(16.5)
-                        .strong()
+                        .semibold()
                         .color(prism.palette.text_primary),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui
-                        .add(
-                            GlassButton::ghost("✕")
-                                .pill(true)
-                                .min_size(Vec2::new(28.0, 28.0)),
-                        )
-                        .clicked()
+                    if theme::icon_button_ex(ui, crate::native_ui::icons::Icon::Close, "Fechar (Esc)", false, 30.0).clicked()
                     {
                         app.confirm_quit_open = false;
                     }
@@ -3672,42 +4099,63 @@ pub fn show_toast_overlay(ctx: &Context, toast: &ToastNotice) {
     let prism = ctx.prism_theme();
 
     egui::Area::new(egui::Id::unique("prismcast_toast"))
-        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -24.0))
+        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -48.0))
         .order(egui::Order::Tooltip)
         .show(ctx, |ui| {
-            let mut tokens = prism
+            let tokens = prism
                 .surface(GlassElevation::Floating)
-                .with_corner_radius(14.0);
+                .with_corner_radius(12.0);
             let accent = if toast.is_error {
-                theme::TALLY
+                prism.palette.danger
             } else {
-                prism.palette.accent
+                theme::METER_OK
             };
-            tokens.border = Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 185);
-            tokens.border_width = 1.2;
 
             let bg_idx = ui.painter().add(egui::Shape::Noop);
             let resp = Frame::NONE
-                .inner_margin(Margin::symmetric(16, 10))
+                .inner_margin(Margin {
+                    left: 14,
+                    right: 18,
+                    top: 10,
+                    bottom: 10,
+                })
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        let (dot_r, _) =
-                            ui.allocate_exact_size(Vec2::splat(10.0), egui::Sense::hover());
-                        ui.painter().circle_filled(
-                            dot_r.center(),
-                            4.5,
-                            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 64),
+                        let (r, _) =
+                            ui.allocate_exact_size(Vec2::splat(22.0), egui::Sense::hover());
+                        ui.painter()
+                            .circle_filled(r.center(), 11.0, accent.gamma_multiply(0.18));
+                        crate::native_ui::icons::paint_icon(
+                            ui.painter(),
+                            egui::Rect::from_center_size(r.center(), Vec2::splat(11.0)),
+                            if toast.is_error {
+                                Icon::Close
+                            } else {
+                                Icon::Check
+                            },
+                            accent,
                         );
-                        ui.painter().circle_filled(dot_r.center(), 2.8, accent);
-                        ui.label(
-                            RichText::new(&toast.message)
-                                .size(12.5)
-                                .color(prism.palette.text_primary),
-                        );
+                        ui.add_space(2.0);
+                        ui.label(theme::text(
+                            ui,
+                            &toast.message,
+                            13.0,
+                            FontWeight::Medium,
+                            prism.palette.text_primary,
+                        ));
                     });
                 });
 
-            let shapes = egui_prismglass::glass_surface_shapes(resp.response.rect, &tokens);
+            let mut shapes = egui_prismglass::glass_surface_shapes(resp.response.rect, &tokens);
+            let r = resp.response.rect;
+            shapes.push(egui::Shape::rect_filled(
+                egui::Rect::from_min_size(
+                    r.min + Vec2::new(0.0, 10.0),
+                    Vec2::new(3.0, r.height() - 20.0),
+                ),
+                2.0,
+                accent,
+            ));
             ui.painter().set(bg_idx, egui::Shape::Vec(shapes));
         });
 }

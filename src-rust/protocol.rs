@@ -1616,8 +1616,18 @@ impl Default for UpdateStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum UiThemePreset {
+    /// Identidade PrismCast: linguagem Prism (`egui-prismglass` 0.3) com neutros carbono
+    /// quentes, conteúdo sólido e vidro apenas nas camadas flutuantes.
     #[default]
     PrismCarbon,
+    /// Prism Dark — conteúdo sólido, vidro só no que flutua (Layered).
+    PrismDark,
+    /// Prism Light — conteúdo sólido, vidro só no que flutua (Layered).
+    PrismLight,
+    /// Prism Glass Dark — todos os contêineres em vidro fosco (All glass).
+    PrismGlassDark,
+    /// Prism Glass Light — todos os contêineres em vidro fosco (All glass).
+    PrismGlassLight,
     Onyx,
     Glacial,
     Frost,
@@ -1626,8 +1636,30 @@ pub enum UiThemePreset {
 }
 
 impl UiThemePreset {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 10] = [
         Self::PrismCarbon,
+        Self::PrismDark,
+        Self::PrismLight,
+        Self::PrismGlassDark,
+        Self::PrismGlassLight,
+        Self::Onyx,
+        Self::Glacial,
+        Self::Frost,
+        Self::MinimalDark,
+        Self::MinimalLight,
+    ];
+
+    /// Presets da linguagem Prism (v0.3) exibidos em destaque nos Ajustes.
+    pub const PRISM: [Self; 5] = [
+        Self::PrismCarbon,
+        Self::PrismDark,
+        Self::PrismLight,
+        Self::PrismGlassDark,
+        Self::PrismGlassLight,
+    ];
+
+    /// Presets clássicos (Liquid Glass 3D e Neumórfico) mantidos por compatibilidade.
+    pub const CLASSIC: [Self; 5] = [
         Self::Onyx,
         Self::Glacial,
         Self::Frost,
@@ -1638,6 +1670,10 @@ impl UiThemePreset {
     pub fn label(self) -> &'static str {
         match self {
             Self::PrismCarbon => "Prism Carbon",
+            Self::PrismDark => "Prism Dark",
+            Self::PrismLight => "Prism Light",
+            Self::PrismGlassDark => "Prism Glass Dark",
+            Self::PrismGlassLight => "Prism Glass Light",
             Self::Onyx => "Onyx Dark",
             Self::Glacial => "Glacial Glass",
             Self::Frost => "Frost Light",
@@ -1646,14 +1682,94 @@ impl UiThemePreset {
         }
     }
 
-    pub fn next(self) -> Self {
+    /// Descrição curta exibida nos cartões de tema.
+    pub fn caption(self) -> &'static str {
         match self {
-            Self::PrismCarbon => Self::Onyx,
-            Self::Onyx => Self::Glacial,
-            Self::Glacial => Self::Frost,
-            Self::Frost => Self::MinimalDark,
+            Self::PrismCarbon => "Carbono quente · Layered",
+            Self::PrismDark => "Neutro escuro · Layered",
+            Self::PrismLight => "Neutro claro · Layered",
+            Self::PrismGlassDark => "Tudo em vidro · escuro",
+            Self::PrismGlassLight => "Tudo em vidro · claro",
+            Self::Onyx => "Liquid Glass 3D",
+            Self::Glacial => "Liquid Glass 3D",
+            Self::Frost => "Liquid Glass 3D",
+            Self::MinimalDark => "Neumórfico sólido",
+            Self::MinimalLight => "Neumórfico sólido",
+        }
+    }
+
+    pub fn is_dark(self) -> bool {
+        !matches!(
+            self,
+            Self::PrismLight | Self::PrismGlassLight | Self::Frost | Self::MinimalLight
+        )
+    }
+
+    pub fn is_prism(self) -> bool {
+        Self::PRISM.contains(&self)
+    }
+
+    /// Mesmo material com a polaridade oposta (atalho claro/escuro da barra lateral).
+    pub fn toggled_polarity(self) -> Self {
+        match self {
+            Self::PrismCarbon | Self::PrismDark => Self::PrismLight,
+            Self::PrismLight => Self::PrismCarbon,
+            Self::PrismGlassDark => Self::PrismGlassLight,
+            Self::PrismGlassLight => Self::PrismGlassDark,
+            Self::Onyx | Self::Glacial => Self::Frost,
+            Self::Frost => Self::Onyx,
             Self::MinimalDark => Self::MinimalLight,
-            Self::MinimalLight => Self::PrismCarbon,
+            Self::MinimalLight => Self::MinimalDark,
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let idx = Self::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        Self::ALL[(idx + 1) % Self::ALL.len()]
+    }
+}
+
+/// Cor de destaque da interface (mapeada para `egui_prismglass::AccentPalette`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum UiAccent {
+    /// Turquesa espectral da marca PrismCast.
+    #[default]
+    Signal,
+    Cobalt,
+    Violet,
+    Emerald,
+    Ruby,
+    Amber,
+    Cyan,
+    Magenta,
+    Graphite,
+}
+
+impl UiAccent {
+    pub const ALL: [Self; 9] = [
+        Self::Signal,
+        Self::Cobalt,
+        Self::Violet,
+        Self::Emerald,
+        Self::Ruby,
+        Self::Amber,
+        Self::Cyan,
+        Self::Magenta,
+        Self::Graphite,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Signal => "Sinal",
+            Self::Cobalt => "Cobalto",
+            Self::Violet => "Violeta",
+            Self::Emerald => "Esmeralda",
+            Self::Ruby => "Rubi",
+            Self::Amber => "Âmbar",
+            Self::Cyan => "Ciano",
+            Self::Magenta => "Magenta",
+            Self::Graphite => "Grafite",
         }
     }
 }
@@ -1662,24 +1778,29 @@ impl UiThemePreset {
 #[serde(default, rename_all = "camelCase")]
 pub struct UiAppearanceSettings {
     pub preset: UiThemePreset,
+    pub accent: UiAccent,
     pub glass_opacity: f32,
     pub specular_intensity: f32,
     pub radius_scale: f32,
     pub backdrop_intensity: f32,
     pub animate_backdrop: bool,
     pub sidebar_collapsed: bool,
+    /// Barra de status inferior com telemetria (FPS, render p95, bitrate, áudio).
+    pub show_status_bar: bool,
 }
 
 impl Default for UiAppearanceSettings {
     fn default() -> Self {
         Self {
             preset: UiThemePreset::PrismCarbon,
+            accent: UiAccent::Signal,
             glass_opacity: 1.0,
             specular_intensity: 1.0,
             radius_scale: 1.0,
             backdrop_intensity: 1.0,
             animate_backdrop: true,
             sidebar_collapsed: false,
+            show_status_bar: true,
         }
     }
 }

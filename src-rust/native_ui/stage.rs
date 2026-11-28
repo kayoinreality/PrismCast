@@ -10,13 +10,14 @@
 use crate::capture::CaptureStatus;
 use crate::compositor::capture_key_for_item;
 use crate::native_ui::theme;
+use crate::native_ui::theme::RichTextWeight;
 use crate::protocol::{Scene, SceneItem, SourceTransform, SourceType};
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind,
-    TextureHandle, Ui, Vec2,
+    Align2, Color32, CornerRadius, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle,
+    Ui, Vec2,
 };
 use egui_prismglass::{
-    GlassButton, GlassCard, GlassElevation, PrismContextExt, paint_glass_surface,
+    paint_glass_surface, GlassButton, GlassCard, GlassElevation, PrismContextExt,
 };
 use std::collections::HashMap;
 
@@ -239,7 +240,7 @@ pub fn show_stage_viewport(
                     ui.label(
                         RichText::new("Cena vazia")
                             .size(15.5)
-                            .strong()
+                            .semibold()
                             .color(prism.palette.text_primary),
                     );
                     ui.add_space(2.0);
@@ -271,46 +272,18 @@ pub fn show_stage_viewport(
             });
     }
 
-    // Tag pill translúcida de identificação do viewport (PROGRAMA / PRÉVIA / 9:16)
-    let badge_font = FontId::monospace(10.0);
-    let badge_galley =
-        painter.layout_no_wrap(label_badge.to_owned(), badge_font.clone(), Color32::WHITE);
-    let badge_pos = Pos2::new(stage_rect.left() + 10.0, stage_rect.top() + 10.0);
-    let badge_w = (badge_galley.size().x + 28.0).max(74.0);
-    let badge_rect = Rect::from_min_size(badge_pos, Vec2::new(badge_w, 22.0));
-    painter.rect_filled(
-        badge_rect,
-        CornerRadius::same(11),
-        Color32::from_rgba_unmultiplied(12, 13, 16, 198),
-    );
-    painter.rect_stroke(
-        badge_rect,
-        CornerRadius::same(11),
-        Stroke::new(
-            1.0_f32,
-            Color32::from_rgba_unmultiplied(
-                badge_accent.r(),
-                badge_accent.g(),
-                badge_accent.b(),
-                185,
-            ),
-        ),
-        StrokeKind::Inside,
-    );
-    let dot_pos = Pos2::new(badge_rect.left() + 10.0, badge_rect.center().y);
-    painter.circle_filled(
-        dot_pos,
-        4.6,
-        Color32::from_rgba_unmultiplied(badge_accent.r(), badge_accent.g(), badge_accent.b(), 65),
-    );
-    painter.circle_filled(dot_pos, 2.6, badge_accent);
-    painter.text(
-        Pos2::new(badge_rect.left() + 19.0, badge_rect.center().y),
-        Align2::LEFT_CENTER,
-        label_badge,
-        badge_font,
-        Color32::from_rgb(0xF5, 0xF3, 0xEE),
-    );
+    // Rótulo do viewport (PROGRAMA / PRÉVIA / 9:16) no canto superior direito, para não
+    // colidir com o rótulo da fonte selecionada (que fica à esquerda).
+    {
+        let f = theme::font(ui, 10.0, egui_prismglass::FontWeight::Semibold);
+        let w = painter
+            .layout_no_wrap(label_badge.to_owned(), f, Color32::WHITE)
+            .size()
+            .x
+            + 24.0;
+        let anchor = Pos2::new(stage_rect.right() - w - 8.0, stage_rect.top() + 8.0);
+        theme::paint_viewport_tag(&painter, ui, anchor, label_badge, badge_accent);
+    }
 
     if !editable {
         return;
@@ -569,7 +542,7 @@ pub fn show_stage_viewport(
             if let Some(item) = visible_items.iter().find(|it| it.id == tid) {
                 ui.label(
                     RichText::new(&item.name)
-                        .strong()
+                        .semibold()
                         .color(prism.palette.text_primary),
                 );
                 ui.separator();
@@ -642,7 +615,7 @@ pub fn show_stage_viewport(
                 Pos2::new(x, stage_rect.top()),
                 Pos2::new(x, stage_rect.bottom()),
             ],
-            Stroke::new(1.3_f32, theme::SPEC_TEAL),
+            Stroke::new(1.3_f32, prism.palette.accent),
         );
     }
     if let Some(gy) = interaction.snap_y {
@@ -652,7 +625,7 @@ pub fn show_stage_viewport(
                 Pos2::new(stage_rect.left(), y),
                 Pos2::new(stage_rect.right(), y),
             ],
-            Stroke::new(1.3_f32, theme::SPEC_TEAL),
+            Stroke::new(1.3_f32, prism.palette.accent),
         );
     }
 
@@ -664,7 +637,7 @@ pub fn show_stage_viewport(
                 painter.rect_stroke(
                     r,
                     CornerRadius::same(4),
-                    Stroke::new(1.2_f32, Color32::from_rgba_unmultiplied(24, 220, 184, 170)),
+                    Stroke::new(1.2_f32, prism.palette.accent.gamma_multiply(0.7)),
                     StrokeKind::Inside,
                 );
             }
@@ -685,7 +658,16 @@ pub fn show_stage_viewport(
             } else if is_missing {
                 theme::SPEC_RED
             } else {
-                theme::SPEC_AMBER
+                prism.palette.accent
+            };
+            let on_border = {
+                let [r8, g8, b8, _] = border_col.to_srgba_unmultiplied();
+                let luma = 0.2126 * f32::from(r8) + 0.7152 * f32::from(g8) + 0.0722 * f32::from(b8);
+                if luma > 160.0 {
+                    Color32::from_rgb(14, 15, 16)
+                } else {
+                    Color32::WHITE
+                }
             };
 
             painter.rect_stroke(
@@ -701,7 +683,7 @@ pub fn show_stage_viewport(
             } else if is_missing {
                 tag.push_str(" · janela fechada");
             }
-            let tag_font = FontId::proportional(11.0);
+            let tag_font = theme::font(ui, 11.0, egui_prismglass::FontWeight::Medium);
             let tag_galley = painter.layout_no_wrap(tag.clone(), tag_font.clone(), Color32::WHITE);
             let tag_w = (tag_galley.size().x + 16.0).clamp(56.0, 260.0);
             let tag_y = if r.top() - 24.0 > stage_rect.top() {
@@ -711,19 +693,13 @@ pub fn show_stage_viewport(
             };
             let tag_rect =
                 Rect::from_min_size(Pos2::new(r.left() + 3.0, tag_y), Vec2::new(tag_w, 20.0));
-            painter.rect_filled(tag_rect, CornerRadius::same(10), theme::TALLY);
-            painter.rect_stroke(
-                tag_rect,
-                CornerRadius::same(10),
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 55)),
-                StrokeKind::Inside,
-            );
+            painter.rect_filled(tag_rect, CornerRadius::same(6), border_col);
             painter.text(
                 tag_rect.center(),
                 Align2::CENTER_CENTER,
                 tag,
                 tag_font,
-                Color32::WHITE,
+                on_border,
             );
 
             if !sel_item.locked {
@@ -739,7 +715,7 @@ pub fn show_stage_viewport(
                     painter.rect_stroke(
                         hr,
                         CornerRadius::same(3),
-                        Stroke::new(1.4_f32, theme::TALLY),
+                        Stroke::new(1.4_f32, border_col),
                         StrokeKind::Outside,
                     );
                 }

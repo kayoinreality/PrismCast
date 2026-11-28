@@ -7,14 +7,15 @@
 
 use crate::capture::{self, NativeSourceEntry};
 use crate::native_ui::theme;
+use crate::native_ui::theme::RichTextWeight;
 use crate::protocol::SourceKind;
 use egui::{
     Align2, Color32, ColorImage, Context, CornerRadius, FontId, Frame, Margin, Pos2, Rect,
     RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Vec2,
 };
 use egui_prismglass::{
-    BadgeVariant, GlassBadge, GlassButton, GlassElevation, PrismContextExt, ThemeMode,
-    animate_hover, paint_glass_surface,
+    animate_hover, paint_glass_surface, BadgeVariant, GlassBadge, GlassButton, GlassElevation,
+    PrismContextExt, ThemeMode,
 };
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
@@ -191,7 +192,7 @@ impl SourcePickerModal {
                             ui.label(
                                 RichText::new(title)
                                     .size(19.0)
-                                    .strong()
+                                    .semibold()
                                     .color(prism.palette.text_primary),
                             );
                             ui.add(
@@ -209,13 +210,7 @@ impl SourcePickerModal {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add(
-                                GlassButton::ghost("✕")
-                                    .pill(true)
-                                    .min_size(Vec2::new(32.0, 32.0)),
-                            )
-                            .clicked()
+                        if theme::icon_button_ex(ui, crate::native_ui::icons::Icon::Close, "Fechar (Esc)", false, 30.0).clicked()
                         {
                             close_now = true;
                         }
@@ -271,16 +266,16 @@ impl SourcePickerModal {
                         let lbl = if self.loading {
                             "Atualizando…"
                         } else {
-                            "↻ Atualizar prévias"
+                            "Atualizar prévias"
                         };
-                        if ui
-                            .add(
-                                GlassButton::secondary(lbl)
-                                    .pill(true)
-                                    .enabled(!self.loading)
-                                    .min_size(Vec2::new(0.0, 30.0)),
-                            )
-                            .clicked()
+                        if theme::button(
+                            ui,
+                            lbl,
+                            theme::BtnOpts::new(theme::Btn::Secondary)
+                                .icon(crate::native_ui::icons::Icon::Refresh)
+                                .enabled(!self.loading),
+                        )
+                        .clicked()
                         {
                             self.refresh();
                         }
@@ -323,7 +318,7 @@ impl SourcePickerModal {
                                 ui.label(
                                     RichText::new("Nenhuma fonte encontrada nesta aba.")
                                         .size(14.5)
-                                        .strong()
+                                        .semibold()
                                         .color(prism.palette.text_primary),
                                 );
                                 ui.add_space(4.0);
